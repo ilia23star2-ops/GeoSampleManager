@@ -1,3 +1,4 @@
+// test sync - [сегодняшняя дата]
 package com.example.geosamplemanager
 
 import android.os.Bundle
