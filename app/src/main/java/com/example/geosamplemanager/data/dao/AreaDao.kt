@@ -24,4 +24,7 @@ interface AreaDao {
 
     @Query("DELETE FROM areas WHERE area_name = :name")
     suspend fun deleteByName(name: String)
+
+    @Query("DELETE FROM areas WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }
