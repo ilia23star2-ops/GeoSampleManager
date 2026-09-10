@@ -26,6 +26,7 @@ data class ImportPreview(
     val fileName: String,
     val sheetName: String,
     val headerRowIndex: Int,
+    val twoRowHeader: Boolean,
     val mapping: Map<String, Int?>,
     val headers: List<String>,
     val rows: List<List<String>>,
@@ -81,17 +82,17 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 if (analysis == null) {
-                    _message.value = "Не найдена строка заголовков. Проверьте файл."
+                    _message.value = "Не удалось определить шапку. Проверьте файл."
                     return@launch
                 }
 
                 val order = withContext(Dispatchers.Default) {
                     ExcelImporter.buildOrder(
-                        rows = analysis.rows,
-                        headerRowIdx = analysis.headerRowIndex,
-                        mapping = analysis.mapping,
+                        analysis = analysis,
                         areaName = null,
-                        orderNumber = "Импорт от " + SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date())
+                        orderNumber = "Импорт от " + SimpleDateFormat(
+                            "dd.MM.yyyy HH:mm", Locale.getDefault()
+                        ).format(Date())
                     )
                 }
 
@@ -99,8 +100,9 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                     fileName = fileName,
                     sheetName = analysis.sheetName,
                     headerRowIndex = analysis.headerRowIndex,
+                    twoRowHeader = analysis.headerRowCount > 1,
                     mapping = analysis.mapping,
-                    headers = analysis.rows.getOrNull(analysis.headerRowIndex) ?: emptyList(),
+                    headers = analysis.headerText(),
                     rows = analysis.rows,
                     order = order
                 )
@@ -149,6 +151,7 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                         sampleNumber = s.sampleNumber,
                         wellNumber = s.wellNumber,
                         workings = s.workings,
+                        materialDesc = s.materialDesc,
                         intervalFrom = s.intervalFrom,
                         intervalTo = s.intervalTo,
                         weight = s.weight,

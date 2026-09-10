@@ -1,40 +1,40 @@
 package com.example.geosamplemanager.data.excel
 
 /**
- * Из строк Excel делает модель наряда с пробами.
+ * Из проанализированного листа делает модель наряда с пробами.
+ * Использует SheetAnalysis из ExcelAnalyzer с готовым mapping-ом.
  */
 object ExcelImporter {
 
     fun buildOrder(
-        rows: List<List<String>>,
-        headerRowIdx: Int,
-        mapping: Map<String, Int?>,
+        analysis: SheetAnalysis,
         areaName: String?,
         orderNumber: String,
         defaultType: String = "auger"
     ): ParsedOrder {
+        val rows = analysis.dataRows()
+        val mapping = analysis.mapping
         val samples = mutableListOf<ParsedSample>()
         val wellsSet = mutableSetOf<String>()
         var serial = 0
 
-        for (rowIdx in (headerRowIdx + 1) until rows.size) {
-            val row = rows[rowIdx]
+        for (row in rows) {
+            val wellNum = getCell(row, mapping[ExcelAnalyzer.Roles.WELL]).trim()
+            val sampleNum = getCell(row, mapping[ExcelAnalyzer.Roles.SAMPLE]).trim()
 
-            val wellNum = getCell(row, mapping["well"]).trim()
-            val sampleNum = getCell(row, mapping["sample"]).trim()
-
+            // Пропускаем пустые/мусорные строки
             if (wellNum.isEmpty() && sampleNum.isEmpty()) continue
 
             serial++
 
-            val intFrom = ExcelAnalyzer.parseNumber(getCell(row, mapping["int_from"]))
-            val intTo = ExcelAnalyzer.parseNumber(getCell(row, mapping["int_to"]))
-            val weight = ExcelAnalyzer.parseNumber(getCell(row, mapping["weight"]))
-            val typeText = getCell(row, mapping["type"]).trim()
-            val workings = getCell(row, mapping["workings"]).trim().ifEmpty { null }
+            val intFrom = ExcelAnalyzer.parseNumber(getCell(row, mapping[ExcelAnalyzer.Roles.INT_FROM]))
+            val intTo = ExcelAnalyzer.parseNumber(getCell(row, mapping[ExcelAnalyzer.Roles.INT_TO]))
+            val weight = ExcelAnalyzer.parseNumber(getCell(row, mapping[ExcelAnalyzer.Roles.WEIGHT]))
+            val typeText = getCell(row, mapping[ExcelAnalyzer.Roles.TYPE]).trim()
+            val materialDesc = getCell(row, mapping[ExcelAnalyzer.Roles.MATERIAL]).trim().ifEmpty { null }
 
             val type = determineType(typeText, wellNum, defaultType)
-            val status = determineStatus(intFrom, intTo, weight)
+            val status = determineStatus(typeText, intFrom, intTo, weight)
 
             samples.add(
                 ParsedSample(
@@ -46,7 +46,8 @@ object ExcelImporter {
                     weight = weight,
                     sampleType = type,
                     status = status,
-                    workings = workings
+                    workings = null,
+                    materialDesc = materialDesc
                 )
             )
 
@@ -71,6 +72,7 @@ object ExcelImporter {
         if (t.contains("шнек")) return "auger"
         if (t.contains("борозд")) return "channel"
         if (t.contains("кобра")) return "cobra"
+        // По префиксу номера — упрощённо
         val well = wellNum.uppercase()
         if (well.startsWith("KPD") || well.startsWith("KOP")) return "auger"
         if (well.startsWith("KBK") || well.startsWith("KMB")) return "channel"
@@ -78,7 +80,13 @@ object ExcelImporter {
         return default
     }
 
-    private fun determineStatus(intFrom: Double?, intTo: Double?, weight: Double?): String {
+    private fun determineStatus(
+        typeText: String,
+        intFrom: Double?,
+        intTo: Double?,
+        weight: Double?
+    ): String {
+        if (typeText.lowercase().contains("холост")) return "blank"
         if (intFrom == null && intTo == null && weight == null) return "blank"
         return "normal"
     }

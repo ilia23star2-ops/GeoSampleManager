@@ -9,7 +9,8 @@ data class ParsedSample(
     val weight: Double?,
     val sampleType: String,      // auger / channel / cobra
     val status: String,          // normal / blank / control
-    val workings: String?
+    val workings: String?,
+    val materialDesc: String?
 )
 
 data class ParsedOrder(
@@ -19,10 +20,5 @@ data class ParsedOrder(
     val wellsCount: Int
 )
 
-data class SheetAnalysis(
-    val sheetName: String,
-    val headerRowIndex: Int,
-    val mapping: Map<String, Int?>,
-    val score: Int,
-    val rows: List<List<String>>
-)
+// SheetAnalysis теперь объявлен в ExcelAnalyzer.kt
+// ColumnProfile — там же
