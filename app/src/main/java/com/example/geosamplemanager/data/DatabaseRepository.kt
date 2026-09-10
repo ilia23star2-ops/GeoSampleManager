@@ -6,14 +6,12 @@ import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import kotlinx.coroutines.flow.Flow
+import java.io.File
 
-/**
- * Репозиторий — единая точка входа в БД.
- * Заменяет DatabaseManager из Python-версии.
- */
 class DatabaseRepository(context: Context) {
 
-    private val db = AppDatabase.getInstance(context)
+    private val appContext = context.applicationContext
+    private val db = AppDatabase.getInstance(appContext)
     private val areaDao = db.areaDao()
     private val orderDao = db.orderDao()
     private val sampleDao = db.sampleDao()
@@ -31,6 +29,8 @@ class DatabaseRepository(context: Context) {
     suspend fun addArea(name: String): Long = areaDao.insert(AreaEntity(areaName = name))
 
     suspend fun deleteArea(name: String) = areaDao.deleteByName(name)
+
+    suspend fun deleteAreaById(areaId: Long) = areaDao.deleteById(areaId)
 
     // ============ НАРЯДЫ ============
 
@@ -109,6 +109,10 @@ class DatabaseRepository(context: Context) {
     suspend fun getNote(sampleId: Long) = sampleNoteDao.getNote(sampleId)
 
     suspend fun deleteNote(sampleId: Long) = sampleNoteDao.deleteBySampleId(sampleId)
+
+    // ============ ФАЙЛ БД (для бэкапа) ============
+
+    fun getDatabaseFile(): File = appContext.getDatabasePath("geosamples.db")
 }
 
 data class OrderStats(val total: Int, val found: Int)
