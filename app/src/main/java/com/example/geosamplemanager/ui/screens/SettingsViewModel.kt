@@ -13,6 +13,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+enum class SettingsCategory(val title: String) {
+    IMPORT("Импорт Excel"),
+    VOICE("Голос"),
+    APPEARANCE("Внешний вид"),
+    SYSTEM("Система"),
+    ABOUT("О приложении")
+}
+
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).settingsRepository
@@ -20,12 +28,29 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _settings = MutableStateFlow(repo.load())
     val settings: StateFlow<ImportSettings> = _settings.asStateFlow()
 
+    private val _selectedCategory = MutableStateFlow(SettingsCategory.IMPORT)
+    val selectedCategory: StateFlow<SettingsCategory> = _selectedCategory.asStateFlow()
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
     fun clearMessage() { _message.value = null }
 
-    // ============ Участки и префиксы ============
+    fun selectCategory(category: SettingsCategory) {
+        _selectedCategory.value = category
+    }
+
+    /** Перечитать настройки из файла. Вызывается при открытии экрана. */
+    fun reload() {
+        _settings.value = repo.load()
+    }
+
+    private fun persist(updated: ImportSettings) {
+        _settings.value = updated
+        repo.save(updated)
+    }
+
+    // ============ УЧАСТКИ ============
 
     fun addArea(name: String) {
         val n = name.trim()
@@ -35,16 +60,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             _message.value = "Участок «$n» уже есть"
             return
         }
-        _settings.value = current.copy(
-            areaPrefixes = current.areaPrefixes + (n to emptyList())
-        )
+        persist(current.copy(areaPrefixes = current.areaPrefixes + (n to emptyList())))
     }
 
     fun removeArea(name: String) {
         val current = _settings.value
-        _settings.value = current.copy(
-            areaPrefixes = current.areaPrefixes - name
-        )
+        persist(current.copy(areaPrefixes = current.areaPrefixes - name))
     }
 
     fun renameArea(oldName: String, newName: String) {
@@ -56,10 +77,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val updated = LinkedHashMap<String, List<String>>()
-        current.areaPrefixes.forEach { (k, v) ->
-            if (k == oldName) updated[n] = v else updated[k] = v
-        }
-        _settings.value = current.copy(areaPrefixes = updated)
+        current.areaPrefixes.forEach { (k, v) -> if (k == oldName) updated[n] = v else updated[k] = v }
+        persist(current.copy(areaPrefixes = updated))
     }
 
     fun setAreaPrefixes(areaName: String, csv: String) {
@@ -68,58 +87,64 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             .filter { it.isNotEmpty() }
             .distinct()
         val current = _settings.value
-        _settings.value = current.copy(
-            areaPrefixes = current.areaPrefixes + (areaName to list)
-        )
+        persist(current.copy(areaPrefixes = current.areaPrefixes + (areaName to list)))
     }
 
-    // ============ Общие правила ============
+    // ============ НАРЯД ============
 
     fun setOrderSource(source: OrderSource) {
-        _settings.value = _settings.value.copy(orderSource = source)
+        persist(_settings.value.copy(orderSource = source))
     }
 
     fun setOrderNumberRule(rule: OrderNumberRule) {
-        _settings.value = _settings.value.copy(orderNumberRule = rule)
+        persist(_settings.value.copy(orderNumberRule = rule))
     }
 
-    fun setHollowKeywords(csv: String) {
-        _settings.value = _settings.value.copy(hollowKeywords = parseCsv(csv))
-    }
-
-    fun setAugerKeywords(csv: String) {
-        _settings.value = _settings.value.copy(augerKeywords = parseCsv(csv))
-    }
-
-    fun setChannelKeywords(csv: String) {
-        _settings.value = _settings.value.copy(channelKeywords = parseCsv(csv))
-    }
+    // ============ БЛАНКИ ============
 
     fun setBlankKeywords(csv: String) {
-        _settings.value = _settings.value.copy(blankKeywords = parseCsv(csv))
-    }
-
-    fun setSkipBlanks(value: Boolean) {
-        _settings.value = _settings.value.copy(skipBlanksWithoutData = value)
-    }
-
-    private fun parseCsv(s: String): List<String> =
-        s.split(',', ';', '\n')
+        val list = csv.split(',', ';', '\n')
             .map { it.trim().lowercase() }
             .filter { it.isNotEmpty() }
             .distinct()
-
-    // ============ Сохранение / сброс / экспорт / импорт ============
-
-    fun save() {
-        repo.save(_settings.value)
-        _message.value = "Настройки сохранены"
+        persist(_settings.value.copy(blankKeywords = list))
     }
+
+    fun setSkipBlanks(value: Boolean) {
+        persist(_settings.value.copy(skipBlanksWithoutData = value))
+    }
+
+    // ============ ПОЛЬЗОВАТЕЛЬСКИЕ СЛОВА ============
+
+    fun addUserHeaderKeyword(role: String, word: String) {
+        persist(_settings.value.addUserHeaderKeyword(role, word))
+    }
+
+    fun removeUserHeaderKeyword(role: String, word: String) {
+        persist(_settings.value.removeUserHeaderKeyword(role, word))
+    }
+
+    fun addUserTypeKeyword(typeCode: String, word: String) {
+        persist(_settings.value.addUserTypeKeyword(typeCode, word))
+    }
+
+    fun removeUserTypeKeyword(typeCode: String, word: String) {
+        persist(_settings.value.removeUserTypeKeyword(typeCode, word))
+    }
+
+    fun resetUserKeywords() {
+        persist(_settings.value.resetUserKeywords())
+        _message.value = "Пользовательские слова сброшены"
+    }
+
+    // ============ СБРОС ============
 
     fun resetToDefaults() {
         _settings.value = repo.resetToDefaults()
         _message.value = "Настройки сброшены к стандартным"
     }
+
+    // ============ ЭКСПОРТ / ИМПОРТ ============
 
     fun exportTo(uri: Uri) {
         viewModelScope.launch {
@@ -140,9 +165,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     repo.save(it)
                     _message.value = "Настройки импортированы"
                 },
-                onFailure = {
-                    _message.value = "Ошибка импорта: ${it.message}"
-                }
+                onFailure = { _message.value = "Ошибка импорта: ${it.message}" }
             )
         }
     }

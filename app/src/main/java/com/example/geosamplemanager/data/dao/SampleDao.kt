@@ -32,6 +32,9 @@ interface SampleDao {
     @Query("DELETE FROM samples WHERE id = :sampleId")
     suspend fun deleteById(sampleId: Long)
 
+    @Query("DELETE FROM samples WHERE order_id = :orderId")
+    suspend fun deleteAllForOrder(orderId: Long)
+
     @Query("UPDATE samples SET found = NOT found WHERE id = :sampleId")
     suspend fun toggleFound(sampleId: Long)
 
@@ -62,7 +65,6 @@ interface SampleDao {
     @Query("SELECT COUNT(*) FROM samples WHERE order_id = :orderId AND found = 1")
     suspend fun getFoundCountForOrder(orderId: Long): Int
 
-    // Поиск с фильтрами (упрощённый вариант, дальше будем расширять)
     @Query(
         """
         SELECT * FROM samples 

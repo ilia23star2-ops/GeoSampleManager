@@ -14,4 +14,7 @@ interface OrderWellDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(well: OrderWellEntity): Long
+
+    @Query("DELETE FROM order_wells WHERE order_id = :orderId")
+    suspend fun deleteAllForOrder(orderId: Long)
 }

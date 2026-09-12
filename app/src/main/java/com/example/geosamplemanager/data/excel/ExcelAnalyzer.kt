@@ -1,10 +1,11 @@
 package com.example.geosamplemanager.data.excel
 
+import com.example.geosamplemanager.data.settings.ImportSettings
 import java.util.Locale
 
 /**
  * Анализ листов Excel: находит шапку, определяет роли колонок
- * на основе двух сигналов — текста шапки И данных в колонках.
+ * на основе текста шапки И данных, с учётом пользовательских словарей из настроек.
  */
 object ExcelAnalyzer {
 
@@ -19,28 +20,18 @@ object ExcelAnalyzer {
         const val MATERIAL = "material"
     }
 
-    // ============ Словари ============
-
-    private val TEXT_KEYWORDS = mapOf(
-        Roles.SERIAL    to listOf("п/п", "№ п/п", "n", "no", "serial", "индекс"),
-        Roles.WELL      to listOf("скважина", "скв", "well", "выработка", "канава", "шурф"),
-        Roles.SAMPLE    to listOf("проба", "sample", "шифр"),
-        Roles.INT_FROM  to listOf("от", "from", "интервал от", "глубина от"),
-        Roles.INT_TO    to listOf("до", "to", "интервал до", "глубина до"),
-        Roles.WEIGHT    to listOf("вес", "масса", "weight", "кг"),
-        Roles.TYPE      to listOf("тип пробы", "тип"),
-        Roles.MATERIAL  to listOf("характеристика", "материал", "литология")
+    /** Все роли в порядке использования при поиске колонок. */
+    private val ALL_ROLES = listOf(
+        Roles.SERIAL, Roles.WELL, Roles.SAMPLE,
+        Roles.INT_FROM, Roles.INT_TO, Roles.WEIGHT,
+        Roles.TYPE, Roles.MATERIAL
     )
 
     private val EXCLUDED_SHEET_KEYWORDS = listOf(
         "титул", "оглавление", "содержание", "cover", "toc"
     )
 
-    private val TYPE_WORDS = listOf(
-        "шнек", "борозд", "холост", "дубликат", "бланк", "стандарт",
-        "кобра", "канав", "проб"
-    )
-
+    /** Доменные слова для характеристики — пользователь их не редактирует. */
     private val GEO_WORDS = listOf(
         "глина", "глины", "суглинок", "суглинки", "супесь", "песок", "песк",
         "кора выветривания", "делювий", "аллювий", "щебн", "дресв",
@@ -50,25 +41,23 @@ object ExcelAnalyzer {
 
     // ============ Публичное API ============
 
-    /** Возвращает лучший анализ среди всех листов (без учёта технических). */
-    fun analyze(sheets: List<SheetData>): SheetAnalysis? {
+    fun analyze(sheets: List<SheetData>, settings: ImportSettings): SheetAnalysis? {
         val candidates = sheets.filter { !isExcludedSheet(it.name) }
         var best: SheetAnalysis? = null
         for (sheet in candidates) {
-            val r = analyzeSheet(sheet) ?: continue
+            val r = analyzeSheet(sheet, settings) ?: continue
             if (best == null || r.score > best.score) best = r
         }
         return best
     }
 
-    /** Анализ одного листа — перебираем все варианты шапки. */
-    fun analyzeSheet(sheet: SheetData): SheetAnalysis? {
+    fun analyzeSheet(sheet: SheetData, settings: ImportSettings): SheetAnalysis? {
         var best: SheetAnalysis? = null
         val maxStart = minOf(20, sheet.rows.size)
         for (start in 0 until maxStart) {
             for (count in 1..3) {
                 if (start + count > sheet.rows.size) continue
-                val r = tryHeader(sheet, start, count) ?: continue
+                val r = tryHeader(sheet, start, count, settings) ?: continue
                 if (best == null || r.score > best.score) best = r
             }
         }
@@ -77,7 +66,12 @@ object ExcelAnalyzer {
 
     // ============ Ядро ============
 
-    private fun tryHeader(sheet: SheetData, start: Int, count: Int): SheetAnalysis? {
+    private fun tryHeader(
+        sheet: SheetData,
+        start: Int,
+        count: Int,
+        settings: ImportSettings
+    ): SheetAnalysis? {
         val header = mergedHeader(sheet.rows, start, count)
         if (header.isEmpty()) return null
         if (header.count { it.isNotBlank() } < 3) return null
@@ -87,8 +81,11 @@ object ExcelAnalyzer {
         val sample = sheet.rows.subList(dataStart, minOf(dataStart + 40, sheet.rows.size))
         if (sample.isEmpty()) return null
 
-        val profiles = profileColumns(sample, header.size)
-        val textMapping = matchHeaderText(header)
+        // Все слова-маркеры типа пробы и бланка — из настроек
+        val allTypeWords = buildTypeWords(settings)
+
+        val profiles = profileColumns(sample, header.size, allTypeWords)
+        val textMapping = matchHeaderText(header, settings)
         val textScore = textMapping.values.count { it != null }
 
         val mapping = combineMapping(textMapping, profiles, sample)
@@ -109,10 +106,14 @@ object ExcelAnalyzer {
         )
     }
 
-    /**
-     * Склеивает N строк шапки в одну — пустые ячейки пропускаются,
-     * непустые из разных строк объединяются через пробел.
-     */
+    /** Собирает все слова-маркеры типов пробы и бланков из настроек. */
+    private fun buildTypeWords(settings: ImportSettings): List<String> {
+        val types = listOf("hollow", "auger", "channel", "cobra", "duplicate")
+        val typeWords = types.flatMap { settings.effectiveTypeKeywords(it) }
+        val blankWords = settings.blankKeywords
+        return (typeWords + blankWords).distinct()
+    }
+
     fun mergedHeader(rows: List<List<String>>, start: Int, count: Int): List<String> {
         if (start < 0 || start >= rows.size) return emptyList()
         val size = rows.subList(start, minOf(start + count, rows.size))
@@ -131,36 +132,79 @@ object ExcelAnalyzer {
 
     // ============ Текстовый матчинг ============
 
-    private fun matchHeaderText(header: List<String>): Map<String, Int?> {
+    private fun matchHeaderText(
+        header: List<String>,
+        settings: ImportSettings
+    ): Map<String, Int?> {
         val norm = header.map { it.trim().lowercase(Locale.ROOT) }
         val result = mutableMapOf<String, Int?>()
-        for ((role, words) in TEXT_KEYWORDS) {
-            result[role] = findColumnByKeywords(norm, words)
+        val used = mutableSetOf<Int>()
+
+        // Сначала идём по ролям с более специфичными словами,
+        // чтобы "№ пробы" не занял "well", если параллельно есть "скважина".
+        val order = listOf(
+            Roles.INT_FROM, Roles.INT_TO,
+            Roles.WEIGHT, Roles.MATERIAL,
+            Roles.TYPE,
+            Roles.SAMPLE, Roles.WELL,
+            Roles.SERIAL
+        )
+        for (role in order) {
+            val words = settings.effectiveHeaderKeywords(role)
+            val idx = findColumnByKeywords(norm, words, used)
+            if (idx != null) {
+                result[role] = idx
+                used.add(idx)
+            } else {
+                result[role] = null
+            }
         }
         return result
     }
 
-    private fun findColumnByKeywords(normalized: List<String>, words: List<String>): Int? {
-        // 1) точное совпадение всей ячейки
+    private fun findColumnByKeywords(
+        normalized: List<String>,
+        words: List<String>,
+        exclude: Set<Int>
+    ): Int? {
+        if (words.isEmpty()) return null
+
+        // 1) Точное совпадение всей ячейки
         for ((i, cell) in normalized.withIndex()) {
+            if (i in exclude) continue
             if (cell.isEmpty()) continue
             if (words.any { it == cell }) return i
         }
-        // 2) слово как отдельный токен (не внутри другого слова)
+        // 2) Слово как отдельный токен
         for ((i, cell) in normalized.withIndex()) {
+            if (i in exclude) continue
             if (cell.isEmpty()) continue
             val tokens = cell.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
             if (words.any { w -> tokens.contains(w) }) return i
+        }
+        // 3) Подстрока — только для длинных слов (>4 символов), чтобы избежать ложных
+        for ((i, cell) in normalized.withIndex()) {
+            if (i in exclude) continue
+            if (cell.isEmpty()) continue
+            if (words.any { w -> w.length >= 5 && cell.contains(w) }) return i
         }
         return null
     }
 
     // ============ Профили колонок ============
 
-    private fun profileColumns(rows: List<List<String>>, cols: Int): List<ColumnProfile> =
-        (0 until cols).map { profileColumn(it, rows) }
+    private fun profileColumns(
+        rows: List<List<String>>,
+        cols: Int,
+        typeWords: List<String>
+    ): List<ColumnProfile> =
+        (0 until cols).map { profileColumn(it, rows, typeWords) }
 
-    private fun profileColumn(c: Int, rows: List<List<String>>): ColumnProfile {
+    private fun profileColumn(
+        c: Int,
+        rows: List<List<String>>,
+        typeWords: List<String>
+    ): ColumnProfile {
         val values = rows.mapNotNull { row ->
             row.getOrNull(c)?.trim()?.takeIf { it.isNotEmpty() }
         }
@@ -175,7 +219,8 @@ object ExcelAnalyzer {
         val floatRatio = values.count { parseNumber(it) != null }.toDouble() / nonEmpty
         val shortText = values.count { it.length <= 25 }.toDouble() / nonEmpty
         val lower = values.map { it.lowercase(Locale.ROOT) }
-        val typeRatio = lower.count { v -> TYPE_WORDS.any { v.contains(it) } }.toDouble() / nonEmpty
+        val typeRatio = if (typeWords.isEmpty()) 0.0 else
+            lower.count { v -> typeWords.any { v.contains(it) } }.toDouble() / nonEmpty
         val geoRatio = lower.count { v -> GEO_WORDS.any { v.contains(it) } }.toDouble() / nonEmpty
         val unique = values.toSet().size
         val avgLen = values.map { it.length }.average()
@@ -194,7 +239,6 @@ object ExcelAnalyzer {
         )
     }
 
-    /** 1, 2, 3, 4, 5… без пропусков, минимум 3 значения */
     private fun isIntSequence(values: List<String>): Boolean {
         if (values.size < 3) return false
         var prev = Int.MIN_VALUE
@@ -220,9 +264,11 @@ object ExcelAnalyzer {
         val result = mutableMapOf<String, Int?>()
         val used = mutableSetOf<Int>()
 
-        // 1) Скважина / Проба — по well-like паттерну
+        // 1) Скважина / Проба
         val wellLikeCols = profiles.filter { it.wellLikeRatio >= 0.7 }.map { it.index }
-        val (dataWell, dataSample) = pickWellSample(wellLikeCols, sample)
+        val pair = pickWellSample(wellLikeCols, sample)
+        val dataWell = pair.first
+        val dataSample = pair.second
 
         val finalWell = dataWell ?: textMapping[Roles.WELL]
         val finalSample = dataSample ?: textMapping[Roles.SAMPLE]
@@ -231,7 +277,7 @@ object ExcelAnalyzer {
         finalWell?.let { used.add(it) }
         finalSample?.let { used.add(it) }
 
-        // 2) Интервал от/до — две соседние числовые колонки
+        // 2) Интервал
         val (dataFrom, dataTo) = pickInterval(profiles, sample, used)
         val finalFrom = dataFrom ?: textMapping[Roles.INT_FROM]
         val finalTo = dataTo ?: textMapping[Roles.INT_TO]
@@ -240,7 +286,7 @@ object ExcelAnalyzer {
         finalFrom?.let { used.add(it) }
         finalTo?.let { used.add(it) }
 
-        // 3) Серийный номер
+        // 3) Серийный
         val serialCol = profiles.firstOrNull { it.intSeqMatch && it.index !in used }?.index
             ?: textMapping[Roles.SERIAL]
         result[Roles.SERIAL] = serialCol
@@ -251,12 +297,12 @@ object ExcelAnalyzer {
         result[Roles.WEIGHT] = weightCol
         weightCol?.let { used.add(it) }
 
-        // 5) Тип пробы
+        // 5) Тип
         val typeCol = pickType(profiles, used) ?: textMapping[Roles.TYPE]
         result[Roles.TYPE] = typeCol
         typeCol?.let { used.add(it) }
 
-        // 6) Характеристика материала
+        // 6) Характеристика
         val matCol = pickMaterial(profiles, used) ?: textMapping[Roles.MATERIAL]
         result[Roles.MATERIAL] = matCol
 
@@ -290,11 +336,10 @@ object ExcelAnalyzer {
                     bestScore = score
                     val aLen = avgLength(sample, a)
                     val bLen = avgLength(sample, b)
-                    bestPair = if (aLen >= bLen) a to b else b to a
+                    bestPair = if (aLen >= bLen) b to a else a to b
                 }
             }
         }
-        // Если пара не нашлась — самая длинная колонка = проба
         return bestPair ?: run {
             val sampleCol = cols.maxByOrNull { avgLength(sample, it) } ?: cols[0]
             val wellCol = cols.firstOrNull { it != sampleCol }
@@ -315,7 +360,6 @@ object ExcelAnalyzer {
         val numeric = profiles.filter { it.floatRatio >= 0.6 && it.index !in used }
         if (numeric.size < 2) return null to null
 
-        // Приоритет: соседние колонки
         for (p1 in numeric) {
             for (p2 in numeric) {
                 if (p2.index != p1.index + 1) continue
@@ -325,7 +369,6 @@ object ExcelAnalyzer {
                 }
             }
         }
-        // Fallback: не соседние, но очень сильная связь
         for (p1 in numeric) {
             for (p2 in numeric) {
                 if (p2.index <= p1.index) continue
@@ -363,12 +406,10 @@ object ExcelAnalyzer {
     }
 
     private fun pickType(profiles: List<ColumnProfile>, used: Set<Int>): Int? {
-        // Сначала явные совпадения: много типовых слов и мало уникальных
         for (p in profiles) {
             if (p.index in used) continue
             if (p.typeWordRatio >= 0.5 && p.uniqueCount <= 20) return p.index
         }
-        // Ослабленный вариант
         for (p in profiles) {
             if (p.index in used) continue
             if (p.typeWordRatio >= 0.25 && p.avgLength <= 30) return p.index
@@ -381,7 +422,6 @@ object ExcelAnalyzer {
             if (p.index in used) continue
             if (p.geoWordRatio >= 0.3 && p.avgLength >= 10) return p.index
         }
-        // Fallback — самая длинная текстовая
         return profiles
             .filter { it.index !in used && it.avgLength >= 15 }
             .maxByOrNull { it.avgLength }?.index
@@ -441,7 +481,5 @@ data class SheetAnalysis(
     fun dataStartIndex(): Int = headerRowIndex + headerRowCount
     fun headerText(): List<String> = ExcelAnalyzer.mergedHeader(rows, headerRowIndex, headerRowCount)
     fun previewRow(idx: Int): List<String>? = rows.getOrNull(dataStartIndex() + idx)
-
-    /** Все непустые строки данных после шапки. */
     fun dataRows(): List<List<String>> = rows.drop(dataStartIndex())
 }
