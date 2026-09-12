@@ -1,10 +1,13 @@
 package com.example.geosamplemanager.data
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
@@ -59,6 +62,10 @@ class DatabaseRepository(context: Context) {
         sampleDao.setPostponed(sampleId, postponed)
     suspend fun setControlWeight(sampleId: Long, weight: Double?) =
         sampleDao.setControlWeight(sampleId, weight)
+    suspend fun setWeight(sampleId: Long, weight: Double?) =
+        sampleDao.setWeight(sampleId, weight)
+    suspend fun setWeightControl(sampleId: Long, flag: Boolean) =
+        sampleDao.setWeightControl(sampleId, flag)
     suspend fun searchSamples(query: String?): List<SampleEntity> =
         sampleDao.searchSamples(query)
 
@@ -81,10 +88,12 @@ class DatabaseRepository(context: Context) {
         orderWellDao.getWellsForOrder(orderId)
     suspend fun addWell(orderId: Long, wellNumber: String): Long =
         orderWellDao.insert(OrderWellEntity(orderId = orderId, wellNumber = wellNumber))
+    suspend fun deleteWellsForOrder(orderId: Long) = orderWellDao.deleteAllForOrder(orderId)
 
     // ============ ЗАМЕТКИ ============
 
     suspend fun getNote(sampleId: Long) = sampleNoteDao.getNote(sampleId)
+    suspend fun upsertNote(note: SampleNoteEntity): Long = sampleNoteDao.insert(note)
     suspend fun deleteNote(sampleId: Long) = sampleNoteDao.deleteBySampleId(sampleId)
 
     // ============ ФАЙЛ БД ============
@@ -93,20 +102,116 @@ class DatabaseRepository(context: Context) {
 
     // ============ ОЧИСТКА НАРЯДА ============
 
-    /** Удалить все пробы и скважины наряда. Сам наряд остаётся. */
     suspend fun clearOrder(orderId: Long) {
         sampleDao.deleteAllForOrder(orderId)
         orderWellDao.deleteAllForOrder(orderId)
     }
 
-    /**
-     * Проверить существование наряда и вернуть его статистику.
-     * @return null если наряда нет; иначе OrderStats (total проб в наряде).
-     */
     suspend fun getExistingOrderStats(areaName: String, orderNumber: String): OrderStats? {
         val areaId = areaDao.getAreaId(areaName) ?: return null
         val orderId = orderDao.getOrderId(areaId, orderNumber) ?: return null
         return getOrderStats(orderId)
+    }
+
+    // ================================================================
+    // ДЛЯ ЭКРАНА СВЕРКИ — атомарные UPDATE без чтения
+    // ================================================================
+
+    /**
+     * Устанавливает статус пробы (normal / blank / control).
+     */
+    suspend fun setSampleStatus(sampleId: Long, status: String) {
+        sampleDao.setStatus(sampleId, status)
+    }
+
+    /**
+     * Устанавливает флаг hasNote.
+     */
+    suspend fun setHasNote(sampleId: Long, hasNote: Boolean) {
+        sampleDao.setHasNote(sampleId, hasNote)
+    }
+
+    /**
+     * Сохраняет пачку строк одной транзакцией через батч-Update.
+     * Используется для undo/redo и массовых операций.
+     *
+     * ВАЖНО: перед вызовом строки уже должны существовать в БД.
+     */
+    suspend fun saveRows(rows: List<SampleRow>) {
+        if (rows.isEmpty()) return
+        db.withTransaction {
+            val entities = rows.mapNotNull { row ->
+                val id = row.id.toLongOrNull() ?: return@mapNotNull null
+                val s = sampleDao.getSampleById(id) ?: return@mapNotNull null
+                s.copy(
+                    sampleNumber = row.sampleNumber,
+                    wellNumber = row.wellNumber,
+                    intervalFrom = row.intervalFrom.toDoubleOrNull(),
+                    intervalTo = row.intervalTo.toDoubleOrNull(),
+                    weight = row.weight,
+                    controlWeight = row.controlWeight,
+                    sampleType = row.type.dbCode,
+                    status = row.status.dbCode,
+                    materialDesc = row.characteristic.takeIf { it != "—" },
+                    found = row.found,
+                    postponed = row.postponed,
+                    weightControl = row.weightControl,
+                    hasNote = row.hasNote
+                )
+            }
+            if (entities.isNotEmpty()) {
+                sampleDao.updateAll(entities)
+            }
+        }
+    }
+
+    /**
+     * Удаление пробы с опциональным пересчётом sample_number и serial_number
+     * у всех последующих в этой же скважине (в этом же наряде).
+     *
+     * Вся работа — в одной транзакции.
+     */
+    suspend fun deleteSampleWithRenumber(sampleId: Long, recalc: Boolean) {
+        db.withTransaction {
+            val target = sampleDao.getSampleById(sampleId) ?: return@withTransaction
+
+            sampleDao.deleteById(sampleId)
+
+            if (!recalc) return@withTransaction
+
+            val remaining = sampleDao
+                .getSamplesForOrderList(target.orderId)
+                .filter { it.wellNumber == target.wellNumber }
+                .sortedBy { it.serialNumber }
+
+            if (remaining.isEmpty()) return@withTransaction
+
+            val first = remaining.first()
+            val suffixLen = detectSuffixLength(first.sampleNumber, first.wellNumber)
+
+            remaining.forEachIndexed { index, sample ->
+                val newOrderNum = index + 1
+                val newSampleNumber = sample.wellNumber +
+                        newOrderNum.toString().padStart(suffixLen, '0')
+
+                sampleDao.update(
+                    sample.copy(
+                        sampleNumber = newSampleNumber,
+                        serialNumber = newOrderNum
+                    )
+                )
+            }
+        }
+    }
+
+    private fun detectSuffixLength(sampleNumber: String, wellNumber: String): Int {
+        if (wellNumber.isNotEmpty() && sampleNumber.startsWith(wellNumber)) {
+            val len = sampleNumber.length - wellNumber.length
+            if (len > 0) return len
+        }
+        var i = sampleNumber.length
+        while (i > 0 && sampleNumber[i - 1].isDigit()) i--
+        return (sampleNumber.length - i).coerceAtLeast(1)
     }
 }
 

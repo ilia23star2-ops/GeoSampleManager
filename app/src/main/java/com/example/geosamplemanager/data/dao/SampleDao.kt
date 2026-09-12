@@ -29,11 +29,21 @@ interface SampleDao {
     @Update
     suspend fun update(sample: SampleEntity)
 
+    /**
+     * Батч-обновление. Все UPDATE — в одной транзакции Room.
+     */
+    @Update
+    suspend fun updateAll(samples: List<SampleEntity>)
+
     @Query("DELETE FROM samples WHERE id = :sampleId")
     suspend fun deleteById(sampleId: Long)
 
     @Query("DELETE FROM samples WHERE order_id = :orderId")
     suspend fun deleteAllForOrder(orderId: Long)
+
+    // ================================================================
+    // Атомарные UPDATE — без чтения строки перед записью
+    // ================================================================
 
     @Query("UPDATE samples SET found = NOT found WHERE id = :sampleId")
     suspend fun toggleFound(sampleId: Long)
@@ -46,6 +56,37 @@ interface SampleDao {
 
     @Query("UPDATE samples SET control_weight = :weight WHERE id = :sampleId")
     suspend fun setControlWeight(sampleId: Long, weight: Double?)
+
+    @Query("UPDATE samples SET weight = :weight WHERE id = :sampleId")
+    suspend fun setWeight(sampleId: Long, weight: Double?)
+
+    @Query("UPDATE samples SET weight_control = :flag WHERE id = :sampleId")
+    suspend fun setWeightControl(sampleId: Long, flag: Boolean)
+
+    @Query("UPDATE samples SET status = :status WHERE id = :sampleId")
+    suspend fun setStatus(sampleId: Long, status: String)
+
+    @Query("UPDATE samples SET has_note = :hasNote WHERE id = :sampleId")
+    suspend fun setHasNote(sampleId: Long, hasNote: Boolean)
+
+    @Query("UPDATE samples SET sample_type = :type WHERE id = :sampleId")
+    suspend fun setSampleType(sampleId: Long, type: String)
+
+    @Query("UPDATE samples SET material_desc = :desc WHERE id = :sampleId")
+    suspend fun setMaterialDesc(sampleId: Long, desc: String?)
+
+    @Query("UPDATE samples SET sample_number = :number WHERE id = :sampleId")
+    suspend fun setSampleNumber(sampleId: Long, number: String)
+
+    @Query("UPDATE samples SET well_number = :number WHERE id = :sampleId")
+    suspend fun setWellNumber(sampleId: Long, number: String)
+
+    @Query("UPDATE samples SET interval_from = :from, interval_to = :to WHERE id = :sampleId")
+    suspend fun setInterval(sampleId: Long, from: Double?, to: Double?)
+
+    // ================================================================
+    // Статистика
+    // ================================================================
 
     @Query("SELECT COUNT(*) FROM samples")
     suspend fun getTotalCount(): Int
