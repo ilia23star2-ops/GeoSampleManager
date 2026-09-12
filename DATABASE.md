@@ -1,21 +1,25 @@
-# Как данные попадают в БД
+# База данных GeoSample Manager
 
-> Проект использует **Room (SQLite)**. Здесь описано, что хранится, как
-> заполняется, что может быть `null`, и что важно учитывать при отображении.
+> Room (SQLite). Здесь — схема, как данные попадают в БД, что может быть
+> `null`, и на что обращать внимание.
+>
+> **Текущая версия БД: 1.**
+> **Запланированная миграция 1 → 2** описана в конце файла и в `NEXT_STEPS.md`
+> (заход 5.5.1).
 
 ---
 
-## Схема БД
+## Схема БД (version = 1)
 
-5 таблиц. Все с префиксами и связями через `ForeignKey` с каскадным удалением.
-Версия БД — **1** (пока миграций не делали).
+5 таблиц. Все связи — через `ForeignKey` с `ON DELETE CASCADE`.
+`exportSchema = false`.
 
 ### 1. `areas` — участки
 
 | Поле | Тип | Описание |
 |---|---|---|
 | `id` | Long PK | Автогенерация |
-| `area_name` | String UNIQUE | Название, например «Коптеловский» |
+| `area_name` | String | Название («Коптеловский» и т.п.) |
 | `created_date` | Long | Timestamp создания |
 
 ### 2. `orders` — наряды
@@ -23,155 +27,104 @@
 | Поле | Тип | Описание |
 |---|---|---|
 | `id` | Long PK | Автогенерация |
-| `area_id` | Long FK → areas.id | Каскадное удаление |
+| `area_id` | Long FK → areas.id | CASCADE |
 | `order_number` | String | Номер, например «27» |
 | `created_date` | Long | Timestamp |
 
-**UNIQUE** по паре `(area_id, order_number)`.
+**UNIQUE** по `(area_id, order_number)`.
 
 ### 3. `samples` — пробы
 
-| Поле | Тип | Что реально заполняется |
+| Поле | Тип | Что заполняется |
 |---|---|---|
 | `id` | Long PK | Автогенерация |
 | `order_id` | Long FK → orders.id | Всегда |
-| `serial_number` | Int | Порядковый номер в листе (1, 2, 3…) |
-| `sample_number` | String | Номер пробы из Excel, например «KPD109003101» |
-| `well_number` | String | Номер скважины или выработки |
-| `workings` | String? | **Всегда null** (задел на будущее) |
+| `serial_number` | Int | Порядковый № в листе (1, 2, 3…) |
+| `sample_number` | String | Номер пробы из Excel |
+| `well_number` | String | Номер скважины / выработки |
+| `workings` | String? | **Всегда null** (задел) |
 | `interval_from` | Double? | Число или null |
 | `interval_to` | Double? | Число или null |
-| `weight` | Double? | Основной вес, число или null |
-| `control_weight` | Double? | Вес весового контроля |
+| `weight` | Double? | Основной вес |
+| `control_weight` | Double? | Вес ВК |
 | `actual_weight` | Double? | **Всегда null** (задел) |
 | `sample_type` | String | `auger` / `channel` / `cobra` / `duplicate` |
 | `status` | String | `normal` / `blank` / `control` |
 | `reserved_type` | String? | **Всегда null** |
-| `material_desc` | String? | Характеристика материала или null |
-| `found` | Boolean | Всегда `false` при импорте |
-| `weight_control` | Boolean | Всегда `false` при импорте |
-| `postponed` | Boolean | Всегда `false` при импорте |
-| `has_note` | Boolean | Всегда `false` при импорте |
+| `material_desc` | String? | Характеристика |
+| `found` | Boolean | При импорте — `false` |
+| `weight_control` | Boolean | При импорте — `false` |
+| `postponed` | Boolean | При импорте — `false` |
+| `has_note` | Boolean | При импорте — `false` |
 
-**UNIQUE** по паре `(order_id, sample_number)`.
-Повторный импорт — дубликаты **игнорируются** (Room `OnConflictStrategy.IGNORE`).
+**UNIQUE** по `(order_id, sample_number)`. Повторный импорт — IGNORE.
 
 ### 4. `order_wells` — скважины наряда
 
 | Поле | Тип | Описание |
 |---|---|---|
-| `id` | Long PK | Автогенерация |
-| `order_id` | Long FK → orders.id | |
+| `id` | Long PK | |
+| `order_id` | Long FK → orders.id | CASCADE |
 | `well_number` | String | Уникальные номера скважин наряда |
 
-Заполняется автоматически при импорте: собираются все уникальные `well_number`
-из проб.
+Заполняется автоматически при импорте.
 
 ### 5. `sample_notes` — заметки
 
 | Поле | Тип | Описание |
 |---|---|---|
 | `id` | Long PK | |
-| `sample_id` | Long FK → samples.id | ON DELETE CASCADE |
-| `note_text` | String? | Текст заметки |
-| `image_path` | String? | Путь к фото (одно) |
+| `sample_id` | Long FK → samples.id | CASCADE |
+| `note_text` | String? | Текст |
+| `image_path` | String? | ⚠️ **Устарело.** Будет удалено в миграции 1 → 2 |
 | `created_date` | Long | |
 
-**Пока не заполняется** — задел под этап 5.5 (заметки и фото).
+**Пока не заполняется.** Готовится к 5.5.
 
 ---
 
-## Полный путь данных: Excel → БД
+## Путь данных: Excel → БД
 
 ### Шаг 1. Пользователь выбирает файл
-`AddScreen` → `rememberLauncherForActivityResult` → получает `Uri`.
+`AddScreen` → `OpenDocument` → `Uri`.
 
-### Шаг 2. Читаем метаданные
-`XlsxReader.readMetadata(openStream)` → список `SheetMeta(name, path, rowCount)`.
+### Шаг 2. Метаданные
+`XlsxReader.readMetadata(openStream)` → `List<SheetMeta>`.
 
-### Шаг 3. Определяем очередь
-Фильтруем листы с `rowCount >= 5`. Остальные пропускаем.
+### Шаг 3. Очередь
+Фильтр: `rowCount >= 5`. Остальные пропускаются.
 
 ### Шаг 4. Для каждого листа
 
-#### 4.1. Чтение
-`XlsxReader.readSheet(openStream, path, name)` → `SheetData(name, rows)`.
-`rows` — `List<List<String>>`.
-
-#### 4.2. Анализ шапки и колонок
-`ExcelAnalyzer.analyzeSheet(sheet, settings)` → `SheetAnalysis?`:
-- `headerRowIndex` — с какой строки шапка.
-- `headerRowCount` — 1, 2 или 3 строки шапки.
-- `mapping` — `Map<String, Int?>`: роль → индекс колонки.
-- Роли: `serial`, `well`, `sample`, `int_from`, `int_to`, `weight`,
-  `type`, `material`.
-
-#### 4.3. Сборка наряда
-`ExcelImporter.buildOrder(analysis, fileName, totalSheets, settings, fallback)`.
-
-**a) Фильтрация строк** через `SampleFilter.classify()`:
-- `KEEP` — оставляем.
-- `SKIP_BLANK` — бланк или стандартный образец без данных, пропускаем.
-- `SKIP_EMPTY` — пустая строка, пропускаем.
-
-**b) Для каждой оставленной строки** читаются: `well_number`,
-`sample_number`, `intervalFrom`, `intervalTo`, `weight`, `materialDesc`.
-Затем `SampleFilter.classifyTypeAndStatus()` → `(sampleType, status)`.
-
-**c) Определение типа пробы (`sample_type`):**
-
-Приоритеты:
-1. Слово-маркер из колонки `type`:
-    - «холост» / «blank» → `sampleType = "auger"`, `status = "blank"`.
-    - «борозд» / «канав» → `sampleType = "channel"`.
-    - «кобра» → `sampleType = "cobra"`.
-    - «шнек» → `sampleType = "auger"`.
-2. Если по тексту не сработало — по префиксу номера скважины:
-    - `KPD`, `KOP` → `auger`.
-    - `KBK`, `KMB` → `channel`.
-    - `ACD` → `cobra`.
-3. Иначе — `auger` по умолчанию.
-
-**d) Определение статуса (`status`):**
-- Если в тексте типа есть «холост» → `status = "blank"`.
-- Иначе → `status = "normal"`.
-
-**`status = "control"`** при импорте не выставляется. ВК отмечает пользователь
-**вручную** в экране сверки.
-
-**e) Определение участка:**
-`AreaResolver.resolve(wellsSet, settings) → String?` — берёт множество
-`wellNumber`, извлекает префиксы, сопоставляет с настройками `areaPrefixes`.
-Если `null` — пользователь вводит вручную.
-
-**f) Определение наряда:**
-`OrderNumberExtractor.extract(...) → String`:
-- AUTO: имя файла → имя листа → fallback.
-- Правило «последнее число»: `02-КОПТ00027` → `27`.
-
-#### 4.4. Предпросмотр
-Диалог: плашки предупреждений, участок, наряд, определённые колонки,
-первые 10 проб, кнопки «Пропустить», «Импортировать», «Авто для остальных».
-
-#### 4.5. Импорт в БД
-`doImportToDb(order, areaName, orderNumber, settings)`:
-1. Проверка конфликта с существующим нарядом → диалог
-   «Добавить / Пропустить / Заменить».
-2. `getAreaId` / `addArea` → `areaId`.
-3. `getOrderId` / `addOrder` → `orderId`.
-4. Для каждой `ParsedSample` — `SampleEntity` + `repo.addSample(entity)`.
-5. Множество уникальных `wellNumber` → `repo.addWell(orderId, w)`.
-
-**Ключевой момент:** если `sample_number` в рамках `order_id` уже существует —
-Room молча пропускает вставку (IGNORE).
+1. **Чтение** — `XlsxReader.readSheet` → `SheetData(name, rows)`.
+2. **Анализ** — `ExcelAnalyzer.analyzeSheet` → `SheetAnalysis?`:
+   `headerRowIndex`, `headerRowCount`, `mapping: Map<String, Int?>`.
+   Роли: `serial`, `well`, `sample`, `int_from`, `int_to`, `weight`,
+   `type`, `material`.
+3. **Сборка** — `ExcelImporter.buildOrder`:
+   - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
+   - Из каждой строки читаются поля.
+   - `SampleFilter.classifyTypeAndStatus` → `(sampleType, status)`.
+     Приоритет: текст типа → префикс скважины → `auger`.
+     `status = "control"` при импорте **не** ставится.
+   - `AreaResolver.resolve(wellsSet, settings)` → участок.
+   - `OrderNumberExtractor.extract(...)` → номер наряда.
+4. **Предпросмотр** — диалог (`ImportPreviewDialog`).
+5. **Запись** — `AddViewModel.doImportToDb`:
+   - Конфликт с существующим нарядом → диалог «Добавить / Пропустить / Заменить».
+   - `getAreaId` / `addArea`.
+   - `getOrderId` / `addOrder`.
+   - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
+     Дубликаты по `(order_id, sample_number)` игнорируются.
+   - Уникальные `wellNumber` → `order_wells`.
 
 ---
 
-## Значения полей в БД → UI
+## Коды полей → UI
 
 ### `sample_type`
 
-| Код в БД | Название в UI |
+| Код | UI |
 |---|---|
 | `auger` | Шнековая |
 | `channel` | Бороздовая |
@@ -180,108 +133,122 @@ Room молча пропускает вставку (IGNORE).
 
 ### `status`
 
-| Код в БД | Название в UI | Когда выставляется |
+| Код | UI | Когда |
 |---|---|---|
-| `normal` | Обычная | При импорте по умолчанию |
-| `blank` | Холостая | Если «холост» в типе или нет интервала/веса |
-| `control` | Весовой контроль | **Вручную** |
+| `normal` | Обычная | При импорте |
+| `blank` | Холостая | «Холост» в типе |
+| `control` | Весовой контроль | **Вручную** в сверке |
 
-### Гарантированно заполнено в `samples`
+---
 
-`order_id`, `serial_number`, `sample_number`, `well_number`, `sample_type`,
-`status`, `found = false`, `weight_control = false`, `postponed = false`,
-`has_note = false`.
+## Атомарные UPDATE в `SampleDao`
 
-### Может быть null
+Используются для одиночных действий на экране сверки (без чтения строки):
+setFound, setPostponed, setControlWeight, setWeight,
+setWeightControl, setStatus, setHasNote, setSampleType,
+setMaterialDesc, setSampleNumber, setWellNumber, setInterval,
+toggleFound, updateAll
 
-`interval_from`, `interval_to`, `weight`, `material_desc`.
-
-### Всегда null на текущем этапе
-
-`workings`, `control_weight`, `actual_weight`, `reserved_type`.
+## Методы `DatabaseRepository` для сверки
+setSampleStatus, setHasNote, setWeight, setWeightControl,
+saveRows (батч в транзакции),
+deleteSampleWithRenumber (удаление + пересчёт номеров в транзакции),
+deleteWellsForOrder, upsertNote, getNote
 
 ---
 
 ## Особенности
 
-1. **Дубликаты номеров проб** — UNIQUE по `(order_id, sample_number)`.
-   Повторный импорт с «Добавить» не создаст дубликатов.
-2. **Действие «Заменить»** удаляет все пробы наряда и его скважины,
-   затем заливает новые.
+1. **Дубликаты номеров** проб игнорируются (UNIQUE + IGNORE).
+2. **«Заменить»** при импорте — удаляет все пробы наряда и скважины,
+   заливает новые.
 3. **Скважины наряда** хранятся отдельно от проб.
-4. **Порядок сортировки проб** — по `serial_number`, а не по `sample_number`.
-5. **Один наряд = один участок.**
-6. **Одна проба = один наряд.**
+4. **Сортировка** — по `serial_number`, а не по `sample_number`.
+5. **Один наряд = один участок.** Одна проба = один наряд.
+6. **`has_note`** сейчас обновляется вручную (см. `ReconciliationViewModel`).
+   После 5.5 — синхронизируется в `DatabaseRepository`.
 
 ---
 
 ## Что НЕ хранится в БД
 
-- Информация о листе Excel, откуда пришла проба.
-- Номер строки в Excel.
-- Сырые заголовки колонок.
-- Дата отбора пробы.
-- Примечания из Excel.
-
-Если эти данные нужны — расширять `samples` миграцией.
+- Лист Excel, номер строки, сырые заголовки.
+- Дата отбора, примечания из Excel.
+- Настройки холостых и шага ВК по наряду (живут в `ReconciliationState`).
 
 ---
 
-## Как читать данные для «Сверки и поиска»
+## ⚠️ Миграция 1 → 2 (запланирована, заход 5.5.1)
 
-Примеры запросов (реализовано в `SampleDao`):
+**Причина:** добавить фото к пробам.
 
-- `getSamplesForOrder(orderId)` → Flow-список проб наряда.
-- `getSamplesForOrderList(orderId)` → suspend-список.
-- `getSampleById(sampleId)` → одна проба.
-- `getSamplesByWell(wellNumber)` → все пробы скважины.
-- `searchSamples(query)` → поиск по `sample_number` или `well_number`.
+### Изменения
 
-**Для отображения строки** берём:
-- `sampleNumber` → «№ пробы»
-- `wellNumber` → «Скважина / Выработка»
-- `intervalFrom`, `intervalTo` → «От / До» (если null — «—»)
-- `weight` → «Вес»
-- `controlWeight` → «(ВК)»
-- `sampleType` + `status` → человекочитаемый тип
-- `found` → галка
-- `postponed` → «Отложена»
-- `weightControl` → «ВК»
+**`SampleEntity`:** добавить `has_photo: Boolean = false`.
 
-**Статистика:** считается в UI (`calculateOverallStats`), SQL-запросы
-добавим позже, если появится необходимость.
+**`SampleNoteEntity`:** убрать `image_path`.
+Оставить `id`, `sample_id`, `note_text`, `created_date`.
 
----
+**Новая таблица `sample_images`:**
 
-## Расширения, добавленные на этапе 5.9 (Room)
 
-**В `SampleDao`:**
-- Атомарные UPDATE без чтения: `setWeight`, `setWeightControl`, `setStatus`,
-  `setHasNote`, `setSampleType`, `setMaterialDesc`, `setSampleNumber`,
-  `setWellNumber`, `setInterval`.
-- Батч-обновление: `updateAll(samples)`.
+CREATE TABLE IF NOT EXISTS sample_images (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    sample_id    INTEGER NOT NULL,
+    image_path   TEXT    NOT NULL,
+    created_date INTEGER NOT NULL,
+    FOREIGN KEY(sample_id) REFERENCES samples(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS index_sample_images_sample_id
+    ON sample_images(sample_id);
+SQL миграции
+ALTER TABLE samples ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0;
 
-**В `DatabaseRepository`:**
-- `setWeight`, `setWeightControl`, `setSampleStatus`, `setHasNote`.
-- `saveRows(rows)` — батч-обновление в одной транзакции.
-- `deleteSampleWithRenumber(sampleId, recalc)` — удаление с пересчётом
-  номеров в скважине (в одной транзакции).
-- `deleteWellsForOrder`, `upsertNote`.
+-- sample_notes: пересоздание безопаснее, чем DROP COLUMN
+CREATE TABLE sample_notes_new (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    sample_id    INTEGER NOT NULL,
+    note_text    TEXT,
+    created_date INTEGER NOT NULL,
+    FOREIGN KEY(sample_id) REFERENCES samples(id) ON DELETE CASCADE
+);
+INSERT INTO sample_notes_new (id, sample_id, note_text, created_date)
+    SELECT id, sample_id, note_text, created_date FROM sample_notes;
+DROP TABLE sample_notes;
+ALTER TABLE sample_notes_new RENAME TO sample_notes;
+CREATE INDEX IF NOT EXISTS index_sample_notes_sample_id
+    ON sample_notes(sample_id);
 
----
+CREATE TABLE IF NOT EXISTS sample_images (...);
+CREATE INDEX IF NOT EXISTS ...;
+Важно: файлы фото на диске
+FK CASCADE удалит строки sample_images, но не файлы в
+filesDir/sample_photos/. Нужно добавить явную очистку в:
 
-## Что планируется изменить (см. `NEXT_STEPS.md`)
+DatabaseRepository.deleteSample,
 
-**Этап 5.5 — заметки и фото:**
-- В `SampleEntity` добавить `has_photo: Boolean = false`.
-- В `SampleNoteEntity` убрать `image_path`.
-- Новая таблица `sample_images`:
-  `id, sample_id, image_path, created_date`.
-- Версия БД 1 → 2, миграция или `fallbackToDestructiveMigration`.
+DatabaseRepository.deleteSampleWithRenumber,
 
-**Открытые вопросы:**
-- Хранить ли настройки холостых в `OrderEntity` (сейчас они в памяти
-  `ReconciliationState`).
-- Добавить ли поле `number_in_well` вместо вычисления в UI.
-- Добавить ли флаг `is_import_error` вместо эвристики
-  «`sample_number == well_number`».
+DatabaseRepository.clearOrder.
+
+Перед удалением — собрать пути через getPhotosForSample, затем удалить
+файлы через PhotoStorage.delete(path).
+
+Как читать данные для сверки
+Примеры (реализовано в SampleDao):
+
+getSamplesForOrder(orderId) → Flow.
+
+getSamplesForOrderList(orderId) → suspend.
+
+getSampleById(sampleId).
+
+getSamplesByWell(wellNumber).
+
+searchSamples(query).
+
+Строка пробы: sampleNumber, wellNumber, intervalFrom/To,
+weight, controlWeight, sampleType + status, found, postponed,
+weightControl.
+
+Статистика: считается в UI (calculateOverallStats) — SQL пока не нужен.
