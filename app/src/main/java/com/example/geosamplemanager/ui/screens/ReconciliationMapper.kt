@@ -31,6 +31,9 @@ private fun statusFromDb(code: String?): SampleStatus =
  * numberInWell вычисляется из sampleNumber и wellNumber:
  * отбрасываем префикс, равный wellNumber, парсим остаток как Int.
  * Если распарсить не удалось — 0.
+ *
+ * hasPhoto берём из SampleEntity (денормализованный флаг),
+ * который синхронизируется в DatabaseRepository.
  */
 fun SampleEntity.toRow(groupId: String): SampleRow {
     val numberInWell = extractNumberInWell(sampleNumber, wellNumber)
@@ -51,7 +54,7 @@ fun SampleEntity.toRow(groupId: String): SampleRow {
         postponed = postponed,
         weightControl = weightControl,
         hasNote = hasNote,
-        hasPhoto = false, // TODO: когда появятся фото — брать из SampleNoteEntity
+        hasPhoto = hasPhoto,
         hasImportError = isImportError()
     )
 }
@@ -99,7 +102,8 @@ fun SampleEntity.applyRow(row: SampleRow): SampleEntity {
         found = row.found,
         postponed = row.postponed,
         weightControl = row.weightControl,
-        hasNote = row.hasNote
+        hasNote = row.hasNote,
+        hasPhoto = row.hasPhoto
     )
 }
 

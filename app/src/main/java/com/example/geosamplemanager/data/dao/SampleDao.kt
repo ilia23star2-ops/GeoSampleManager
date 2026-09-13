@@ -20,8 +20,39 @@ interface SampleDao {
     @Query("SELECT * FROM samples WHERE id = :sampleId LIMIT 1")
     suspend fun getSampleById(sampleId: Long): SampleEntity?
 
+    /**
+     * Пачка проб по списку id — одним запросом.
+     * Используется в saveRows, чтобы не делать N вызовов getSampleById.
+     */
+    @Query("SELECT * FROM samples WHERE id IN (:ids)")
+    suspend fun getSamplesByIds(ids: List<Long>): List<SampleEntity>
+
     @Query("SELECT * FROM samples WHERE well_number = :wellNumber ORDER BY serial_number")
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity>
+
+    /**
+     * Пробы всех перечисленных нарядов одним запросом.
+     */
+    @Query("SELECT * FROM samples WHERE order_id IN (:orderIds) ORDER BY order_id, serial_number")
+    suspend fun getSamplesForOrders(orderIds: List<Long>): List<SampleEntity>
+
+    /**
+     * Ищет наряды, в которых есть пробы, подходящие под query.
+     */
+    @Query(
+        """
+        SELECT DISTINCT order_id FROM samples 
+        WHERE well_number = :query
+           OR sample_number LIKE '%' || :query || '%'
+        """
+    )
+    suspend fun findOrderIdsByQuery(query: String): List<Long>
+
+    /**
+     * Список нарядов, в которых есть хотя бы одна проба.
+     */
+    @Query("SELECT DISTINCT order_id FROM samples")
+    suspend fun getOrderIdsWithSamples(): List<Long>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(sample: SampleEntity): Long
@@ -29,9 +60,6 @@ interface SampleDao {
     @Update
     suspend fun update(sample: SampleEntity)
 
-    /**
-     * Батч-обновление. Все UPDATE — в одной транзакции Room.
-     */
     @Update
     suspend fun updateAll(samples: List<SampleEntity>)
 
@@ -68,6 +96,9 @@ interface SampleDao {
 
     @Query("UPDATE samples SET has_note = :hasNote WHERE id = :sampleId")
     suspend fun setHasNote(sampleId: Long, hasNote: Boolean)
+
+    @Query("UPDATE samples SET has_photo = :hasPhoto WHERE id = :sampleId")
+    suspend fun setHasPhoto(sampleId: Long, hasPhoto: Boolean)
 
     @Query("UPDATE samples SET sample_type = :type WHERE id = :sampleId")
     suspend fun setSampleType(sampleId: Long, type: String)

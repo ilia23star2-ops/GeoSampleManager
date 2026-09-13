@@ -69,5 +69,13 @@ data class SampleEntity(
     val postponed: Boolean = false,
 
     @ColumnInfo(name = "has_note")
-    val hasNote: Boolean = false
+    val hasNote: Boolean = false,
+
+    /**
+     * Флаг «есть хотя бы одно фото».
+     * Денормализация — чтобы список проб не джойнить sample_images.
+     * Синхронизируется в DatabaseRepository.
+     */
+    @ColumnInfo(name = "has_photo")
+    val hasPhoto: Boolean = false
 )

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Описание путей, которые FileProvider разрешает отдавать наружу
+    (например, системной камере при TakePicture).
+
+    files-path = context.filesDir
+    name="sample_photos" — символическое имя, используется только внутри.
+    path="sample_photos/" — конкретная подпапка.
+-->
+<paths>
+    <files-path name="sample_photos" path="sample_photos/" />
+</paths>

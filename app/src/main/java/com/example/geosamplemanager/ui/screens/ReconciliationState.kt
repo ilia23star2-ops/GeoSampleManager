@@ -29,10 +29,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     var globalWeightControlStep by mutableStateOf(5)
     private val _weightControlStepByOrder = mutableStateMapOf<String, Int>()
 
-    /**
-     * Состояние раскрытия групп. По умолчанию — раскрыты.
-     * Хранится в state, чтобы плоский LazyColumn знал, что показывать.
-     */
     private val _expandedGroups = mutableStateMapOf<String, Boolean>()
 
     private val undoStack = mutableStateListOf<UndoAction>()
@@ -43,6 +39,13 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val undoCount: Int get() = undoStack.size
     val redoCount: Int get() = redoStack.size
 
+    /**
+     * Справочник всех нарядов для селектора.
+     * Устанавливается из ViewModel — независимо от того, какие группы
+     * сейчас загружены.
+     */
+    var allOrderTitles: List<OrderInfo> by mutableStateOf(emptyList())
+
     // ================================================================
     // Производные
     // ================================================================
@@ -50,7 +53,14 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val hasSelection: Boolean get() = selectedArea != null || selectedOrder != null
 
     val availableAreas: List<String>
-        get() = groups.map { it.areaTitle }.distinct().sorted()
+        get() = allOrderTitles.map { it.areaTitle }.distinct().sorted()
+
+    val availableOrders: List<String>
+        get() = allOrderTitles
+            .filter { selectedArea == null || it.areaTitle == selectedArea }
+            .map { it.orderTitle }
+            .distinct()
+            .sorted()
 
     val visibleGroups: List<SampleGroup>
         get() {
@@ -81,9 +91,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val matchInfo: MatchInfo
         get() = analyzeMatch(query, selectedArea, selectedOrder, groups)
 
-    val availableOrders: List<String>
-        get() = ordersWithSamples(selectedArea, groups)
-
     val currentBlankWeight: BlankWeightSettings
         get() {
             val order = selectedOrder ?: return globalBlankWeight
@@ -108,9 +115,25 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         _expandedGroups.clear()
     }
 
-    /**
-     * Быстрый поиск строки по id — без flatMap на каждом вызове.
-     */
+    // ================================================================
+    // Ленивая загрузка: методы для добавления/проверки групп
+    // ================================================================
+
+    fun addGroup(group: SampleGroup) {
+        if (_groups.none { it.id == group.id }) {
+            _groups.add(group)
+        }
+    }
+
+    fun hasGroup(groupId: String): Boolean = _groups.any { it.id == groupId }
+
+    fun clearGroups() {
+        _groups.clear()
+        undoStack.clear()
+        redoStack.clear()
+        _expandedGroups.clear()
+    }
+
     fun rowById(rowId: String): SampleRow? {
         var i = 0
         while (i < _groups.size) {
@@ -123,6 +146,13 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             i++
         }
         return null
+    }
+
+    fun updateRowFlags(rowId: String, hasNote: Boolean, hasPhoto: Boolean) {
+        val (gi, ri) = findRow(rowId) ?: return
+        val row = _groups[gi].rows[ri]
+        if (row.hasNote == hasNote && row.hasPhoto == hasPhoto) return
+        replaceRow(gi, ri, row.copy(hasNote = hasNote, hasPhoto = hasPhoto))
     }
 
     // ================================================================
@@ -646,6 +676,17 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         replaceRow(gi, ri, _groups[gi].rows[ri].copy(weightControl = value))
     }
 }
+
+// ====================================================================
+// Справочник наряда (для селектора)
+// ====================================================================
+
+data class OrderInfo(
+    val areaId: Long,
+    val orderId: Long,
+    val areaTitle: String,
+    val orderTitle: String
+)
 
 // ====================================================================
 // Фейковые данные (не используются после подключения Room)

@@ -6,7 +6,9 @@ import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
@@ -20,6 +22,7 @@ class DatabaseRepository(context: Context) {
     private val sampleDao = db.sampleDao()
     private val orderWellDao = db.orderWellDao()
     private val sampleNoteDao = db.sampleNoteDao()
+    private val sampleImageDao = db.sampleImageDao()
 
     // ============ УЧАСТКИ ============
 
@@ -49,6 +52,12 @@ class DatabaseRepository(context: Context) {
         sampleDao.getSamplesForOrder(orderId)
     suspend fun getSamplesForOrderList(orderId: Long): List<SampleEntity> =
         sampleDao.getSamplesForOrderList(orderId)
+
+    /** Пробы всех нарядов одним запросом. */
+    suspend fun getSamplesForOrders(orderIds: List<Long>): List<SampleEntity> =
+        if (orderIds.isEmpty()) emptyList()
+        else sampleDao.getSamplesForOrders(orderIds)
+
     suspend fun getSampleById(sampleId: Long): SampleEntity? =
         sampleDao.getSampleById(sampleId)
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity> =
@@ -68,6 +77,14 @@ class DatabaseRepository(context: Context) {
         sampleDao.setWeightControl(sampleId, flag)
     suspend fun searchSamples(query: String?): List<SampleEntity> =
         sampleDao.searchSamples(query)
+
+    /** Список order_id, где есть пробы, подходящие под query. */
+    suspend fun findOrderIdsByQuery(query: String): List<Long> =
+        sampleDao.findOrderIdsByQuery(query)
+
+    /** Список order_id, в которых есть хотя бы одна проба. */
+    suspend fun getOrderIdsWithSamples(): List<Long> =
+        sampleDao.getOrderIdsWithSamples()
 
     // ============ СТАТИСТИКА ============
 
@@ -92,9 +109,64 @@ class DatabaseRepository(context: Context) {
 
     // ============ ЗАМЕТКИ ============
 
-    suspend fun getNote(sampleId: Long) = sampleNoteDao.getNote(sampleId)
+    suspend fun getNote(sampleId: Long): SampleNoteEntity? = sampleNoteDao.getNote(sampleId)
     suspend fun upsertNote(note: SampleNoteEntity): Long = sampleNoteDao.insert(note)
     suspend fun deleteNote(sampleId: Long) = sampleNoteDao.deleteBySampleId(sampleId)
+
+    // ============ ФОТО ============
+
+    suspend fun getPhotosForSample(sampleId: Long): List<SampleImageEntity> =
+        sampleImageDao.getPhotosForSample(sampleId)
+
+    suspend fun getImagePathsForSample(sampleId: Long): List<String> =
+        sampleImageDao.getImagePathsForSample(sampleId)
+
+    suspend fun addPhoto(sampleId: Long, imagePath: String): Long {
+        val id = sampleImageDao.insert(
+            SampleImageEntity(sampleId = sampleId, imagePath = imagePath)
+        )
+        syncHasPhoto(sampleId)
+        return id
+    }
+
+    suspend fun deletePhoto(imageId: Long, sampleId: Long): Boolean {
+        val photo = sampleImageDao.getPhotosForSample(sampleId)
+            .firstOrNull { it.id == imageId } ?: return false
+        sampleImageDao.deleteById(imageId)
+        PhotoStorage.delete(photo.imagePath)
+        syncHasPhoto(sampleId)
+        return true
+    }
+
+    suspend fun getNoteWithPhotos(
+        sampleId: Long
+    ): Pair<SampleNoteEntity?, List<SampleImageEntity>> {
+        val note = sampleNoteDao.getNote(sampleId)
+        val photos = sampleImageDao.getPhotosForSample(sampleId)
+        return note to photos
+    }
+
+    suspend fun syncHasNoteAndPhoto(sampleId: Long) {
+        val note = sampleNoteDao.getNote(sampleId)
+        val hasText = !note?.noteText.isNullOrBlank()
+        val photosCount = sampleImageDao.countForSample(sampleId)
+        val sample = sampleDao.getSampleById(sampleId) ?: return
+        sampleDao.update(
+            sample.copy(
+                hasNote = hasText,
+                hasPhoto = photosCount > 0
+            )
+        )
+    }
+
+    private suspend fun syncHasPhoto(sampleId: Long) {
+        val photosCount = sampleImageDao.countForSample(sampleId)
+        val sample = sampleDao.getSampleById(sampleId) ?: return
+        sampleDao.update(sample.copy(hasPhoto = photosCount > 0))
+    }
+
+    private suspend fun collectImagePathsForOrder(orderId: Long): List<String> =
+        sampleImageDao.getImagePathsForOrder(orderId)
 
     // ============ ФАЙЛ БД ============
 
@@ -103,8 +175,10 @@ class DatabaseRepository(context: Context) {
     // ============ ОЧИСТКА НАРЯДА ============
 
     suspend fun clearOrder(orderId: Long) {
+        val imagePaths = collectImagePathsForOrder(orderId)
         sampleDao.deleteAllForOrder(orderId)
         orderWellDao.deleteAllForOrder(orderId)
+        PhotoStorage.deleteAll(imagePaths)
     }
 
     suspend fun getExistingOrderStats(areaName: String, orderNumber: String): OrderStats? {
@@ -114,35 +188,42 @@ class DatabaseRepository(context: Context) {
     }
 
     // ================================================================
-    // ДЛЯ ЭКРАНА СВЕРКИ — атомарные UPDATE без чтения
+    // ДЛЯ ЭКРАНА СВЕРКИ
     // ================================================================
 
-    /**
-     * Устанавливает статус пробы (normal / blank / control).
-     */
     suspend fun setSampleStatus(sampleId: Long, status: String) {
         sampleDao.setStatus(sampleId, status)
     }
 
-    /**
-     * Устанавливает флаг hasNote.
-     */
     suspend fun setHasNote(sampleId: Long, hasNote: Boolean) {
         sampleDao.setHasNote(sampleId, hasNote)
     }
 
     /**
-     * Сохраняет пачку строк одной транзакцией через батч-Update.
-     * Используется для undo/redo и массовых операций.
+     * Сохраняет пачку строк одной транзакцией.
      *
-     * ВАЖНО: перед вызовом строки уже должны существовать в БД.
+     * Оптимизация 5.9.1: вместо N вызовов getSampleById в цикле —
+     * один батч-запрос getSamplesForOrders по списку order_id.
+     * Это устраняет N+1 при сохранении больших групп.
      */
     suspend fun saveRows(rows: List<SampleRow>) {
         if (rows.isEmpty()) return
+
+        // Собираем id и сразу парсим
+        val ids = rows.mapNotNull { it.id.toLongOrNull() }
+        if (ids.isEmpty()) return
+
         db.withTransaction {
+            // 1. Определяем уникальные order_id (через уже загруженные строки)
+            //    Но у нас есть только rows, без order_id.
+            //    Поэтому читаем все нужные пробы одним запросом по id.
+            //    Room не умеет IN по миллиону — но обычно это десятки/сотни.
+            val existingSamples = sampleDao.getSamplesByIds(ids)
+            val byId = existingSamples.associateBy { it.id }
+
             val entities = rows.mapNotNull { row ->
                 val id = row.id.toLongOrNull() ?: return@mapNotNull null
-                val s = sampleDao.getSampleById(id) ?: return@mapNotNull null
+                val s = byId[id] ?: return@mapNotNull null
                 s.copy(
                     sampleNumber = row.sampleNumber,
                     wellNumber = row.wellNumber,
@@ -156,7 +237,8 @@ class DatabaseRepository(context: Context) {
                     found = row.found,
                     postponed = row.postponed,
                     weightControl = row.weightControl,
-                    hasNote = row.hasNote
+                    hasNote = row.hasNote,
+                    hasPhoto = row.hasPhoto
                 )
             }
             if (entities.isNotEmpty()) {
@@ -166,12 +248,12 @@ class DatabaseRepository(context: Context) {
     }
 
     /**
-     * Удаление пробы с опциональным пересчётом sample_number и serial_number
-     * у всех последующих в этой же скважине (в этом же наряде).
-     *
-     * Вся работа — в одной транзакции.
+     * Удаление пробы с опциональным пересчётом.
+     * Файлы фото удаляются после транзакции.
      */
     suspend fun deleteSampleWithRenumber(sampleId: Long, recalc: Boolean) {
+        val imagePaths = getImagePathsForSample(sampleId)
+
         db.withTransaction {
             val target = sampleDao.getSampleById(sampleId) ?: return@withTransaction
 
@@ -202,6 +284,8 @@ class DatabaseRepository(context: Context) {
                 )
             }
         }
+
+        PhotoStorage.deleteAll(imagePaths)
     }
 
     private fun detectSuffixLength(sampleNumber: String, wellNumber: String): Int {

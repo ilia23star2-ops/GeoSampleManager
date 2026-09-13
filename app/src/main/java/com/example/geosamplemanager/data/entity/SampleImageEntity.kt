@@ -7,13 +7,14 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * Текстовая заметка к пробе.
+ * Фото пробы.
  *
- * Одна проба — одна заметка (UNIQUE по sample_id фактически через REPLACE).
- * Фото хранятся отдельно, в таблице sample_images.
+ * Одна проба — много фото (0..N).
+ * Заметка (SampleNoteEntity) и фото независимы.
+ * Файл фото лежит в filesDir/sample_photos/, здесь — только путь.
  */
 @Entity(
-    tableName = "sample_notes",
+    tableName = "sample_images",
     foreignKeys = [
         ForeignKey(
             entity = SampleEntity::class,
@@ -24,15 +25,15 @@ import androidx.room.PrimaryKey
     ],
     indices = [Index(value = ["sample_id"])]
 )
-data class SampleNoteEntity(
+data class SampleImageEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
 
     @ColumnInfo(name = "sample_id")
     val sampleId: Long,
 
-    @ColumnInfo(name = "note_text")
-    val noteText: String? = null,
+    @ColumnInfo(name = "image_path")
+    val imagePath: String,
 
     @ColumnInfo(name = "created_date")
     val createdDate: Long = System.currentTimeMillis()

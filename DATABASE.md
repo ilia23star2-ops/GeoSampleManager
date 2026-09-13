@@ -1,17 +1,14 @@
 # База данных GeoSample Manager
 
-> Room (SQLite). Здесь — схема, как данные попадают в БД, что может быть
-> `null`, и на что обращать внимание.
+> Room (SQLite). Схема, путь данных, что может быть `null`.
 >
-> **Текущая версия БД: 1.**
-> **Запланированная миграция 1 → 2** описана в конце файла и в `NEXT_STEPS.md`
-> (заход 5.5.1).
+> **Текущая версия БД: 2.**
 
 ---
 
-## Схема БД (version = 1)
+## Схема БД (version = 2)
 
-5 таблиц. Все связи — через `ForeignKey` с `ON DELETE CASCADE`.
+6 таблиц. Связи — `ForeignKey` с `ON DELETE CASCADE`.
 `exportSchema = false`.
 
 ### 1. `areas` — участки
@@ -19,8 +16,8 @@
 | Поле | Тип | Описание |
 |---|---|---|
 | `id` | Long PK | Автогенерация |
-| `area_name` | String | Название («Коптеловский» и т.п.) |
-| `created_date` | Long | Timestamp создания |
+| `area_name` | String | Название |
+| `created_date` | Long | Timestamp |
 
 ### 2. `orders` — наряды
 
@@ -28,7 +25,7 @@
 |---|---|---|
 | `id` | Long PK | Автогенерация |
 | `area_id` | Long FK → areas.id | CASCADE |
-| `order_number` | String | Номер, например «27» |
+| `order_number` | String | Номер |
 | `created_date` | Long | Timestamp |
 
 **UNIQUE** по `(area_id, order_number)`.
@@ -39,8 +36,8 @@
 |---|---|---|
 | `id` | Long PK | Автогенерация |
 | `order_id` | Long FK → orders.id | Всегда |
-| `serial_number` | Int | Порядковый № в листе (1, 2, 3…) |
-| `sample_number` | String | Номер пробы из Excel |
+| `serial_number` | Int | Порядковый № в листе |
+| `sample_number` | String | Номер пробы |
 | `well_number` | String | Номер скважины / выработки |
 | `workings` | String? | **Всегда null** (задел) |
 | `interval_from` | Double? | Число или null |
@@ -56,16 +53,17 @@
 | `weight_control` | Boolean | При импорте — `false` |
 | `postponed` | Boolean | При импорте — `false` |
 | `has_note` | Boolean | При импорте — `false` |
+| `has_photo` | Boolean | **Новое в v2.** При импорте — `false` |
 
 **UNIQUE** по `(order_id, sample_number)`. Повторный импорт — IGNORE.
 
 ### 4. `order_wells` — скважины наряда
 
-| Поле | Тип | Описание |
-|---|---|---|
-| `id` | Long PK | |
-| `order_id` | Long FK → orders.id | CASCADE |
-| `well_number` | String | Уникальные номера скважин наряда |
+| Поле | Тип |
+|---|---|
+| `id` | Long PK |
+| `order_id` | Long FK → orders.id (CASCADE) |
+| `well_number` | String |
 
 Заполняется автоматически при импорте.
 
@@ -76,10 +74,25 @@
 | `id` | Long PK | |
 | `sample_id` | Long FK → samples.id | CASCADE |
 | `note_text` | String? | Текст |
-| `image_path` | String? | ⚠️ **Устарело.** Будет удалено в миграции 1 → 2 |
 | `created_date` | Long | |
 
-**Пока не заполняется.** Готовится к 5.5.
+**Одна заметка на пробу.** Фото хранятся отдельно.
+
+⚠️ **В v1 было поле `image_path`** — в v2 удалено (миграция пересоздала
+таблицу).
+
+### 6. `sample_images` — фото пробы (**новая в v2**)
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `id` | Long PK | |
+| `sample_id` | Long FK → samples.id | CASCADE |
+| `image_path` | String | Абсолютный путь в `filesDir/sample_photos/` |
+| `created_date` | Long | Timestamp |
+
+**Индекс** по `sample_id`.
+
+Одна проба — 0..N фото. Заметка и фото независимы.
 
 ---
 
@@ -92,38 +105,53 @@
 `XlsxReader.readMetadata(openStream)` → `List<SheetMeta>`.
 
 ### Шаг 3. Очередь
-Фильтр: `rowCount >= 5`. Остальные пропускаются.
+Фильтр: `rowCount >= 5`.
 
 ### Шаг 4. Для каждого листа
-
-1. **Чтение** — `XlsxReader.readSheet` → `SheetData(name, rows)`.
-2. **Анализ** — `ExcelAnalyzer.analyzeSheet` → `SheetAnalysis?`:
-   `headerRowIndex`, `headerRowCount`, `mapping: Map<String, Int?>`.
-   Роли: `serial`, `well`, `sample`, `int_from`, `int_to`, `weight`,
-   `type`, `material`.
+1. **Чтение** — `XlsxReader.readSheet` → `SheetData`.
+2. **Анализ** — `ExcelAnalyzer.analyzeSheet` → `SheetAnalysis?`.
 3. **Сборка** — `ExcelImporter.buildOrder`:
-   - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
-   - Из каждой строки читаются поля.
-   - `SampleFilter.classifyTypeAndStatus` → `(sampleType, status)`.
-     Приоритет: текст типа → префикс скважины → `auger`.
-     `status = "control"` при импорте **не** ставится.
-   - `AreaResolver.resolve(wellsSet, settings)` → участок.
-   - `OrderNumberExtractor.extract(...)` → номер наряда.
-4. **Предпросмотр** — диалог (`ImportPreviewDialog`).
+    - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
+    - `SampleFilter.classifyTypeAndStatus` → `(sampleType, status)`.
+    - `AreaResolver.resolve` → участок.
+    - `OrderNumberExtractor.extract` → номер наряда.
+4. **Предпросмотр** — диалог.
 5. **Запись** — `AddViewModel.doImportToDb`:
-   - Конфликт с существующим нарядом → диалог «Добавить / Пропустить / Заменить».
-   - `getAreaId` / `addArea`.
-   - `getOrderId` / `addOrder`.
-   - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
-     Дубликаты по `(order_id, sample_number)` игнорируются.
-   - Уникальные `wellNumber` → `order_wells`.
+    - Конфликт → диалог «Добавить / Пропустить / Заменить».
+    - `getAreaId` / `addArea`, `getOrderId` / `addOrder`.
+    - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
+    - Уникальные `wellNumber` → `order_wells`.
+
+---
+
+## Путь данных: заметки и фото (v2)
+
+### Заметка
+1. Пользователь открывает `NotePhotoDialog` из строки пробы.
+2. `ReconciliationViewModel.loadNoteWithPhotos(sampleId)` → `(Note, [Photos])`.
+3. Ввод текста → «Сохранить» → `saveNoteText(sampleId, text)`:
+    - пустой текст → `repo.deleteNote(sampleId)`;
+    - иначе → `repo.upsertNote(note)`;
+    - потом `repo.syncHasNoteAndPhoto(sampleId)`.
+
+### Фото
+1. «Сделать фото» → `TakePicture` → временный файл в `filesDir/sample_photos/`.
+2. «Из галереи» → `PickVisualMedia` → `Uri`.
+3. `PhotoStorage.compressAndSave` / `compressAndSaveFromFile`:
+    - декодирование, скейл до 1024 px, JPEG 80%, сохранение под финальным
+      именем в `filesDir/sample_photos/`.
+4. `repo.addPhoto(sampleId, path)` — запись в `sample_images`,
+   обновление `has_photo`.
+5. Удаление: `repo.deletePhoto(imageId, sampleId)`:
+    - удаление записи из БД,
+    - удаление файла с диска,
+    - пересчёт `has_photo`.
 
 ---
 
 ## Коды полей → UI
 
 ### `sample_type`
-
 | Код | UI |
 |---|---|
 | `auger` | Шнековая |
@@ -132,41 +160,45 @@
 | `duplicate` | Дубликат |
 
 ### `status`
-
 | Код | UI | Когда |
 |---|---|---|
 | `normal` | Обычная | При импорте |
 | `blank` | Холостая | «Холост» в типе |
-| `control` | Весовой контроль | **Вручную** в сверке |
+| `control` | Весовой контроль | **Вручную** |
 
 ---
 
 ## Атомарные UPDATE в `SampleDao`
 
-Используются для одиночных действий на экране сверки (без чтения строки):
-setFound, setPostponed, setControlWeight, setWeight,
-setWeightControl, setStatus, setHasNote, setSampleType,
-setMaterialDesc, setSampleNumber, setWellNumber, setInterval,
-toggleFound, updateAll
+`setFound`, `setPostponed`, `setControlWeight`, `setWeight`,
+`setWeightControl`, `setStatus`, `setHasNote`, `setSampleType`,
+`setMaterialDesc`, `setSampleNumber`, `setWellNumber`, `setInterval`,
+`toggleFound`, `updateAll`.
 
-## Методы `DatabaseRepository` для сверки
-setSampleStatus, setHasNote, setWeight, setWeightControl,
-saveRows (батч в транзакции),
-deleteSampleWithRenumber (удаление + пересчёт номеров в транзакции),
-deleteWellsForOrder, upsertNote, getNote
+## Методы `DatabaseRepository`
+
+**Сверка:**
+`setSampleStatus`, `setHasNote`, `setWeight`, `setWeightControl`,
+`saveRows`, `deleteSampleWithRenumber`, `deleteWellsForOrder`,
+`upsertNote`, `getNote`.
+
+**Заметки и фото (v2):**
+`getPhotosForSample`, `getImagePathsForSample`, `addPhoto`, `deletePhoto`,
+`getNoteWithPhotos`, `syncHasNoteAndPhoto`.
 
 ---
 
 ## Особенности
 
-1. **Дубликаты номеров** проб игнорируются (UNIQUE + IGNORE).
-2. **«Заменить»** при импорте — удаляет все пробы наряда и скважины,
-   заливает новые.
+1. **Дубликаты номеров** проб игнорируются.
+2. **«Заменить»** при импорте — удаляет все пробы наряда и скважины.
 3. **Скважины наряда** хранятся отдельно от проб.
-4. **Сортировка** — по `serial_number`, а не по `sample_number`.
-5. **Один наряд = один участок.** Одна проба = один наряд.
-6. **`has_note`** сейчас обновляется вручную (см. `ReconciliationViewModel`).
-   После 5.5 — синхронизируется в `DatabaseRepository`.
+4. **Сортировка** — по `serial_number`.
+5. **Один наряд = один участок.**
+6. **Файлы фото** лежат в `filesDir/sample_photos/`, БД хранит только путь.
+7. **FK CASCADE чистит только БД.** Файлы фото удаляются вручную в
+   `DatabaseRepository` (`clearOrder`, `deleteSampleWithRenumber`,
+   `deletePhoto`).
 
 ---
 
@@ -178,77 +210,24 @@ deleteWellsForOrder, upsertNote, getNote
 
 ---
 
-## ⚠️ Миграция 1 → 2 (запланирована, заход 5.5.1)
+## История миграций
 
-**Причина:** добавить фото к пробам.
+### v1 → v2 (этап 5.5.1, закрыт)
 
-### Изменения
+**Причина:** заметки и фото.
 
-**`SampleEntity`:** добавить `has_photo: Boolean = false`.
+**Изменения:**
+1. `samples`: `ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0`.
+2. `sample_notes`: пересоздана без `image_path`.
+3. Создана `sample_images` + индекс по `sample_id`.
 
-**`SampleNoteEntity`:** убрать `image_path`.
-Оставить `id`, `sample_id`, `note_text`, `created_date`.
+**Где:**
+`AppDatabase.kt` → `MIGRATION_1_2`, подключена через
+`.addMigrations(MIGRATION_1_2)`.
 
-**Новая таблица `sample_images`:**
+### Будущие миграции (запланированы)
 
-
-CREATE TABLE IF NOT EXISTS sample_images (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-    sample_id    INTEGER NOT NULL,
-    image_path   TEXT    NOT NULL,
-    created_date INTEGER NOT NULL,
-    FOREIGN KEY(sample_id) REFERENCES samples(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS index_sample_images_sample_id
-    ON sample_images(sample_id);
-SQL миграции
-ALTER TABLE samples ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0;
-
--- sample_notes: пересоздание безопаснее, чем DROP COLUMN
-CREATE TABLE sample_notes_new (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-    sample_id    INTEGER NOT NULL,
-    note_text    TEXT,
-    created_date INTEGER NOT NULL,
-    FOREIGN KEY(sample_id) REFERENCES samples(id) ON DELETE CASCADE
-);
-INSERT INTO sample_notes_new (id, sample_id, note_text, created_date)
-    SELECT id, sample_id, note_text, created_date FROM sample_notes;
-DROP TABLE sample_notes;
-ALTER TABLE sample_notes_new RENAME TO sample_notes;
-CREATE INDEX IF NOT EXISTS index_sample_notes_sample_id
-    ON sample_notes(sample_id);
-
-CREATE TABLE IF NOT EXISTS sample_images (...);
-CREATE INDEX IF NOT EXISTS ...;
-Важно: файлы фото на диске
-FK CASCADE удалит строки sample_images, но не файлы в
-filesDir/sample_photos/. Нужно добавить явную очистку в:
-
-DatabaseRepository.deleteSample,
-
-DatabaseRepository.deleteSampleWithRenumber,
-
-DatabaseRepository.clearOrder.
-
-Перед удалением — собрать пути через getPhotosForSample, затем удалить
-файлы через PhotoStorage.delete(path).
-
-Как читать данные для сверки
-Примеры (реализовано в SampleDao):
-
-getSamplesForOrder(orderId) → Flow.
-
-getSamplesForOrderList(orderId) → suspend.
-
-getSampleById(sampleId).
-
-getSamplesByWell(wellNumber).
-
-searchSamples(query).
-
-Строка пробы: sampleNumber, wellNumber, intervalFrom/To,
-weight, controlWeight, sampleType + status, found, postponed,
-weightControl.
-
-Статистика: считается в UI (calculateOverallStats) — SQL пока не нужен.
+- `number_in_well` в `samples` — ТД-3.
+- `is_import_error` в `samples` — ТД-4.
+- Настройки холостых в `OrderEntity` — ТД-5.
+- Шаг ВК в `OrderEntity` — ТД-6.

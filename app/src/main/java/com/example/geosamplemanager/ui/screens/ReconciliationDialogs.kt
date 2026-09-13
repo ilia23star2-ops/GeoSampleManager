@@ -1,20 +1,35 @@
 package com.example.geosamplemanager.ui.screens
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.geosamplemanager.data.entity.SampleImageEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Все диалоги экрана «Сверка и поиск».
@@ -93,50 +108,252 @@ fun CharacteristicDialog(
 }
 
 // ====================================================================
-// Заметка
+// ЗАМЕТКА И ФОТО (этап 5.5.2)
 // ====================================================================
 
+/**
+ * Диалог заметки и фото.
+ *
+ * Важное поведение:
+ *  • Фото добавляются/удаляются сразу (не по кнопке «Сохранить»).
+ *  • Текст заметки — по кнопке «Сохранить».
+ *  • Если текст был изменён и пользователь пытается закрыть диалог
+ *    (тап мимо / крестик / «Закрыть») — спрашиваем подтверждение.
+ */
 @Composable
-fun NoteDialog(
+fun NotePhotoDialog(
     sampleNumber: String,
     initialText: String,
-    onSave: (String) -> Unit,
+    photos: List<SampleImageEntity>,
+    onSaveText: (String) -> Unit,
+    onTakePhoto: () -> Unit,
+    onPickFromGallery: () -> Unit,
+    onDeletePhoto: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var text by remember { mutableStateOf(initialText) }
+    var text by remember(initialText) { mutableStateOf(initialText) }
+    var photoToDelete by remember { mutableStateOf<SampleImageEntity?>(null) }
+    var showCloseConfirm by remember { mutableStateOf(false) }
+
+    val textChanged = text != initialText
+
+    // Функция «закрыть» — с проверкой на изменения
+    fun tryClose() {
+        if (textChanged) {
+            showCloseConfirm = true
+        } else {
+            onDismiss()
+        }
+    }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Заметка к пробе") },
-        text = {
+        onDismissRequest = { tryClose() },
+        title = {
             Column {
+                Text("Заметка и фото")
                 Text(
                     "Проба $sampleNumber",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(8.dp))
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it },
                     label = { Text("Текст заметки") },
                     modifier = Modifier.fillMaxWidth().height(140.dp),
-                    maxLines = 6
+                    maxLines = 8
                 )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.PhotoCamera, null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Прикрепить фото — в разработке",
+                if (textChanged) {
+                    Text(
+                        "Есть несохранённый текст",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+
+                HorizontalDivider()
+
+                Text(
+                    "Фото (${photos.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                if (photos.isEmpty()) {
+                    Text(
+                        "Пока нет фото. Сделайте снимок или выберите из галереи.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(photos, key = { it.id }) { photo ->
+                            PhotoThumbnail(
+                                path = photo.imagePath,
+                                onDelete = { photoToDelete = photo }
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onTakePhoto,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Filled.PhotoCamera, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Сделать фото")
+                    }
+                    OutlinedButton(
+                        onClick = onPickFromGallery,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Filled.PhotoLibrary, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Из галереи")
+                    }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Сохранить") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+        confirmButton = {
+            TextButton(onClick = { onSaveText(text) }) { Text("Сохранить") }
+        },
+        dismissButton = {
+            TextButton(onClick = { tryClose() }) { Text("Закрыть") }
+        }
     )
+
+    // ==== Подтверждение удаления фото ====
+    photoToDelete?.let { photo ->
+        AlertDialog(
+            onDismissRequest = { photoToDelete = null },
+            title = { Text("Удалить фото?") },
+            text = { Text("Фото будет удалено без возможности восстановления.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeletePhoto(photo.id)
+                        photoToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Удалить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { photoToDelete = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    // ==== Подтверждение закрытия без сохранения ====
+    if (showCloseConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCloseConfirm = false },
+            title = { Text("Закрыть без сохранения?") },
+            text = { Text("Текст заметки изменён, но не сохранён. Всё равно закрыть?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCloseConfirm = false
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Закрыть без сохранения") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCloseConfirm = false }) {
+                    Text("Продолжить редактирование")
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Миниатюра фото с крестиком для удаления.
+ *
+ * Bitmap декодируется в фоне (Dispatchers.IO), чтобы не вешать UI
+ * на больших файлах и на списке из нескольких фото.
+ */
+@Composable
+private fun PhotoThumbnail(
+    path: String,
+    onDelete: () -> Unit
+) {
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, path) {
+        value = withContext(Dispatchers.IO) {
+            try {
+                val f = File(path)
+                if (!f.exists()) null
+                else BitmapFactory.decodeFile(path)?.asImageBitmap()
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(120.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        val bmp = bitmap
+        if (bmp != null) {
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Пока идёт декодирование или файл битый — заглушка
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.dp
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(4.dp)
+                .size(26.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.error)
+                .clickable { onDelete() },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Удалить фото",
+                tint = MaterialTheme.colorScheme.onError,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
 }
 
 // ====================================================================
@@ -376,7 +593,6 @@ fun OrderSettingsDialog(
                     )
                 }
 
-                // ---------------- СЕКЦИЯ: ХОЛОСТЫЕ ----------------
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.CheckBoxOutlineBlank, null,
@@ -427,7 +643,6 @@ fun OrderSettingsDialog(
                     )
                 }
 
-                // Пояснение
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -455,7 +670,6 @@ fun OrderSettingsDialog(
                     }
                 }
 
-                // Кнопка «Сбросить вес холостых»
                 TextButton(
                     onClick = onResetBlankWeights,
                     colors = ButtonDefaults.textButtonColors(
@@ -468,7 +682,6 @@ fun OrderSettingsDialog(
                     Text("Сбросить вес холостых в наряде")
                 }
 
-                // ---------------- СЕКЦИЯ: ВЕСОВОЙ КОНТРОЛЬ ----------------
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Scale, null,
@@ -724,11 +937,11 @@ fun AlreadyFoundDialog(
                     Spacer(Modifier.width(8.dp))
                     Text(if (row.postponed) "Снять «отложена»" else "Отложить пробу")
                 }
-                if (row.hasNote) {
+                if (row.hasNote || row.hasPhoto) {
                     TextButton(onClick = { onViewNote() }) {
                         Icon(Icons.Filled.EditNote, null)
                         Spacer(Modifier.width(8.dp))
-                        Text("Просмотреть заметку")
+                        Text("Заметка и фото")
                     }
                 }
                 TextButton(onClick = { onEdit() }) {
@@ -813,7 +1026,7 @@ fun PostponedDialog(
         confirmButton = { TextButton(onClick = onConfirm) { Text("Отметить как найденную") } },
         dismissButton = {
             Row {
-                if (row.hasNote) {
+                if (row.hasNote || row.hasPhoto) {
                     TextButton(onClick = onViewNote) { Text("Заметка") }
                     Spacer(Modifier.width(4.dp))
                 }

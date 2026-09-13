@@ -1,5 +1,11 @@
 package com.example.geosamplemanager.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -25,19 +32,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.data.entity.SampleImageEntity
+import com.example.geosamplemanager.data.util.PhotoStorage
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Экран «Сверка и поиск».
- *
- * Плоский LazyColumn: каждая строка пробы — отдельный item,
- * рендерится лениво. Заголовок группы тоже item.
  */
 
-/**
- * Элемент плоского списка.
- */
 sealed interface ReconItem {
     val key: String
 
@@ -74,6 +79,7 @@ fun SearchScreen(
 ) {
 
     val state = viewModel.state
+    val context = LocalContext.current
 
     var weightDialogRowId by remember { mutableStateOf<String?>(null) }
     var weightDialogIsControl by remember { mutableStateOf(false) }
@@ -89,6 +95,14 @@ fun SearchScreen(
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
 
+    // Голосовой ввод
+    var showVoiceDialog by remember { mutableStateOf(false) }
+
+    var noteText by remember { mutableStateOf("") }
+    var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
+    var cameraTempFile by remember { mutableStateOf<File?>(null) }
+    var cameraTargetSampleId by remember { mutableStateOf<Long?>(null) }
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -99,6 +113,99 @@ fun SearchScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessage()
         }
+    }
+
+    // ================================================================
+    // Разрешение на микрофон
+    // ================================================================
+    val requestMicPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            showVoiceDialog = true
+        } else {
+            scope.launch {
+                snackbarHostState.showSnackbar("Без разрешения на микрофон голос не работает")
+            }
+        }
+    }
+
+    fun openVoice() {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            showVoiceDialog = true
+        } else {
+            requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // ================================================================
+    // Камера и галерея
+    // ================================================================
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { success ->
+        val file = cameraTempFile
+        val sid = cameraTargetSampleId
+        cameraTempFile = null
+        cameraTargetSampleId = null
+
+        if (success && file != null && sid != null) {
+            scope.launch {
+                val ok = viewModel.addPhotoFromFile(sid, file)
+                if (ok) {
+                    val (_, photos) = viewModel.loadNoteWithPhotos(sid)
+                    notePhotos = photos
+                    snackbarHostState.showSnackbar("Фото добавлено")
+                } else {
+                    snackbarHostState.showSnackbar("Не удалось сохранить фото")
+                    file.delete()
+                }
+            }
+        } else {
+            file?.delete()
+        }
+    }
+
+    val pickMediaLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        val sid = noteDialogRowId?.toLongOrNull()
+        if (uri != null && sid != null) {
+            scope.launch {
+                val ok = viewModel.addPhoto(sid, uri)
+                if (ok) {
+                    val (_, photos) = viewModel.loadNoteWithPhotos(sid)
+                    notePhotos = photos
+                    snackbarHostState.showSnackbar("Фото добавлено")
+                } else {
+                    snackbarHostState.showSnackbar("Не удалось сохранить фото")
+                }
+            }
+        }
+    }
+
+    fun launchCamera(sampleId: Long) {
+        val tmp = PhotoStorage.createTempFile(context)
+        cameraTempFile = tmp
+        cameraTargetSampleId = sampleId
+        val uri = PhotoStorage.getUriForFile(context, tmp)
+        takePictureLauncher.launch(uri)
+    }
+
+    fun launchGallery() {
+        pickMediaLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        )
+    }
+
+    LaunchedEffect(noteDialogRowId) {
+        val sid = noteDialogRowId?.toLongOrNull() ?: return@LaunchedEffect
+        val (note, photos) = viewModel.loadNoteWithPhotos(sid)
+        noteText = note?.noteText ?: ""
+        notePhotos = photos
     }
 
     fun onToggleFound(row: SampleRow) {
@@ -154,11 +261,8 @@ fun SearchScreen(
         }
     }
 
-    // ================================================================
-    // Плоский список
-    // ================================================================
     val visible = state.visibleGroups
-    val items by remember(state.showCharacteristic) {
+    val items by remember(state.showCharacteristic, state.groups.size, state.query, state.activeFilters) {
         derivedStateOf { buildFlatList(state) }
     }
 
@@ -193,11 +297,8 @@ fun SearchScreen(
                             selectedOrder = state.selectedOrder,
                             availableAreas = state.availableAreas,
                             availableOrders = state.availableOrders,
-                            onAreaChange = {
-                                state.selectedArea = it
-                                state.selectedOrder = null
-                            },
-                            onOrderChange = { state.selectedOrder = it },
+                            onAreaChange = { viewModel.setSelectedArea(it) },
+                            onOrderChange = { viewModel.setSelectedOrder(it) },
                             onOrderSettingsClick = {
                                 state.selectedOrder?.let { settingsOrderTitle = it }
                             }
@@ -209,14 +310,12 @@ fun SearchScreen(
                     Box(modifier = Modifier.padding(bottom = 8.dp)) {
                         SearchRowWithIndicator(
                             query = state.query,
-                            onQueryChange = { state.query = it },
+                            onQueryChange = { viewModel.setQuery(it) },
                             matchInfo = state.matchInfo,
                             hasSelection = state.hasSelection,
                             onSearchAction = { keyboard?.hide() },
-                            onClear = { state.query = "" },
-                            onVoiceClick = {
-                                scope.launch { snackbarHostState.showSnackbar("Голос — в разработке") }
-                            }
+                            onClear = { viewModel.setQuery("") },
+                            onVoiceClick = { openVoice() }
                         )
                     }
                 }
@@ -373,14 +472,49 @@ fun SearchScreen(
     noteDialogRowId?.let { id ->
         val row = state.rowById(id)
         if (row != null) {
-            NoteDialog(
+            NotePhotoDialog(
                 sampleNumber = row.sampleNumber,
-                initialText = "",
-                onSave = { _ ->
-                    scope.launch { snackbarHostState.showSnackbar("Заметка — в разработке") }
-                    noteDialogRowId = null
+                initialText = noteText,
+                photos = notePhotos,
+                onSaveText = { text ->
+                    val sid = id.toLongOrNull()
+                    if (sid != null) {
+                        scope.launch {
+                            val ok = viewModel.saveNoteText(sid, text)
+                            if (ok) {
+                                snackbarHostState.showSnackbar("Заметка сохранена")
+                                noteDialogRowId = null
+                            } else {
+                                snackbarHostState.showSnackbar("Не удалось сохранить заметку")
+                            }
+                        }
+                    }
                 },
-                onDismiss = { noteDialogRowId = null }
+                onTakePhoto = {
+                    val sid = id.toLongOrNull()
+                    if (sid != null) launchCamera(sid)
+                },
+                onPickFromGallery = { launchGallery() },
+                onDeletePhoto = { imageId ->
+                    val sid = id.toLongOrNull()
+                    if (sid != null) {
+                        scope.launch {
+                            val ok = viewModel.deletePhoto(imageId, sid)
+                            if (ok) {
+                                val (_, photos) = viewModel.loadNoteWithPhotos(sid)
+                                notePhotos = photos
+                                snackbarHostState.showSnackbar("Фото удалено")
+                            } else {
+                                snackbarHostState.showSnackbar("Не удалось удалить фото")
+                            }
+                        }
+                    }
+                },
+                onDismiss = {
+                    noteDialogRowId = null
+                    noteText = ""
+                    notePhotos = emptyList()
+                }
             )
         }
     }
@@ -549,6 +683,13 @@ fun SearchScreen(
     if (state.showLegend) {
         LegendDialog(onDismiss = { state.showLegend = false })
     }
+
+    // ================================================================
+    // Голосовой диалог
+    // ================================================================
+    if (showVoiceDialog) {
+        VoiceDialog(onDismiss = { showVoiceDialog = false })
+    }
 }
 
 // ====================================================================
@@ -583,9 +724,6 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
 // Компоненты
 // ====================================================================
 
-/**
- * Заголовок группы — отдельный item плоского списка.
- */
 @Composable
 private fun GroupHeaderCard(
     group: SampleGroup,
@@ -1055,7 +1193,6 @@ private fun SampleRowItem(
             }
         }
 
-        // Тип — заменяем AssistChip на простой Text с фоном
         Box(
             modifier = Modifier.width(110.dp)
                 .clip(RoundedCornerShape(6.dp))
@@ -1091,11 +1228,10 @@ private fun SampleRowItem(
             IconButton({ menuOpen = true }, Modifier.size(40.dp)) {
                 Icon(Icons.Filled.MoreVert, "Действия")
             }
-            // DropdownMenu создаётся только когда открыт
             if (menuOpen) {
                 DropdownMenu(menuOpen, { menuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Заметка") },
+                        text = { Text("Заметка и фото") },
                         leadingIcon = { Icon(Icons.Filled.EditNote, null) },
                         onClick = { menuOpen = false; onOpenNote() }
                     )
