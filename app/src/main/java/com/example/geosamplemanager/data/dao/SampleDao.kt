@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.voice.VoiceSampleHit
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -22,7 +23,6 @@ interface SampleDao {
 
     /**
      * Пачка проб по списку id — одним запросом.
-     * Используется в saveRows, чтобы не делать N вызовов getSampleById.
      */
     @Query("SELECT * FROM samples WHERE id IN (:ids)")
     suspend fun getSamplesByIds(ids: List<Long>): List<SampleEntity>
@@ -30,15 +30,9 @@ interface SampleDao {
     @Query("SELECT * FROM samples WHERE well_number = :wellNumber ORDER BY serial_number")
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity>
 
-    /**
-     * Пробы всех перечисленных нарядов одним запросом.
-     */
     @Query("SELECT * FROM samples WHERE order_id IN (:orderIds) ORDER BY order_id, serial_number")
     suspend fun getSamplesForOrders(orderIds: List<Long>): List<SampleEntity>
 
-    /**
-     * Ищет наряды, в которых есть пробы, подходящие под query.
-     */
     @Query(
         """
         SELECT DISTINCT order_id FROM samples 
@@ -48,9 +42,6 @@ interface SampleDao {
     )
     suspend fun findOrderIdsByQuery(query: String): List<Long>
 
-    /**
-     * Список нарядов, в которых есть хотя бы одна проба.
-     */
     @Query("SELECT DISTINCT order_id FROM samples")
     suspend fun getOrderIdsWithSamples(): List<Long>
 
@@ -70,7 +61,7 @@ interface SampleDao {
     suspend fun deleteAllForOrder(orderId: Long)
 
     // ================================================================
-    // Атомарные UPDATE — без чтения строки перед записью
+    // Атомарные UPDATE
     // ================================================================
 
     @Query("UPDATE samples SET found = NOT found WHERE id = :sampleId")
@@ -146,4 +137,30 @@ interface SampleDao {
         """
     )
     suspend fun searchSamples(query: String?): List<SampleEntity>
+
+    // ================================================================
+    // Голосовой поиск (5.8.3)
+    // ================================================================
+
+    /**
+     * Все пробы с информацией о наряде и участке.
+     *
+     * Используется голосовым поиском — грузим один раз и фильтруем в
+     * памяти. Для MVP-объёмов (до нескольких тысяч проб) это приемлемо.
+     */
+    @Query(
+        """
+        SELECT s.id AS sampleId,
+               s.sample_number AS sampleNumber,
+               s.well_number AS wellNumber,
+               s.order_id AS orderId,
+               o.order_number AS orderNumber,
+               a.area_name AS areaTitle
+        FROM samples s
+        JOIN orders o ON s.order_id = o.id
+        JOIN areas a ON o.area_id = a.id
+        ORDER BY a.area_name, o.order_number, s.serial_number
+        """
+    )
+    suspend fun getAllForVoiceSearch(): List<VoiceSampleHit>
 }
