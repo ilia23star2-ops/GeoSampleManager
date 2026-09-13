@@ -1,7 +1,5 @@
 package com.example.geosamplemanager.ui.screens
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -13,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,7 +31,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.util.PhotoStorage
@@ -46,29 +44,45 @@ import java.io.File
 sealed interface ReconItem {
     val key: String
 
+    data class QueryHeader(
+        val group: QueryGroup,
+        val expanded: Boolean
+    ) : ReconItem {
+        override val key: String get() = "q_${group.id}"
+    }
+
     data class GroupHeader(
+        val queryGroupId: String?,
         val group: SampleGroup,
         val kind: GroupKind,
         val isForeign: Boolean,
         val expanded: Boolean
     ) : ReconItem {
-        override val key: String get() = "h_${group.id}"
+        override val key: String
+            get() = if (queryGroupId == null) "h_${group.id}"
+            else "h_${queryGroupId}_${group.id}"
     }
 
     data class Sample(
+        val queryGroupId: String?,
         val row: SampleRow,
         val serial: Int,
         val showCharacteristic: Boolean
     ) : ReconItem {
-        override val key: String get() = "r_${row.id}"
+        override val key: String
+            get() = if (queryGroupId == null) "r_${row.id}"
+            else "r_${queryGroupId}_${row.id}"
     }
 
     data class TableHead(
+        val queryGroupId: String?,
         val groupId: String,
         val showCharacteristic: Boolean,
         val wellColumnTitle: String
     ) : ReconItem {
-        override val key: String get() = "t_$groupId"
+        override val key: String
+            get() = if (queryGroupId == null) "t_$groupId"
+            else "t_${queryGroupId}_$groupId"
     }
 }
 
@@ -95,9 +109,6 @@ fun SearchScreen(
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
 
-    // Голосовой ввод
-    var showVoiceDialog by remember { mutableStateOf(false) }
-
     var noteText by remember { mutableStateOf("") }
     var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
     var cameraTempFile by remember { mutableStateOf<File?>(null) }
@@ -115,35 +126,6 @@ fun SearchScreen(
         }
     }
 
-    // ================================================================
-    // Разрешение на микрофон
-    // ================================================================
-    val requestMicPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            showVoiceDialog = true
-        } else {
-            scope.launch {
-                snackbarHostState.showSnackbar("Без разрешения на микрофон голос не работает")
-            }
-        }
-    }
-
-    fun openVoice() {
-        val granted = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-        if (granted) {
-            showVoiceDialog = true
-        } else {
-            requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    // ================================================================
-    // Камера и галерея
-    // ================================================================
     val takePictureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { success ->
@@ -233,7 +215,7 @@ fun SearchScreen(
                     }
                 }
                 BlankWeightMode.AVERAGE -> {
-                    val group = state.groups.firstOrNull { it.id == row.groupId }
+                    val group = state.groupById(row.groupId)
                     val avg = group?.let { calculateAverageNeighborWeight(it, row.id) }
                     if (avg != null && avg > 0) viewModel.setBlankWeightAndMarkFound(row.id, avg)
                     else {
@@ -261,9 +243,20 @@ fun SearchScreen(
         }
     }
 
-    val visible = state.visibleGroups
-    val items by remember(state.showCharacteristic, state.groups.size, state.query, state.activeFilters) {
-        derivedStateOf { buildFlatList(state) }
+    val isMulti = state.isMultiQuery
+    val items by remember(
+        state.showCharacteristic,
+        state.activeFilters,
+        state.isMultiQuery,
+        state.queryTokens,
+        state.queryGroups,
+        state.groups,
+        state.selectedArea,
+        state.selectedOrder
+    ) {
+        derivedStateOf {
+            if (state.isMultiQuery) buildMultiQueryList(state) else buildFlatList(state)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize().imePadding()) {
@@ -312,20 +305,27 @@ fun SearchScreen(
                             query = state.query,
                             onQueryChange = { viewModel.setQuery(it) },
                             matchInfo = state.matchInfo,
+                            quickAnswers = state.quickAnswers,
+                            allQuickUnique = state.allQuickAnswersUnique,
+                            isMulti = isMulti,
                             hasSelection = state.hasSelection,
                             onSearchAction = { keyboard?.hide() },
                             onClear = { viewModel.setQuery("") },
-                            onVoiceClick = { openVoice() }
+                            onVoiceClick = {
+                                scope.launch { snackbarHostState.showSnackbar("Голос — в разработке") }
+                            }
                         )
                     }
                 }
 
-                item(key = "stats") {
-                    Box(modifier = Modifier.padding(bottom = 8.dp)) {
-                        StatisticsPanel(
-                            stats = statsToItems(state.currentStatistics),
-                            orderSelected = state.selectedOrder != null
-                        )
+                if (!isMulti) {
+                    item(key = "stats") {
+                        Box(modifier = Modifier.padding(bottom = 8.dp)) {
+                            StatisticsPanel(
+                                stats = statsToItems(state.currentStatistics),
+                                orderSelected = state.selectedOrder != null
+                            )
+                        }
                     }
                 }
 
@@ -333,7 +333,13 @@ fun SearchScreen(
                     FiltersHeader(
                         expanded = state.filtersExpanded,
                         onToggle = { state.filtersExpanded = !state.filtersExpanded },
-                        activeCount = state.activeFilters.size
+                        activeCount = state.activeFilters.size,
+                        showToggleAll = isMulti && state.queryGroups.isNotEmpty(),
+                        allExpanded = state.allQueryGroupsExpanded,
+                        onToggleAll = {
+                            if (state.allQueryGroupsExpanded) state.collapseAllQueryGroups()
+                            else state.expandAllQueryGroups()
+                        }
                     )
                 }
 
@@ -362,12 +368,21 @@ fun SearchScreen(
                             state.query.isBlank() -> {
                         item(key = "hint") { HintSelectOrderState() }
                     }
-                    visible.isEmpty() -> {
+                    items.isEmpty() -> {
                         item(key = "no_results") { NoResultsState() }
                     }
                     else -> {
                         items(items, key = { it.key }) { item ->
                             when (item) {
+                                is ReconItem.QueryHeader -> {
+                                    QueryHeaderCard(
+                                        group = item.group,
+                                        expanded = item.expanded,
+                                        onToggleExpand = {
+                                            state.toggleQueryGroup(item.group.id)
+                                        }
+                                    )
+                                }
                                 is ReconItem.GroupHeader -> {
                                     GroupHeaderCard(
                                         group = item.group,
@@ -658,7 +673,7 @@ fun SearchScreen(
     }
 
     confirmClearAllGroupId?.let { gid ->
-        val group = state.groups.firstOrNull { it.id == gid }
+        val group = state.groupById(gid)
         if (group != null) {
             AlertDialog(
                 onDismissRequest = { confirmClearAllGroupId = null },
@@ -683,13 +698,6 @@ fun SearchScreen(
     if (state.showLegend) {
         LegendDialog(onDismiss = { state.showLegend = false })
     }
-
-    // ================================================================
-    // Голосовой диалог
-    // ================================================================
-    if (showVoiceDialog) {
-        VoiceDialog(onDismiss = { showVoiceDialog = false })
-    }
 }
 
 // ====================================================================
@@ -708,12 +716,46 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
         val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
         val expanded = state.isGroupExpanded(group.id)
 
-        result.add(ReconItem.GroupHeader(group, kind, isForeign, expanded))
+        result.add(ReconItem.GroupHeader(null, group, kind, isForeign, expanded))
         if (expanded) {
             val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
-            result.add(ReconItem.TableHead(group.id, showCharacteristic, wellTitle))
+            result.add(ReconItem.TableHead(null, group.id, showCharacteristic, wellTitle))
             group.rows.forEachIndexed { idx, row ->
-                result.add(ReconItem.Sample(row, idx + 1, showCharacteristic))
+                result.add(ReconItem.Sample(null, row, idx + 1, showCharacteristic))
+            }
+        }
+    }
+    return result
+}
+
+private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
+    val result = ArrayList<ReconItem>(256)
+    val selectedArea = state.selectedArea
+    val selectedOrder = state.selectedOrder
+    val showCharacteristic = state.showCharacteristic
+
+    // Ненайденные — выше, найденные — ниже.
+    val sorted = state.queryGroups.sortedBy { if (it.isFound) 1 else 0 }
+
+    sorted.forEach { qg ->
+        val expanded = state.isQueryGroupExpanded(qg.id)
+        result.add(ReconItem.QueryHeader(qg, expanded))
+
+        if (!expanded) return@forEach
+
+        val filteredGroups = state.filteredGroupsForQuery(qg)
+        filteredGroups.forEach { group ->
+            val kind = determineGroupKind(group, selectedArea, selectedOrder)
+            val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
+            val groupExpanded = state.isGroupExpanded(group.id)
+
+            result.add(ReconItem.GroupHeader(qg.id, group, kind, isForeign, groupExpanded))
+            if (groupExpanded) {
+                val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
+                result.add(ReconItem.TableHead(qg.id, group.id, showCharacteristic, wellTitle))
+                group.rows.forEachIndexed { idx, row ->
+                    result.add(ReconItem.Sample(qg.id, row, idx + 1, showCharacteristic))
+                }
             }
         }
     }
@@ -723,6 +765,93 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
 // ====================================================================
 // Компоненты
 // ====================================================================
+
+/**
+ * Заголовок группы запроса.
+ *
+ * Формат:
+ *   Запрос №N: «номер»
+ *   X вариантов | Наряд - Y [ / Участок «Название»]
+ *   [⚠ Другой участок]
+ */
+@Composable
+private fun QueryHeaderCard(
+    group: QueryGroup,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit
+) {
+    val isFound = group.isFound
+    val isForeign = group.isForeignArea
+
+    val bgColor: Color = when {
+        !isFound -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
+        isForeign -> Color(0xFFFFE0B2).copy(alpha = 0.55f)
+        else -> Color(0xFFA5D6A7).copy(alpha = 0.40f)
+    }
+    val titleColor: Color = when {
+        !isFound -> Color(0xFFC62828)
+        isForeign -> Color(0xFFB53D00)
+        else -> Color(0xFF2E7D32)
+    }
+
+    val variantText = when (group.variantCount) {
+        0 -> "Нет ответов"
+        1 -> "1 вариант"
+        else -> "${group.variantCount} вариантов"
+    }
+
+    val ordersText = group.orderNumbersLabel
+    val areasText = group.areaTitlesLabel
+
+    val line2: String = when {
+        ordersText.isEmpty() -> variantText
+        isForeign -> "$variantText | Наряд - $ordersText / Участок «$areasText»"
+        else -> "$variantText | Наряд - $ordersText"
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        color = bgColor,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggleExpand() }
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Запрос №${group.id.removePrefix("q")}: «${group.query}»",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = titleColor
+                )
+                Text(
+                    line2,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (isForeign) {
+                    Text(
+                        "⚠ Другой участок",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFB53D00)
+                    )
+                }
+            }
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = if (expanded) "Свернуть" else "Развернуть",
+                tint = titleColor
+            )
+        }
+    }
+}
 
 @Composable
 private fun GroupHeaderCard(
@@ -754,9 +883,10 @@ private fun GroupHeaderCard(
     }
 
     val subtitle = buildGroupSubtitle(group)
+    val stats = calculateGroupStats(group)
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
         color = cardColor,
         shape = RoundedCornerShape(6.dp)
     ) {
@@ -770,9 +900,16 @@ private fun GroupHeaderCard(
                 Spacer(Modifier.width(12.dp))
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text("${group.areaTitle} / ${group.orderTitle}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold, color = titleColor)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${group.areaTitle} / ${group.orderTitle}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold, color = titleColor,
+                        modifier = Modifier.weight(1f))
+                    Text("${stats.found}/${stats.total}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary)
+                }
                 if (kind == GroupKind.SAME_AREA) {
                     Text("Не из выбранного наряда",
                         style = MaterialTheme.typography.labelSmall,
@@ -878,20 +1015,42 @@ private fun TopActionsPanel(
 
 @Composable
 private fun SearchRowWithIndicator(
-    query: String, onQueryChange: (String) -> Unit, matchInfo: MatchInfo,
-    hasSelection: Boolean, onSearchAction: () -> Unit,
-    onClear: () -> Unit, onVoiceClick: () -> Unit
+    query: String,
+    onQueryChange: (String) -> Unit,
+    matchInfo: MatchInfo,
+    quickAnswers: List<QuickAnswer>,
+    allQuickUnique: Boolean,
+    isMulti: Boolean,
+    hasSelection: Boolean,
+    onSearchAction: () -> Unit,
+    onClear: () -> Unit,
+    onVoiceClick: () -> Unit
 ) {
-    val isLit = matchInfo is MatchInfo.Unique
+    val isLit = if (isMulti) allQuickUnique else matchInfo is MatchInfo.Unique
     val lampColor = if (isLit) Color(0xFFFFC107)
     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-    val indicatorText = when (matchInfo) {
-        is MatchInfo.None     -> ""
-        is MatchInfo.Unique   -> matchInfo.display
-        is MatchInfo.Multiple -> "Несколько"
+
+    val indicatorText: String = if (isMulti) {
+        if (quickAnswers.isEmpty()) ""
+        else quickAnswers.joinToString("\n") { qa ->
+            val suffix = when {
+                qa.isMultiple -> "несколько"
+                qa.orderTitle != null -> qa.orderTitle.removePrefix("Наряд №").trim()
+                else -> "—"
+            }
+            "№${qa.index} — $suffix"
+        }
+    } else {
+        when (matchInfo) {
+            is MatchInfo.None     -> ""
+            is MatchInfo.Unique   -> matchInfo.display
+            is MatchInfo.Multiple -> "Несколько"
+        }
     }
-    val placeholder = if (hasSelection) "Поиск по всем нарядам"
-    else "Например: 1234 или TST1234"
+
+    val placeholder = if (hasSelection)
+        "Поиск (несколько номеров через пробел)"
+    else "Например: 1234 или KPD1090031 (несколько через пробел)"
 
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(
@@ -903,7 +1062,7 @@ private fun SearchRowWithIndicator(
                 Text(indicatorText, style = MaterialTheme.typography.labelSmall,
                     color = if (isLit) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    maxLines = 6, overflow = TextOverflow.Ellipsis,
                     fontSize = 10.sp, textAlign = TextAlign.Center)
             }
         }
@@ -972,13 +1131,21 @@ private fun AreaAndOrderSelectors(
         }
         Box(modifier = Modifier.weight(1f)) {
             var expanded by remember { mutableStateOf(false) }
-            ExposedDropdownMenuBox(expanded, { expanded = !expanded }) {
+            val ordersEnabled = selectedArea != null
+            val labelText = if (ordersEnabled) "Наряд" else "Сначала выберите участок"
+            val valueText = if (!ordersEnabled) "" else (selectedOrder ?: "Без наряда")
+            ExposedDropdownMenuBox(
+                expanded = expanded && ordersEnabled,
+                onExpandedChange = { if (ordersEnabled) expanded = !expanded }
+            ) {
                 OutlinedTextField(
-                    value = selectedOrder ?: "Без наряда",
-                    onValueChange = {}, readOnly = true,
-                    label = { Text("Наряд", fontSize = 11.sp) },
+                    value = valueText,
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = ordersEnabled,
+                    label = { Text(labelText, fontSize = 11.sp) },
                     textStyle = MaterialTheme.typography.bodyMedium,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded && ordersEnabled) },
                     modifier = Modifier.menuAnchor().fillMaxWidth().height(56.dp)
                 )
                 ExposedDropdownMenu(expanded, { expanded = false }) {
@@ -1046,7 +1213,14 @@ private fun StatChip(stat: StatItem) {
 }
 
 @Composable
-private fun FiltersHeader(expanded: Boolean, onToggle: () -> Unit, activeCount: Int) {
+private fun FiltersHeader(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    activeCount: Int,
+    showToggleAll: Boolean,
+    allExpanded: Boolean,
+    onToggleAll: () -> Unit
+) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggle, modifier = Modifier.size(32.dp)) {
             Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, null)
@@ -1054,8 +1228,25 @@ private fun FiltersHeader(expanded: Boolean, onToggle: () -> Unit, activeCount: 
         Text(
             if (activeCount == 0) "Фильтры" else "Фильтры (выбрано: $activeCount)",
             style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f)
         )
+        if (showToggleAll) {
+            TextButton(
+                onClick = onToggleAll,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Icon(
+                    if (allExpanded) Icons.Filled.UnfoldLess else Icons.Filled.UnfoldMore,
+                    null, modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    if (allExpanded) "Свернуть все" else "Развернуть все",
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
     }
 }
 
@@ -1293,7 +1484,7 @@ private fun EmptyState() {
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(4.dp))
-        Text("Или выберите участок и наряд, чтобы увидеть весь список",
+        Text("Можно ввести до 5 номеров через пробел",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -1349,11 +1540,29 @@ private fun LegendDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Пояснения к символике") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text("Индикатор слева от поиска",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("Фонарик горит, если ответ единственный.",
+                Text("Фонарик горит, если ответ единственный. " +
+                        "При нескольких запросах — если все однозначны.",
                     style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Строка поиска",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "• Ничего не выбрано — строгое совпадение (номер скважины или пробы целиком).\n" +
+                            "• Выбран только участок — строгое совпадение, участок задаёт приоритет.\n" +
+                            "• Выбраны участок И наряд — строка ещё и фильтрует выбранный наряд " +
+                            "(совпадение по началу номера пробы).",
+                    style = MaterialTheme.typography.bodySmall
+                )
 
                 Spacer(Modifier.height(4.dp))
                 Text("Настройки наряда",
@@ -1391,6 +1600,23 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 LegendIconRow(Icons.Filled.EditNote, "Есть заметка")
                 LegendIconRow(Icons.Filled.PhotoCamera, "Есть фото")
                 LegendIconRow(Icons.Filled.Warning, "Ошибка")
+
+                Spacer(Modifier.height(4.dp))
+                Text("Заголовки групп при мультипоиске",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("• Зелёный — запрос нашёл наряд в выбранном участке.\n" +
+                        "• Оранжевый с ⚠ — запрос нашёл наряд только в другом участке " +
+                        "(в заголовке указан участок).\n" +
+                        "• Красный — запрос ничего не нашёл (такие группы идут сверху).",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Кнопка «Развернуть/Свернуть все»",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("При нескольких запросах справа в строке фильтров — " +
+                        "переключатель. Свёрнутое состояние показывает только заголовки " +
+                        "запросов, развёрнутое — ещё и заголовки нарядов с пробами.",
+                    style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Понятно") } }

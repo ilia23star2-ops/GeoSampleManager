@@ -6,7 +6,6 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
 
 @Stable
 class ReconciliationState(initialGroups: List<SampleGroup>) {
@@ -39,38 +38,123 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val undoCount: Int get() = undoStack.size
     val redoCount: Int get() = redoStack.size
 
-    /**
-     * Справочник всех нарядов для селектора.
-     * Устанавливается из ViewModel — независимо от того, какие группы
-     * сейчас загружены.
-     */
     var allOrderTitles: List<OrderInfo> by mutableStateOf(emptyList())
+    var allAreaNames: List<String> by mutableStateOf(emptyList())
 
     // ================================================================
-    // Производные
+    // Множественный поиск
+    // ================================================================
+
+    var queryTokens by mutableStateOf<List<String>>(emptyList())
+
+    private val _queryGroups = mutableStateListOf<QueryGroup>()
+    val queryGroups: List<QueryGroup> get() = _queryGroups
+
+    private val _queryGroupExpanded = mutableStateMapOf<String, Boolean>()
+
+    val isMultiQuery: Boolean get() = queryTokens.size > 1
+
+    fun setQueryGroups(newGroups: List<QueryGroup>) {
+        _queryGroups.clear()
+        _queryGroups.addAll(newGroups)
+        _queryGroupExpanded.clear()
+    }
+
+    fun clearQueryGroups() {
+        _queryGroups.clear()
+        _queryGroupExpanded.clear()
+    }
+
+    /**
+     * Все группы запросов — свёрнуты по умолчанию. Пользователь может
+     * развернуть каждую отдельно или нажать «Развернуть все».
+     */
+    fun isQueryGroupExpanded(id: String): Boolean = _queryGroupExpanded[id] ?: false
+
+    fun toggleQueryGroup(id: String) {
+        val qg = _queryGroups.firstOrNull { it.id == id } ?: return
+        val current = isQueryGroupExpanded(qg.id)
+        _queryGroupExpanded[qg.id] = !current
+    }
+
+    fun expandAllQueryGroups() {
+        _queryGroups.forEach { qg ->
+            _queryGroupExpanded[qg.id] = true
+        }
+    }
+
+    fun collapseAllQueryGroups() {
+        _queryGroups.forEach { qg ->
+            _queryGroupExpanded[qg.id] = false
+        }
+    }
+
+    val hasCollapsedQueryGroups: Boolean
+        get() = _queryGroups.any { !isQueryGroupExpanded(it.id) }
+
+    val allQueryGroupsExpanded: Boolean
+        get() = _queryGroups.isNotEmpty() && _queryGroups.all { isQueryGroupExpanded(it.id) }
+
+    /**
+     * Режим фильтра: и участок, и наряд выбраны.
+     * В этом режиме строка поиска ещё и фильтрует (prefix по № пробы).
+     */
+    private val isFilterMode: Boolean
+        get() = selectedArea != null && selectedOrder != null
+
+    /**
+     * Группы для конкретного запроса. С фильтрами.
+     */
+    fun filteredGroupsForQuery(qg: QueryGroup): List<SampleGroup> {
+        val groupsForQ = qg.variants.mapNotNull { v ->
+            _groups.firstOrNull { it.id == v.groupId }
+        }
+        val byQuery = filterByQuery(groupsForQ, qg.query, isFilterMode)
+        return applyFilters(byQuery, activeFilters)
+    }
+
+    val quickAnswers: List<QuickAnswer>
+        get() = _queryGroups.mapIndexed { i, qg ->
+            QuickAnswer(
+                index = i + 1,
+                query = qg.query,
+                orderTitle = qg.uniqueVariant?.orderTitle,
+                isMultiple = qg.variantCount > 1
+            )
+        }
+
+    val allQuickAnswersUnique: Boolean
+        get() = _queryGroups.isNotEmpty() && _queryGroups.all { it.isUnique }
+
+    // ================================================================
+    // Производные (для одиночного запроса)
     // ================================================================
 
     val hasSelection: Boolean get() = selectedArea != null || selectedOrder != null
 
     val availableAreas: List<String>
-        get() = allOrderTitles.map { it.areaTitle }.distinct().sorted()
+        get() = allAreaNames
 
     val availableOrders: List<String>
-        get() = allOrderTitles
-            .filter { selectedArea == null || it.areaTitle == selectedArea }
-            .map { it.orderTitle }
-            .distinct()
-            .sorted()
+        get() {
+            val area = selectedArea ?: return emptyList()
+            return allOrderTitles
+                .filter { it.areaTitle == area }
+                .map { it.orderTitle }
+                .distinct()
+                .sorted()
+        }
 
     val visibleGroups: List<SampleGroup>
         get() {
+            if (isMultiQuery) return emptyList()
             val base = when {
                 query.isBlank() && selectedOrder != null ->
                     filterByOrder(filterByArea(groups, selectedArea), selectedOrder)
                 query.isBlank() -> emptyList()
                 else -> groups
             }
-            val byQuery = filterByQuery(base, query)
+            val byQuery = filterByQuery(base, query, isFilterMode)
             val byStatus = applyFilters(byQuery, activeFilters)
             return sortGroupsByRelevance(byStatus, selectedArea, selectedOrder)
         }
@@ -115,10 +199,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         _expandedGroups.clear()
     }
 
-    // ================================================================
-    // Ленивая загрузка: методы для добавления/проверки групп
-    // ================================================================
-
     fun addGroup(group: SampleGroup) {
         if (_groups.none { it.id == group.id }) {
             _groups.add(group)
@@ -148,6 +228,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return null
     }
 
+    fun groupById(groupId: String): SampleGroup? =
+        _groups.firstOrNull { it.id == groupId }
+
     fun updateRowFlags(rowId: String, hasNote: Boolean, hasPhoto: Boolean) {
         val (gi, ri) = findRow(rowId) ?: return
         val row = _groups[gi].rows[ri]
@@ -155,19 +238,11 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         replaceRow(gi, ri, row.copy(hasNote = hasNote, hasPhoto = hasPhoto))
     }
 
-    // ================================================================
-    // Раскрытие групп
-    // ================================================================
-
     fun isGroupExpanded(groupId: String): Boolean = _expandedGroups[groupId] ?: true
 
     fun toggleGroupExpanded(groupId: String) {
         _expandedGroups[groupId] = !isGroupExpanded(groupId)
     }
-
-    // ================================================================
-    // Статус-бар
-    // ================================================================
 
     fun describeTopUndoAction(): String {
         val a = undoStack.lastOrNull() ?: return ""
@@ -216,10 +291,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         }
         return null
     }
-
-    // ================================================================
-    // Настройки
-    // ================================================================
 
     fun applyBlankSettingsForOrder(
         orderTitle: String,
@@ -280,10 +351,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         _groups[gi] = group.copy(rows = newRows)
         return changed
     }
-
-    // ================================================================
-    // Действия над пробами
-    // ================================================================
 
     fun toggleFound(rowId: String) {
         val (gi, ri) = findRow(rowId) ?: return
@@ -364,10 +431,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         }
         return true
     }
-
-    // ================================================================
-    // Массовая отметка
-    // ================================================================
 
     sealed class BulkDecision {
         data class WeightControlNeedsWeight(val row: SampleRow) : BulkDecision()
@@ -455,10 +518,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         pushUndo(UndoAction.SetAllFound(groupId, changes))
     }
 
-    // ================================================================
-    // Удаление
-    // ================================================================
-
     fun deleteRow(rowId: String, recalc: Boolean) {
         val (gi, ri) = findRow(rowId) ?: return
         val group = _groups[gi]
@@ -540,10 +599,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         while (i > 0 && sampleNumber[i - 1].isDigit()) i--
         return (sampleNumber.length - i).coerceAtLeast(1)
     }
-
-    // ================================================================
-    // Undo / Redo
-    // ================================================================
 
     fun undo() {
         val action = undoStack.removeLastOrNull() ?: return
@@ -630,10 +685,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         }
     }
 
-    // ================================================================
-    // Помощники
-    // ================================================================
-
     private fun findRow(rowId: String): Pair<Int, Int>? {
         _groups.forEachIndexed { gi, g ->
             g.rows.forEachIndexed { ri, r ->
@@ -677,20 +728,12 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 }
 
-// ====================================================================
-// Справочник наряда (для селектора)
-// ====================================================================
-
 data class OrderInfo(
     val areaId: Long,
     val orderId: Long,
     val areaTitle: String,
     val orderTitle: String
 )
-
-// ====================================================================
-// Фейковые данные (не используются после подключения Room)
-// ====================================================================
 
 fun fakeAreas(): List<String> = listOf("Северный", "Южный", "Западный")
 

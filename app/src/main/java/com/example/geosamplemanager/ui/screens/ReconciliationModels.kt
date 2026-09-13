@@ -178,10 +178,6 @@ fun statsToItems(s: GroupStats): List<StatItem> = listOf(
 // Undo-действия
 // ====================================================================
 
-/**
- * Снимок одной пробы для восстановления sample_number и numberInWell.
- * Используется в DeleteRow при пересчёте номеров.
- */
 data class WellCellSnapshot(
     val rowId: String,
     val sampleNumber: String,
@@ -196,12 +192,6 @@ sealed class UndoAction {
     data class SetWeightControlFlag(val rowId: String, val oldValue: Boolean, val newValue: Boolean) : UndoAction()
     data class SetAllFound(val groupId: String, val changes: List<Pair<String, Boolean>>) : UndoAction()
 
-    /**
-     * Удаление пробы. Полностью восстанавливается при откате:
-     *  - сама проба возвращается в группу на исходный индекс,
-     *  - поля sample_number / numberInWell всех проб скважины
-     *    восстанавливаются из before-снимка.
-     */
     data class DeleteRow(
         val groupId: String,
         val rowIndex: Int,
@@ -228,15 +218,36 @@ fun filterByOrder(groups: List<SampleGroup>, orderTitle: String?): List<SampleGr
     return groups.filter { it.orderTitle == orderTitle }
 }
 
-fun filterByQuery(groups: List<SampleGroup>, query: String): List<SampleGroup> {
+/**
+ * Совпадение строки с запросом.
+ *
+ * Логика:
+ *  • Строгий режим (по умолчанию): совпадает номер скважины ИЛИ номер пробы
+ *    целиком. «1» не подсветит пробу «1524», но подсветит пробу с номером «1».
+ *  • Режим фильтра (выбраны участок И наряд): дополнительно разрешён префикс
+ *    по номеру пробы. «109» подсветит «1090031» в выбранном наряде.
+ */
+private fun matchesQuery(row: SampleRow, q: String, filterMode: Boolean): Boolean {
+    val well = normalizeNumber(row.wellNumber)
+    val sample = normalizeNumber(row.sampleNumber)
+    if (well == q || sample == q) return true
+    if (filterMode && sample.startsWith(q)) return true
+    return false
+}
+
+/**
+ * @param filterMode true — режим фильтрации (участок + наряд выбраны),
+ *                   false — строгий поиск (полное совпадение).
+ */
+fun filterByQuery(
+    groups: List<SampleGroup>,
+    query: String,
+    filterMode: Boolean = false
+): List<SampleGroup> {
     val q = normalizeNumber(query)
     if (q.isBlank()) return groups
     return groups.mapNotNull { group ->
-        val filtered = group.rows.filter { row ->
-            val well = normalizeNumber(row.wellNumber)
-            val sample = normalizeNumber(row.sampleNumber)
-            well == q || sample.startsWith(q)
-        }
+        val filtered = group.rows.filter { row -> matchesQuery(row, q, filterMode) }
         if (filtered.isEmpty()) null else group.copy(rows = filtered)
     }
 }
@@ -294,13 +305,10 @@ fun analyzeMatch(
 ): MatchInfo {
     val q = normalizeNumber(query)
     if (q.isBlank()) return MatchInfo.None
+    val filterMode = selectedArea != null && selectedOrder != null
 
     val matching = allGroups.filter { g ->
-        g.rows.any { row ->
-            val well = normalizeNumber(row.wellNumber)
-            val sample = normalizeNumber(row.sampleNumber)
-            well == q || sample.startsWith(q)
-        }
+        g.rows.any { row -> matchesQuery(row, q, filterMode) }
     }
     if (matching.isEmpty()) return MatchInfo.None
 
@@ -340,3 +348,54 @@ fun calculateAverageNeighborWeight(group: SampleGroup, blankRowId: String): Doub
     val weights = listOfNotNull(before?.weight, after?.weight)
     return if (weights.isEmpty()) null else weights.average()
 }
+
+// ====================================================================
+// Множественный поиск (5.11)
+// ====================================================================
+
+/**
+ * Одна группа запроса. Используется, когда queryTokens.size > 1.
+ */
+data class QueryGroup(
+    val id: String,                 // "q1", "q2", ...
+    val query: String,              // как введено пользователем
+    val prefix: String?,            // "KPD", "NV" и т.п. или null
+    val variants: List<QueryVariant>,
+    val isForeignArea: Boolean      // true, если найденные наряды не в выбранном участке
+) {
+    val variantCount: Int get() = variants.size
+    val isUnique: Boolean get() = variants.size == 1
+    val uniqueVariant: QueryVariant? get() = variants.singleOrNull()
+    val isFound: Boolean get() = variants.isNotEmpty()
+
+    /** Уникальные номера нарядов без префикса «Наряд №». */
+    val orderNumbersLabel: String
+        get() = variants.map { it.orderTitle.removePrefix("Наряд №").trim() }
+            .distinct()
+            .joinToString(", ")
+
+    /** Уникальные названия участков вариантов. */
+    val areaTitlesLabel: String
+        get() = variants.map { it.areaTitle }.distinct().joinToString(", ")
+}
+
+/**
+ * Один вариант ответа для запроса: конкретный наряд.
+ */
+data class QueryVariant(
+    val areaTitle: String,
+    val orderTitle: String,
+    val groupId: String,            // ссылка на SampleGroup.id
+    val foundCount: Int,
+    val totalCount: Int
+)
+
+/**
+ * Быстрый ответ для фонарика.
+ */
+data class QuickAnswer(
+    val index: Int,                 // 1, 2, 3...
+    val query: String,
+    val orderTitle: String?,        // null, если ответов несколько
+    val isMultiple: Boolean
+)

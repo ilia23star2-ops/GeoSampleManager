@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,24 +21,11 @@ import java.io.File
 
 /**
  * ViewModel экрана «Сверка и поиск».
- *
- * Ленивая загрузка (5.9.1):
- *  • При открытии экрана грузим только участки и список нарядов.
- *  • Пробы наряда грузятся при его выборе.
- *  • При поиске по query — SQL-запрос находит order_id с совпадениями,
- *    и их группы загружаются.
- *
- * Поиск с задержкой (5.9.2):
- *  • debounce 450 мс — пока человек печатает, запрос не летит в БД.
- *  • Не больше MAX_SEARCH_ORDERS нарядов за раз — иначе при широком
- *    запросе вроде «KPD» можно подтянуть тысячи проб.
- *  • Если совпадений больше — сообщаем пользователю.
- *
- * Кэш: loadedOrderIds — что уже загружено. Повторно не грузим.
  */
 class ReconciliationViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
+    private val settingsRepo = (application as GeoSampleApp).settingsRepository
 
     val state = ReconciliationState(emptyList())
 
@@ -53,48 +41,46 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private var searchJob: Job? = null
 
     companion object {
-        /** Сколько миллисекунд ждать после последнего нажатия. */
-        private const val SEARCH_DEBOUNCE_MS = 450L
-
-        /** Максимум нарядов, которые грузим за один поисковый запрос. */
+        /**
+         * Мини-задержка перед поиском — пока пользователь печатает,
+         * поиск не запускается.
+         */
+        private const val SEARCH_DEBOUNCE_MS = 500L
         private const val MAX_SEARCH_ORDERS = 20
+        private const val MAX_QUERY_TOKENS = 5
     }
 
     init {
         loadAreasAndOrders()
     }
 
-    /**
-     * Загрузка справочников: участки + список всех непустых нарядов.
-     * Пробы НЕ грузим — это делается лениво.
-     */
     private fun loadAreasAndOrders() {
         viewModelScope.launch {
             try {
                 val info = withContext(Dispatchers.IO) {
                     val areas = repo.getAreas()
-                    val orderIdsWithSamples = repo.getOrderIdsWithSamples().toHashSet()
                     val result = mutableListOf<OrderInfo>()
                     areas.forEach { area ->
                         val orders = repo.getOrdersForAreaList(area.id)
                         orders.forEach { order ->
-                            if (order.id in orderIdsWithSamples) {
-                                result.add(
-                                    OrderInfo(
-                                        areaId = area.id,
-                                        orderId = order.id,
-                                        areaTitle = area.areaName,
-                                        orderTitle = "Наряд №${order.orderNumber}"
-                                    )
+                            result.add(
+                                OrderInfo(
+                                    areaId = area.id,
+                                    orderId = order.id,
+                                    areaTitle = area.areaName,
+                                    orderTitle = "Наряд №${order.orderNumber}"
                                 )
-                            }
+                            )
                         }
                     }
-                    result
+                    val areaNames = areas.map { it.areaName }.distinct().sorted()
+                    areaNames to result
                 }
-                orderInfoById = info.associateBy { it.orderId }
-                orderInfoByTitle = info.associateBy { it.orderTitle }
-                state.allOrderTitles = info
+                val (areaNames, orderInfos) = info
+                orderInfoById = orderInfos.associateBy { it.orderId }
+                orderInfoByTitle = orderInfos.associateBy { it.orderTitle }
+                state.allOrderTitles = orderInfos
+                state.allAreaNames = areaNames
             } catch (e: Exception) {
                 _message.value = "Ошибка загрузки: ${e.message}"
             }
@@ -105,7 +91,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     // ЛЕНИВАЯ ЗАГРУЗКА ГРУПП
     // ================================================================
 
-    /** Гарантирует, что группа наряда загружена в state. */
     suspend fun ensureOrderSamplesLoaded(orderId: Long) {
         if (orderId in loadedOrderIds) return
         val info = orderInfoById[orderId]
@@ -132,22 +117,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * Загрузка нарядов, в которых есть пробы, подходящие под query.
-     * Ограничиваем количество — если совпадений слишком много,
-     * просим уточнить запрос.
-     */
     private suspend fun loadGroupsForQuery(query: String) {
         try {
             val allIds = withContext(Dispatchers.IO) {
                 repo.findOrderIdsByQuery(query)
             }
             if (allIds.isEmpty()) return
-
-            // Уже загруженные исключаем из счётчика «осталось»
             val newIds = allIds.filter { it !in loadedOrderIds }
             val toLoad = newIds.take(MAX_SEARCH_ORDERS)
-
             toLoad.forEach { ensureOrderSamplesLoaded(it) }
 
             val remaining = newIds.size - toLoad.size
@@ -162,39 +139,169 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     // ================================================================
-    // ПУБЛИЧНЫЕ СЕТТЕРЫ ДЛЯ UI
+    // СЕТТЕРЫ
     // ================================================================
 
     fun setSelectedArea(area: String?) {
         state.selectedArea = area
         state.selectedOrder = null
+        refreshMultiQueryIfNeeded()
     }
 
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
-        val info = orderTitle?.let { orderInfoByTitle[it] } ?: return
-        viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
+        val info = orderTitle?.let { orderInfoByTitle[it] }
+        if (info != null) {
+            viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
+        }
+        refreshMultiQueryIfNeeded()
+    }
+
+    /**
+     * Пересобрать группы мультизапроса — нужно при смене участка/наряда,
+     * чтобы корректно пересчитался флаг «другой участок».
+     */
+    private fun refreshMultiQueryIfNeeded() {
+        if (!state.isMultiQuery) return
+        val tokens = state.queryTokens
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            buildMultiQueryGroups(tokens)
+        }
     }
 
     /**
      * Реакция на ввод в поле поиска.
      *
-     * Каждое новое нажатие отменяет предыдущую задачу и запускает новую
-     * с задержкой 450 мс. То есть запрос летит в БД, только когда
-     * пользователь перестал печатать.
+     * state.query обновляется сразу — чтобы текст в поле ввода шёл без лагов.
+     * Разбор на токены и запуск поиска — только после паузы.
      */
     fun setQuery(query: String) {
         state.query = query
+
         searchJob?.cancel()
-        if (query.isBlank()) return
+
+        // Пустой запрос — сбрасываем всё сразу.
+        if (query.isBlank()) {
+            state.queryTokens = emptyList()
+            state.clearQueryGroups()
+            return
+        }
+
         searchJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS)
-            loadGroupsForQuery(query)
+
+            val tokens = query.trim()
+                .split(Regex("\\s+"))
+                .filter { it.isNotBlank() }
+                .take(MAX_QUERY_TOKENS)
+
+            state.queryTokens = tokens
+
+            when (tokens.size) {
+                0 -> {
+                    state.clearQueryGroups()
+                }
+                1 -> {
+                    state.clearQueryGroups()
+                    loadGroupsForQuery(tokens[0])
+                }
+                else -> {
+                    buildMultiQueryGroups(tokens)
+                }
+            }
         }
     }
 
     // ================================================================
-    // Одиночные действия — атомарные UPDATE
+    // МНОЖЕСТВЕННЫЙ ПОИСК
+    // ================================================================
+
+    private suspend fun buildMultiQueryGroups(tokens: List<String>) {
+        try {
+            val settings = withContext(Dispatchers.IO) { settingsRepo.load() }
+            val queryGroups = mutableListOf<QueryGroup>()
+
+            tokens.forEachIndexed { idx, token ->
+                val (prefix, orderIds) = withContext(Dispatchers.IO) {
+                    resolveTokenToOrderIds(token, settings)
+                }
+
+                orderIds.forEach { ensureOrderSamplesLoaded(it) }
+
+                val variants = orderIds.mapNotNull { orderId ->
+                    val info = orderInfoById[orderId] ?: return@mapNotNull null
+                    val group = state.groupById(orderId.toString())
+                        ?: return@mapNotNull null
+                    val found = group.rows.count { it.found }
+                    QueryVariant(
+                        areaTitle = info.areaTitle,
+                        orderTitle = info.orderTitle,
+                        groupId = group.id,
+                        foundCount = found,
+                        totalCount = group.rows.size
+                    )
+                }
+
+                val selectedArea = state.selectedArea
+                val isForeign = selectedArea != null &&
+                        variants.isNotEmpty() &&
+                        variants.none { it.areaTitle == selectedArea }
+
+                queryGroups.add(
+                    QueryGroup(
+                        id = "q${idx + 1}",
+                        query = token,
+                        prefix = prefix,
+                        variants = variants,
+                        isForeignArea = isForeign
+                    )
+                )
+            }
+
+            withContext(Dispatchers.Main) {
+                state.setQueryGroups(queryGroups)
+            }
+        } catch (e: Exception) {
+            _message.value = "Ошибка множественного поиска: ${e.message}"
+        }
+    }
+
+    private suspend fun resolveTokenToOrderIds(
+        token: String,
+        settings: ImportSettings
+    ): Pair<String?, List<Long>> {
+        val prefix = extractLatinPrefix(token)
+        val number = if (prefix != null) token.removePrefix(prefix).trim() else token
+        val query = number.ifEmpty { token }
+
+        val allIds = repo.findOrderIdsByQuery(query)
+
+        if (prefix == null) {
+            return null to allIds
+        }
+
+        val matchingAreas = settings.areaPrefixes
+            .filterValues { prefixes ->
+                prefixes.any { it.equals(prefix, ignoreCase = true) }
+            }
+            .keys
+
+        val filtered = allIds.filter { orderId ->
+            val info = orderInfoById[orderId] ?: return@filter false
+            info.areaTitle in matchingAreas
+        }
+
+        return prefix to filtered
+    }
+
+    private fun extractLatinPrefix(token: String): String? {
+        val letters = token.takeWhile { it.isLetter() && it.code < 128 }
+        return letters.ifEmpty { null }?.uppercase()
+    }
+
+    // ================================================================
+    // ДЕЙСТВИЯ НАД ПРОБАМИ
     // ================================================================
 
     private fun rowById(rowId: String): SampleRow? = state.rowById(rowId)
@@ -284,10 +391,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return ok
     }
 
-    // ================================================================
-    // Массовые действия
-    // ================================================================
-
     fun applyBulkMarkFound(
         groupId: String,
         weights: Map<String, Double>,
@@ -303,10 +406,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         persistGroup(groupId)
     }
 
-    // ================================================================
-    // Удаление
-    // ================================================================
-
     fun deleteRow(rowId: String, recalc: Boolean) {
         val id = rowId.toLongOrNull() ?: return
         viewModelScope.launch {
@@ -321,10 +420,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    // ================================================================
-    // Undo / Redo
-    // ================================================================
-
     fun undo() {
         state.undo()
         persistAll()
@@ -334,10 +429,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         state.redo()
         persistAll()
     }
-
-    // ================================================================
-    // Настройки наряда
-    // ================================================================
 
     fun applyBlankSettingsForOrder(
         orderTitle: String,
@@ -470,7 +561,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     // ================================================================
-    // Сохранение
+    // СОХРАНЕНИЕ
     // ================================================================
 
     private fun persistGroup(groupId: String) {
