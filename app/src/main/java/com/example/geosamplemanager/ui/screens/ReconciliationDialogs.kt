@@ -26,14 +26,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-
-/**
- * Все диалоги экрана «Сверка и поиск».
- */
 
 // ====================================================================
 // Диалог веса
@@ -108,17 +105,16 @@ fun CharacteristicDialog(
 }
 
 // ====================================================================
-// ЗАМЕТКА И ФОТО (этап 5.5.2)
+// ЗАМЕТКА И ФОТО (5.8.7)
 // ====================================================================
 
 /**
  * Диалог заметки и фото.
  *
- * Важное поведение:
- *  • Фото добавляются/удаляются сразу (не по кнопке «Сохранить»).
- *  • Текст заметки — по кнопке «Сохранить».
- *  • Если текст был изменён и пользователь пытается закрыть диалог
- *    (тап мимо / крестик / «Закрыть») — спрашиваем подтверждение.
+ * ВАЖНО:
+ *  • Тап мимо окна НЕ закрывает диалог (dismissOnClickOutside = false).
+ *    Раньше пользователь случайно терял введённый текст.
+ *  • Флаг isSaving блокирует кнопки, пока идёт сохранение.
  */
 @Composable
 fun NotePhotoDialog(
@@ -133,21 +129,18 @@ fun NotePhotoDialog(
 ) {
     var text by remember(initialText) { mutableStateOf(initialText) }
     var photoToDelete by remember { mutableStateOf<SampleImageEntity?>(null) }
-    var showCloseConfirm by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
 
     val textChanged = text != initialText
 
-    // Функция «закрыть» — с проверкой на изменения
-    fun tryClose() {
-        if (textChanged) {
-            showCloseConfirm = true
-        } else {
-            onDismiss()
-        }
-    }
-
     AlertDialog(
-        onDismissRequest = { tryClose() },
+        onDismissRequest = {
+            // Тап мимо окна — ничего не делаем. Пользователь сам нажмёт «Закрыть».
+        },
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        ),
         title = {
             Column {
                 Text("Заметка и фото")
@@ -233,10 +226,22 @@ fun NotePhotoDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSaveText(text) }) { Text("Сохранить") }
+            TextButton(
+                enabled = !isSaving,
+                onClick = {
+                    isSaving = true
+                    onSaveText(text)
+                    isSaving = false
+                }
+            ) {
+                Text(if (isSaving) "Сохранение…" else "Сохранить")
+            }
         },
         dismissButton = {
-            TextButton(onClick = { tryClose() }) { Text("Закрыть") }
+            TextButton(
+                enabled = !isSaving,
+                onClick = onDismiss
+            ) { Text("Закрыть") }
         }
     )
 
@@ -262,39 +267,8 @@ fun NotePhotoDialog(
             }
         )
     }
-
-    // ==== Подтверждение закрытия без сохранения ====
-    if (showCloseConfirm) {
-        AlertDialog(
-            onDismissRequest = { showCloseConfirm = false },
-            title = { Text("Закрыть без сохранения?") },
-            text = { Text("Текст заметки изменён, но не сохранён. Всё равно закрыть?") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showCloseConfirm = false
-                        onDismiss()
-                    },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) { Text("Закрыть без сохранения") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCloseConfirm = false }) {
-                    Text("Продолжить редактирование")
-                }
-            }
-        )
-    }
 }
 
-/**
- * Миниатюра фото с крестиком для удаления.
- *
- * Bitmap декодируется в фоне (Dispatchers.IO), чтобы не вешать UI
- * на больших файлах и на списке из нескольких фото.
- */
 @Composable
 private fun PhotoThumbnail(
     path: String,
@@ -327,7 +301,6 @@ private fun PhotoThumbnail(
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            // Пока идёт декодирование или файл битый — заглушка
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(28.dp),
@@ -540,7 +513,7 @@ fun DeleteSampleDialog(
 }
 
 // ====================================================================
-// НАСТРОЙКИ НАРЯДА — единый диалог с двумя секциями
+// НАСТРОЙКИ НАРЯДА
 // ====================================================================
 
 @Composable
@@ -767,7 +740,7 @@ fun ConfirmResetBlankWeightDialog(
 }
 
 // ====================================================================
-// Массовая отметка — диалог решений
+// Массовая отметка
 // ====================================================================
 
 @Composable
@@ -903,7 +876,7 @@ fun BulkActionsDialog(
 }
 
 // ====================================================================
-// Уже найдена, Ошибка, Отложена — одиночные диалоги
+// Одиночные диалоги
 // ====================================================================
 
 @Composable

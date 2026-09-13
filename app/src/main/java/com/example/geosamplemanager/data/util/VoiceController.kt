@@ -1,128 +1,235 @@
 package com.example.geosamplemanager.data.util
 
 import android.content.Context
-import android.content.Intent
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import java.util.Locale
+import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.voice.VoiceCallback
+import com.example.geosamplemanager.data.voice.VoiceGrammar
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
 
 /**
- * Обёртка над SpeechRecognizer + TextToSpeech.
+ * Обёртка над Vosk + TTS.
  *
- * ВАЖНО:
- *  • Создавать и уничтожать ТОЛЬКО на главном потоке (требование SpeechRecognizer).
- *  • destroy() обязателен — иначе утечка ресурсов распознавателя и TTS.
- *  • TTS инициализируется асинхронно. Если speak() вызвать до готовности —
- *    ничего не произойдёт (не падаем).
- *
- * Все колбэки приходят на главном потоке.
+ * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
  */
 class VoiceController(
     private val context: Context,
-    private val onResult: (String) -> Unit,
-    private val onPartialResult: (String) -> Unit,
-    private val onError: (String) -> Unit,
-    private val onReady: () -> Unit
+    private val callback: VoiceCallback
 ) {
-    private var speechRecognizer: SpeechRecognizer? = null
+    private val app = context.applicationContext as GeoSampleApp
+
+    private var speechService: SpeechService? = null
+    private var recognizer: Recognizer? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var listening = false
+    private var lastFinalText: String = ""
 
     init {
-        initRecognizer()
         initTts()
     }
 
-    private fun initRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
-            onError("Распознавание речи недоступно на этом устройстве")
-            return
-        }
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) = onReady()
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-
-                override fun onError(error: Int) {
-                    onError(describeError(error))
-                }
-
-                override fun onResults(results: Bundle?) {
-                    val text = results
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        .orEmpty()
-                    onResult(text)
-                }
-
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val text = partialResults
-                        ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()
-                        .orEmpty()
-                    if (text.isNotEmpty()) onPartialResult(text)
-                }
-
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-        }
-    }
+    // ================================================================
+    // TTS
+    // ================================================================
 
     private fun initTts() {
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale("ru", "RU")
-                ttsReady = true
+                try {
+                    tts?.language = java.util.Locale("ru", "RU")
+                    ttsReady = true
+                    Log.e(TAG, "TTS готов")
+                } catch (e: Exception) {
+                    Log.e(TAG, "TTS: ошибка языка", e)
+                }
+                // Слушатель прогресса — глушит микрофон во время речи.
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        Log.e(TAG, "TTS onStart → пауза Vosk")
+                        pauseVosk()
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        Log.e(TAG, "TTS onDone → возобновляю Vosk через 300 мс")
+                        resumeVoskDelayed(300)
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        Log.e(TAG, "TTS onError → возобновляю Vosk")
+                        resumeVoskDelayed(300)
+                    }
+
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        Log.e(TAG, "TTS onError($errorCode) → возобновляю Vosk")
+                        resumeVoskDelayed(300)
+                    }
+                })
+            } else {
+                Log.e(TAG, "TTS init failed: status=$status")
             }
         }
     }
 
-    /** Начать слушать. Запускать только после того, как пользователь дал разрешение. */
-    fun startListening() {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
-        try {
-            speechRecognizer?.startListening(intent)
-        } catch (e: Exception) {
-            onError("Не удалось запустить микрофон: ${e.message}")
-        }
-    }
-
-    /** Остановить слушание. */
-    fun stopListening() {
-        try {
-            speechRecognizer?.stopListening()
-        } catch (_: Exception) {}
-    }
-
-    /** Озвучить текст. Если TTS ещё не готов — молча игнорируем. */
     fun speak(text: String) {
-        if (!ttsReady) return
+        if (!ttsReady) {
+            Log.d(TAG, "speak: TTS не готов, пропускаю")
+            return
+        }
         try {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "voice_${System.currentTimeMillis()}")
-        } catch (_: Exception) {}
+            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "v_${System.currentTimeMillis()}")
+        } catch (e: Exception) {
+            Log.w(TAG, "speak failed", e)
+        }
     }
 
-    /** Освободить ресурсы. ОБЯЗАТЕЛЬНО вызывать в onDispose. */
-    fun destroy() {
+    private fun pauseVosk() {
         try {
-            speechRecognizer?.destroy()
-        } catch (_: Exception) {}
-        speechRecognizer = null
+            speechService?.setPause(true)
+            Log.e(TAG, "Vosk: приостановлен")
+        } catch (e: Exception) {
+            Log.w(TAG, "pause failed", e)
+        }
+    }
 
+    private fun resumeVoskDelayed(delayMs: Long) {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                speechService?.setPause(false)
+                Log.e(TAG, "Vosk: возобновлён")
+            } catch (e: Exception) {
+                Log.w(TAG, "resume failed", e)
+            }
+        }, delayMs)
+    }
+
+    // ================================================================
+    // РАСПОЗНАВАНИЕ
+    // ================================================================
+
+    fun startListening() {
+        if (listening) {
+            Log.d(TAG, "startListening: уже слушаю")
+            return
+        }
+
+        val model = app.voiceModel
+        if (model == null) {
+            Log.e(TAG, "startListening: МОДЕЛЬ НЕ ЗАГРУЖЕНА")
+            callback.onError("Модель Vosk не загружена")
+            return
+        }
+
+        try {
+            lastFinalText = ""
+            val service = speechService ?: createService(model)
+            listening = true
+            callback.onReady()
+            service.startListening(listener)
+            Log.e(TAG, "startListening: старт (грамматика=${app.voiceUseGrammar})")
+        } catch (e: Exception) {
+            listening = false
+            Log.e(TAG, "startListening: ИСКЛЮЧЕНИЕ", e)
+            callback.onError("Не удалось запустить: ${e.message}")
+        }
+    }
+
+    private fun createService(model: Model): SpeechService {
+        val rec = if (app.voiceUseGrammar) {
+            try {
+                val grammar = VoiceGrammar.build()
+                Log.e(TAG, "createService: с грамматикой (${grammar.length} байт)")
+                Recognizer(model, SAMPLE_RATE, grammar)
+            } catch (e: Exception) {
+                Log.e(TAG, "createService: грамматика упала, без неё", e)
+                Recognizer(model, SAMPLE_RATE)
+            }
+        } else {
+            Log.e(TAG, "createService: без грамматики")
+            Recognizer(model, SAMPLE_RATE)
+        }
+        recognizer = rec
+        val service = SpeechService(rec, SAMPLE_RATE)
+        speechService = service
+        return service
+    }
+
+    fun stopListening() {
+        if (!listening) return
+        try { speechService?.stop() } catch (e: Exception) {
+            Log.w(TAG, "stopListening ошибка", e)
+        }
+        listening = false
+    }
+
+    private val listener = object : RecognitionListener {
+
+        override fun onPartialResult(hypothesis: String?) {
+            val text = extractText(hypothesis, "partial")
+            if (text.isEmpty()) return
+            callback.onPartial(text)
+        }
+
+        override fun onResult(hypothesis: String?) {
+            val text = extractText(hypothesis, "text")
+            if (text.isEmpty()) return
+            if (text == lastFinalText) return
+            lastFinalText = text
+            Log.e(TAG, "RESULT: «$text» → вызываю callback.onResult")
+            try {
+                callback.onResult(text)
+                Log.e(TAG, "RESULT: callback.onResult отработал")
+            } catch (e: Exception) {
+                Log.e(TAG, "RESULT: callback.onResult УПАЛ", e)
+            }
+        }
+
+        override fun onFinalResult(hypothesis: String?) {
+            val text = extractText(hypothesis, "text")
+            if (text.isEmpty()) return
+            if (text == lastFinalText) return
+            lastFinalText = text
+            Log.e(TAG, "FINAL: «$text» → вызываю callback.onResult")
+            try {
+                callback.onResult(text)
+            } catch (e: Exception) {
+                Log.e(TAG, "FINAL: callback.onResult УПАЛ", e)
+            }
+        }
+
+        override fun onError(e: Exception?) {
+            listening = false
+            Log.e(TAG, "VOSK onError: ${e?.message}", e)
+            callback.onError("Ошибка распознавания: ${e?.message ?: "неизвестная"}")
+        }
+
+        override fun onTimeout() {
+            listening = false
+            Log.e(TAG, "VOSK onTimeout")
+            callback.onError("Тишина в микрофоне")
+        }
+    }
+
+    fun destroy() {
+        Log.e(TAG, "destroy")
+        try { speechService?.stop() } catch (_: Exception) {}
+        try { speechService?.shutdown() } catch (_: Exception) {}
+        try { recognizer?.close() } catch (_: Exception) {}
+        speechService = null
+        recognizer = null
+        listening = false
+        lastFinalText = ""
+
+        // TTS живёт в VoiceTtsHolder, здесь только через callback.speak()
+        // Но контроллер держит свой TTS для UtteranceProgressListener.
         try {
             tts?.stop()
             tts?.shutdown()
@@ -131,16 +238,17 @@ class VoiceController(
         ttsReady = false
     }
 
-    private fun describeError(error: Int): String = when (error) {
-        SpeechRecognizer.ERROR_AUDIO -> "Ошибка аудио"
-        SpeechRecognizer.ERROR_CLIENT -> "Ошибка клиента"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Нет разрешения на микрофон"
-        SpeechRecognizer.ERROR_NETWORK -> "Ошибка сети"
-        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Тайм-аут сети"
-        SpeechRecognizer.ERROR_NO_MATCH -> "Не расслышал"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Распознаватель занят"
-        SpeechRecognizer.ERROR_SERVER -> "Ошибка сервера распознавания"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Тишина в микрофоне"
-        else -> "Ошибка распознавания ($error)"
+    private fun extractText(json: String?, field: String): String {
+        if (json.isNullOrEmpty()) return ""
+        return try {
+            JSONObject(json).optString(field, "").trim()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    companion object {
+        private const val TAG = "VoiceController"
+        private const val SAMPLE_RATE = 16000.0f
     }
 }

@@ -15,7 +15,12 @@ data class VoiceSettings(
     val ttsVolume: TtsVolume = TtsVolume.NORMAL,
     val mode: VoiceMode = VoiceMode.NOVICE,
     val customPrefixPronunciations: Map<String, String> = emptyMap(),
-    val showOnboarding: Boolean = true
+    val showOnboarding: Boolean = true,
+    /**
+     * Использовать грамматику Vosk (ограниченный словарь).
+     * Резко повышает точность распознавания чисел.
+     */
+    val useGrammar: Boolean = true
 )
 
 enum class TtsVolume { OFF, QUIET, NORMAL, LOUD }
@@ -39,9 +44,15 @@ class VoiceSettingsRepository(context: Context) {
             val f = file
             if (!f.exists()) return@withContext VoiceSettings()
             val json = f.readText()
-            gson.fromJson(json, VoiceSettings::class.java) ?: VoiceSettings()
+            val parsed = gson.fromJson(json, VoiceSettings::class.java) ?: VoiceSettings()
+            // Gson игнорирует Kotlin-дефолты: если поля не было в JSON,
+            // Boolean станет false. Восстанавливаем true.
+            if (!json.contains("\"useGrammar\"")) {
+                parsed.copy(useGrammar = true)
+            } else {
+                parsed
+            }
         } catch (e: Exception) {
-            // Битый JSON — возвращаем дефолт, не падаем.
             VoiceSettings()
         }
     }

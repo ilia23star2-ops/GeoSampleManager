@@ -1,5 +1,6 @@
 package com.example.geosamplemanager.data.voice
 
+import android.util.Log
 import kotlin.math.abs
 
 /**
@@ -16,7 +17,6 @@ data class VoiceSampleHit(
 
 /**
  * Источник данных для голосового поиска.
- * В проде — VoiceSearchRepository; в тестах — фейковый список.
  */
 interface VoiceSampleSource {
     suspend fun loadAll(): List<VoiceSampleHit>
@@ -24,12 +24,15 @@ interface VoiceSampleSource {
 
 /**
  * Результат поиска.
+ *
+ * @property isSample true — нашли ПРОБУ (показываем одну), false — СКВАЖИНУ.
  */
 sealed class VoiceSearchResult {
     data class FoundOne(
         val hit: VoiceSampleHit,
         val candidate: String,
-        val level: Int
+        val level: Int,
+        val isSample: Boolean
     ) : VoiceSearchResult()
 
     data class FoundMany(
@@ -44,14 +47,13 @@ sealed class VoiceSearchResult {
 /**
  * Голосовой поиск.
  *
- * 5 уровней из §6 VOICE.md:
- *   1. sample_number = кандидат (точное).
- *   2. well_number = кандидат (все пробы скважины).
- *   3. нормализация нулей («10900031» ≈ «1090031»).
- *   4. well + суффикс — отложено до 5.8.4 (нужен контекст сессии).
- *   5. fuzzy — по §7.
- *
- * Первый найденный результат — победитель.
+ * Уровни:
+ *   1. sample_number == кандидат     → ПРОБА (одна)
+ *   2. well_number == кандидат       → СКВАЖИНА (все пробы)
+ *   3. well_number.endsWith(кандидат) → СКВАЖИНА
+ *   4. sample_number.endsWith(кандидат) → ПРОБА (одна)
+ *   5. нормализация нулей            → смотрим по совпадению
+ *   6. fuzzy                         → по совпадению
  */
 class VoiceSearch(private val source: VoiceSampleSource) {
 
@@ -59,58 +61,98 @@ class VoiceSearch(private val source: VoiceSampleSource) {
         if (candidates.isEmpty()) return VoiceSearchResult.NotFound
 
         val all = source.loadAll()
+        Log.i(TAG, "search: загружено проб=${all.size}")
         if (all.isEmpty()) return VoiceSearchResult.NotFound
 
         for (candidate in candidates) {
             val clean = candidate.replace("|", "").trim()
             if (clean.isEmpty()) continue
+            Log.i(TAG, "search: кандидат «$clean»")
 
-            // Уровень 1: точное совпадение sample_number.
-            val bySample = all.filter { it.sampleNumber == clean }
-            when (bySample.size) {
-                0 -> Unit
-                1 -> return VoiceSearchResult.FoundOne(bySample[0], clean, 1)
-                else -> return VoiceSearchResult.FoundMany(bySample, clean, 1)
+            // L1: sample_number == кандидат → ПРОБА.
+            run {
+                val hits = all.filter { it.sampleNumber == clean }
+                Log.d(TAG, "  L1 (sample==): ${hits.size}")
+                if (hits.size == 1)
+                    return VoiceSearchResult.FoundOne(hits[0], clean, 1, isSample = true)
+                if (hits.size > 1)
+                    return VoiceSearchResult.FoundMany(hits, clean, 1)
             }
 
-            // Уровень 2: точное совпадение well_number.
-            val byWell = all.filter { it.wellNumber == clean }
-            when (byWell.size) {
-                0 -> Unit
-                1 -> return VoiceSearchResult.FoundOne(byWell[0], clean, 2)
-                else -> return VoiceSearchResult.FoundMany(byWell, clean, 2)
+            // L2: well_number == кандидат → СКВАЖИНА.
+            run {
+                val hits = all.filter { it.wellNumber == clean }
+                Log.d(TAG, "  L2 (well==): ${hits.size}")
+                if (hits.isNotEmpty()) {
+                    val first = hits.first()
+                    return VoiceSearchResult.FoundOne(first, clean, 2, isSample = false)
+                }
             }
 
-            // Уровень 3: нормализация нулей.
-            val normalized = normalizeZeroes(clean)
-            val byNorm = all.filter { normalizeZeroes(it.sampleNumber) == normalized }
-            when (byNorm.size) {
-                0 -> Unit
-                1 -> return VoiceSearchResult.FoundOne(byNorm[0], clean, 3)
-                else -> return VoiceSearchResult.FoundMany(byNorm, clean, 3)
+            // L3: суффикс well_number → СКВАЖИНА.
+            run {
+                val hits = all.filter { it.wellNumber.endsWith(clean) }
+                Log.d(TAG, "  L3 (well.endsWith): ${hits.size}")
+                if (hits.isNotEmpty()) {
+                    val first = hits.first()
+                    if (hits.all { it.wellNumber == first.wellNumber }) {
+                        return VoiceSearchResult.FoundOne(
+                            first, clean, 3, isSample = false
+                        )
+                    }
+                    return VoiceSearchResult.FoundMany(hits, clean, 3)
+                }
+            }
+
+            // L4: суффикс sample_number → ПРОБА (одна).
+            run {
+                val hits = all.filter { it.sampleNumber.endsWith(clean) }
+                Log.d(TAG, "  L4 (sample.endsWith): ${hits.size}")
+                if (hits.size == 1)
+                    return VoiceSearchResult.FoundOne(hits[0], clean, 4, isSample = true)
+                if (hits.size > 1)
+                    return VoiceSearchResult.FoundMany(hits, clean, 4)
+            }
+
+            // L5: нормализация нулей.
+            run {
+                val normalized = normalizeZeroes(clean)
+                val hits = all.filter {
+                    normalizeZeroes(it.sampleNumber) == normalized ||
+                            normalizeZeroes(it.wellNumber) == normalized
+                }
+                Log.d(TAG, "  L5 (norm zeroes): ${hits.size}")
+                if (hits.size == 1) {
+                    val h = hits[0]
+                    val isSample = h.sampleNumber == clean || h.sampleNumber.endsWith(clean)
+                    return VoiceSearchResult.FoundOne(h, clean, 5, isSample)
+                }
+                if (hits.size > 1) return VoiceSearchResult.FoundMany(hits, clean, 5)
             }
         }
 
-        // Уровень 5: fuzzy.
+        // L6: fuzzy.
         for (candidate in candidates) {
             val clean = candidate.replace("|", "").trim()
             if (clean.isEmpty()) continue
-            val fuzzy = all.filter { fuzzyMatch(it.sampleNumber, clean) }
-            when (fuzzy.size) {
-                0 -> Unit
-                1 -> return VoiceSearchResult.FoundOne(fuzzy[0], clean, 5)
-                else -> return VoiceSearchResult.FoundMany(fuzzy, clean, 5)
+            val hits = all.filter {
+                fuzzyMatch(it.sampleNumber, clean) || fuzzyMatch(it.wellNumber, clean)
             }
+            Log.d(TAG, "  L6 (fuzzy «$clean»): ${hits.size}")
+            if (hits.size == 1) {
+                val h = hits[0]
+                val isSample = fuzzyMatch(h.sampleNumber, clean)
+                return VoiceSearchResult.FoundOne(h, clean, 6, isSample)
+            }
+            if (hits.size > 1) return VoiceSearchResult.FoundMany(hits, clean, 6)
         }
 
         return VoiceSearchResult.NotFound
     }
 
     companion object {
+        private const val TAG = "VoiceSearch"
 
-        /**
-         * Сжимает кратные нули: «10900031» → «109031».
-         */
         fun normalizeZeroes(s: String): String {
             val sb = StringBuilder(s.length)
             var prevZero = false
@@ -126,12 +168,6 @@ class VoiceSearch(private val source: VoiceSampleSource) {
             return sb.toString()
         }
 
-        /**
-         * Fuzzy-совпадение по §7 VOICE.md:
-         *  • ненулевые цифры точно совпадают;
-         *  • разница длин ≤ 1;
-         *  • Левенштейн полной строки ≤ 1.
-         */
         fun fuzzyMatch(a: String, b: String): Boolean {
             if (a == b) return true
             if (abs(a.length - b.length) > 1) return false
@@ -153,11 +189,7 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                 cur[0] = i
                 for (j in 1..b.length) {
                     val cost = if (a[i - 1] == b[j - 1]) 0 else 1
-                    cur[j] = minOf(
-                        prev[j] + 1,
-                        cur[j - 1] + 1,
-                        prev[j - 1] + cost
-                    )
+                    cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
                 }
                 System.arraycopy(cur, 0, prev, 0, cur.size)
             }

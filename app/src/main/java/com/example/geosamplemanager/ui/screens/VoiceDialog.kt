@@ -1,5 +1,8 @@
 package com.example.geosamplemanager.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,69 +28,119 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.example.geosamplemanager.data.util.VoiceController
-import com.example.geosamplemanager.data.voice.VoiceCommand
+import com.example.geosamplemanager.data.voice.VoiceCallback
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
+import com.example.geosamplemanager.data.voice.VoiceExecResult
+import com.example.geosamplemanager.data.voice.VoiceFeedback
+import com.example.geosamplemanager.data.voice.VoiceSpeaker
+import com.example.geosamplemanager.data.voice.VoiceStatus
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
-/**
- * Диалог голосового ввода.
- *
- * 5.8.4:
- *  • Распознаёт фразу.
- *  • Прогоняет через VoiceCommandParser.
- *  • Показывает распознанную команду.
- *
- * Выполнение команд — 5.8.5.
- */
+private const val LOG_TAG = "VoiceDialog"
+
 @Composable
 fun VoiceDialog(
+    viewModel: ReconciliationViewModel,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val commandParser = remember { VoiceCommandParser() }
 
     var status by remember { mutableStateOf("Инициализация...") }
     var partialText by remember { mutableStateOf("") }
     var finalText by remember { mutableStateOf("") }
-    var parsedCommand by remember { mutableStateOf<VoiceCommand?>(null) }
-
+    var resultText by remember { mutableStateOf("") }
     var controller by remember { mutableStateOf<VoiceController?>(null) }
+    var feedback by remember { mutableStateOf<VoiceFeedback?>(null) }
 
     DisposableEffect(Unit) {
-        val c = VoiceController(
-            context = context,
-            onReady = {
+        Log.e(LOG_TAG, "DisposableEffect: НАЧАЛО")
+
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
+            status = "Нет разрешения на микрофон"
+            return@DisposableEffect onDispose { }
+        }
+
+        val fb = VoiceFeedback(context)
+        feedback = fb
+
+        val callback = object : VoiceCallback {
+            override fun onReady() {
                 status = "Слушаю..."
                 partialText = ""
-            },
-            onPartialResult = { text ->
-                partialText = text
-            },
-            onResult = { text ->
-                finalText = text
-                parsedCommand = if (text.isBlank()) null
-                else commandParser.parse(text)
-                status = if (text.isBlank()) "Не расслышал" else "Готово"
-                partialText = ""
-                if (text.isNotBlank()) controller?.speak(text)
-            },
-            onError = { msg ->
-                status = msg
-                partialText = ""
+                viewModel.setVoiceStatus(VoiceStatus.Listening)
             }
-        )
+
+            override fun onPartial(text: String) {
+                if (text.isNotBlank()) {
+                    partialText = text
+                    viewModel.setVoiceStatus(VoiceStatus.Heard(text))
+                }
+            }
+
+            override fun onResult(text: String) {
+                Log.e(LOG_TAG, "CALLBACK onResult: text=«$text»")
+                finalText = text
+                partialText = ""
+                if (text.isBlank()) {
+                    status = "Не расслышал"
+                    viewModel.setVoiceStatus(VoiceStatus.Error("Не расслышал"))
+                    return
+                }
+
+                viewModel.setVoiceStatus(VoiceStatus.Heard(text))
+                val cmd = commandParser.parse(text)
+                Log.e(LOG_TAG, "parsed command = $cmd")
+
+                scope.launch {
+                    try {
+                        val result = viewModel.voiceExecute(cmd)
+                        Log.e(LOG_TAG, "voiceExecute вернул: $result")
+                        resultText = describeResult(result)
+                        status = "Готово"
+                        viewModel.setVoiceStatus(statusFromResult(result))
+                        handleFeedback(result, fb, controller)
+                    } catch (e: Exception) {
+                        Log.e(LOG_TAG, "voiceExecute УПАЛ", e)
+                        resultText = "Ошибка: ${e.message}"
+                        status = "Ошибка"
+                        viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
+                    }
+                }
+            }
+
+            override fun onError(message: String) {
+                status = message
+                partialText = ""
+                viewModel.setVoiceStatus(VoiceStatus.Error(message))
+            }
+        }
+
+        val c = VoiceController(context, callback)
         controller = c
         c.startListening()
 
         onDispose {
             c.destroy()
+            fb.release()
             controller = null
+            feedback = null
+            viewModel.setVoiceStatus(VoiceStatus.Idle)
         }
     }
 
@@ -103,38 +156,28 @@ fun VoiceDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Mic,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                    Icon(Icons.Filled.Mic, null,
+                        tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                 }
 
                 if (partialText.isNotEmpty()) {
-                    Text(
-                        "Слышу: $partialText",
+                    Text("Слышу: $partialText",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
 
                 if (finalText.isNotEmpty()) {
                     Card {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Filled.VolumeUp,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
+                                Icon(Icons.Filled.VolumeUp, null,
+                                    tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "Распознано:",
+                                Text("Распознано:",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Spacer(Modifier.width(4.dp))
                             Text(finalText, style = MaterialTheme.typography.titleMedium)
@@ -142,36 +185,28 @@ fun VoiceDialog(
                     }
                 }
 
-                parsedCommand?.let { cmd ->
+                if (resultText.isNotEmpty()) {
                     Card {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Filled.PlayArrow,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
+                                Icon(Icons.Filled.PlayArrow, null,
+                                    tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "Команда:",
+                                Text("Результат:",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Spacer(Modifier.width(4.dp))
-                            Text(
-                                describeCommand(cmd),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
+                            Text(resultText, style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium)
                         }
                     }
                 }
 
                 Text(
-                    "Примеры команд: «первая», «снять первую», «вес два пять», " +
-                            "«следующая», «стоп». Номера: «1524», «KPD1090031». " +
-                            "Сортировка: «1524 и 1525».",
+                    "Команды: «первая», «снять первую», «вес два пять», " +
+                            "«следующая», «стоп», «помощь». Номера: «1524», " +
+                            "«KPD1090031». Сортировка: «1524 и 1525».",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -179,12 +214,16 @@ fun VoiceDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                parsedCommand = null
                 finalText = ""
-                controller?.startListening()
-            }) {
-                Text("Ещё раз")
-            }
+                resultText = ""
+                controller?.let { ctrl ->
+                    scope.launch {
+                        ctrl.stopListening()
+                        delay(300)
+                        ctrl.startListening()
+                    }
+                }
+            }) { Text("Ещё раз") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Закрыть") }
@@ -192,27 +231,102 @@ fun VoiceDialog(
     )
 }
 
-/**
- * Текстовое описание команды — для отладки и проверки.
- */
-private fun describeCommand(cmd: VoiceCommand): String = when (cmd) {
-    is VoiceCommand.Search       -> "Поиск: ${cmd.query}"
-    is VoiceCommand.MarkOrdinal  -> "Отметить пробу №${cmd.ordinal}"
-    is VoiceCommand.SetWeight    -> "Вес: ${cmd.value} кг"
-    is VoiceCommand.ClearOrdinal -> "Снять отметку у №${cmd.ordinal}"
-    is VoiceCommand.ClearLast    -> "Снять последнюю отметку"
-    is VoiceCommand.ClearAll     -> "Снять все отметки"
-    is VoiceCommand.Unpostpone   -> "Снять «отложена»"
-    is VoiceCommand.Next         -> "Следующая скважина"
-    is VoiceCommand.Undo         -> "Отмена"
-    is VoiceCommand.Redo         -> "Повторить"
-    is VoiceCommand.Pause        -> "Пауза"
-    is VoiceCommand.Resume       -> "Продолжить"
-    is VoiceCommand.Stop         -> "Стоп"
-    is VoiceCommand.HowManyLeft  -> "Сколько осталось"
-    is VoiceCommand.ShowPostponed-> "Показать отложенные"
-    is VoiceCommand.ShowFound    -> "Показать найденные"
-    is VoiceCommand.Help         -> "Справка"
-    is VoiceCommand.Sort         -> "Сортировка: ${cmd.queries.joinToString(", ")}"
-    VoiceCommand.Unknown         -> "Не понял"
+private fun handleFeedback(
+    result: VoiceExecResult,
+    fb: VoiceFeedback,
+    controller: VoiceController?
+) {
+    when (result) {
+        is VoiceExecResult.FoundOne -> {
+            fb.doubleUp()
+            val spokenNumber = VoiceSpeaker.spellOut(result.query)
+            val orderPart = result.orderTitle
+            val phrase = if (result.isSample) {
+                val stateText = if (result.foundSamples > 0) "уже отмечена" else "не отмечена"
+                "Проба $spokenNumber. $orderPart. $stateText."
+            } else {
+                val total = VoiceSpeaker.spellNumber(result.totalSamples)
+                val found = VoiceSpeaker.spellNumber(result.foundSamples)
+                "Скважина $spokenNumber. $orderPart. Проб: $total, отмечено: $found."
+            }
+            controller?.speak(phrase)
+        }
+
+        is VoiceExecResult.Marked -> {
+            fb.doubleUp()
+            val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
+            val phrase = when {
+                result.needsWeight && result.isWeightControl ->
+                    "Проба $spoken — весовой контроль. Вес?"
+                result.needsWeight ->
+                    "Проба $spoken — холостая. Вес?"
+                result.isWeightControl ->
+                    "Проба $spoken — весовой контроль, отмечена."
+                else ->
+                    "Проба $spoken отмечена."
+            }
+            controller?.speak(phrase)
+        }
+
+        is VoiceExecResult.WeightSet -> {
+            val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
+            controller?.speak("Вес ${result.weight} килограмм. Проба $spoken.")
+        }
+
+        is VoiceExecResult.FoundMany -> {
+            fb.error()
+            controller?.speak("Несколько вариантов. Уточните.")
+        }
+
+        VoiceExecResult.NotFound -> {
+            fb.error()
+            controller?.speak("Не нашёл.")
+        }
+
+        is VoiceExecResult.Message -> controller?.speak(result.text)
+        VoiceExecResult.Next -> controller?.speak("Слушаю следующую скважину.")
+        else -> {}
+    }
+}
+
+private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
+    is VoiceExecResult.FoundOne -> VoiceStatus.Found("${result.query} — ${result.orderTitle}")
+    is VoiceExecResult.FoundMany -> VoiceStatus.Found("Несколько вариантов")
+    is VoiceExecResult.Marked -> VoiceStatus.Marked(result.sampleNumber)
+    is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
+    is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
+    is VoiceExecResult.Message -> VoiceStatus.Found(result.text)
+    VoiceExecResult.Next -> VoiceStatus.Idle
+    VoiceExecResult.NotFound -> VoiceStatus.Error("Не нашёл")
+    else -> VoiceStatus.Idle
+}
+
+private fun describeResult(result: VoiceExecResult): String = when (result) {
+    is VoiceExecResult.FoundOne -> {
+        if (result.isSample) {
+            val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
+            "Проба ${result.query} → ${result.orderTitle}. $label"
+        } else {
+            "Скважина ${result.query} → ${result.orderTitle}. " +
+                    "Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}"
+        }
+    }
+    is VoiceExecResult.FoundMany -> "Несколько вариантов (${result.variants})"
+    is VoiceExecResult.Marked -> {
+        val extra = when {
+            result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
+            result.needsWeight -> " — холостая, вес?"
+            result.isWeightControl -> " — весовой контроль"
+            else -> ""
+        }
+        "Отмечена проба №${result.ordinal}: ${result.sampleNumber}$extra"
+    }
+    is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг (${result.sampleNumber})"
+    is VoiceExecResult.Unmarked -> "Снято: ${result.sampleNumber}"
+    is VoiceExecResult.Message -> result.text
+    VoiceExecResult.Next -> "Следующая скважина"
+    VoiceExecResult.Undone -> "Отменено"
+    VoiceExecResult.Redone -> "Повторено"
+    VoiceExecResult.Stopped -> "Стоп"
+    VoiceExecResult.NotFound -> "Не найдено"
 }

@@ -40,6 +40,21 @@ android {
         kotlinCompilerExtensionVersion '1.5.4'
     }
 
+    /**
+     * Модель Vosk состоит из файлов с расширениями .mdl, .conf, .fst, .int.
+     * aapt по умолчанию их сжимает, и Vosk не может прочитать.
+     * Запрещаем сжатие для всех этих расширений.
+     */
+    aaptOptions {
+        noCompress 'mdl'
+        noCompress 'conf'
+        noCompress 'fst'
+        noCompress 'int'
+        noCompress 'txt'
+        noCompress 'ie'
+        noCompress 'mat'
+    }
+
     packaging {
         resources {
             excludes += ['META-INF/DEPENDENCIES', 'META-INF/LICENSE',
@@ -75,4 +90,7 @@ dependencies {
 
     // Gson — для настроек импорта
     implementation 'com.google.code.gson:gson:2.10.1'
+
+    // Vosk — офлайн-распознавание речи
+    implementation 'com.alphacephei:vosk-android:0.3.47'
 }

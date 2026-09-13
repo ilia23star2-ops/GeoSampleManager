@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.example.geosamplemanager.data.voice.VoiceStatus
 
 @Stable
 class ReconciliationState(initialGroups: List<SampleGroup>) {
@@ -42,6 +43,19 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     var allAreaNames: List<String> by mutableStateOf(emptyList())
 
     // ================================================================
+    // Голосовой помощник (5.8.5)
+    // ================================================================
+
+    /** Текущий статус ГП — для статус-бара. */
+    var voiceStatus by mutableStateOf<VoiceStatus>(VoiceStatus.Idle)
+
+    /** Открыт диалог справки по командам. */
+    var voiceHelpVisible by mutableStateOf(false)
+
+    /** Открыт онбординг. */
+    var voiceOnboardingVisible by mutableStateOf(false)
+
+    // ================================================================
     // Множественный поиск
     // ================================================================
 
@@ -65,10 +79,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         _queryGroupExpanded.clear()
     }
 
-    /**
-     * Все группы запросов — свёрнуты по умолчанию. Пользователь может
-     * развернуть каждую отдельно или нажать «Развернуть все».
-     */
     fun isQueryGroupExpanded(id: String): Boolean = _queryGroupExpanded[id] ?: false
 
     fun toggleQueryGroup(id: String) {
@@ -78,15 +88,11 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 
     fun expandAllQueryGroups() {
-        _queryGroups.forEach { qg ->
-            _queryGroupExpanded[qg.id] = true
-        }
+        _queryGroups.forEach { qg -> _queryGroupExpanded[qg.id] = true }
     }
 
     fun collapseAllQueryGroups() {
-        _queryGroups.forEach { qg ->
-            _queryGroupExpanded[qg.id] = false
-        }
+        _queryGroups.forEach { qg -> _queryGroupExpanded[qg.id] = false }
     }
 
     val hasCollapsedQueryGroups: Boolean
@@ -95,16 +101,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val allQueryGroupsExpanded: Boolean
         get() = _queryGroups.isNotEmpty() && _queryGroups.all { isQueryGroupExpanded(it.id) }
 
-    /**
-     * Режим фильтра: и участок, и наряд выбраны.
-     * В этом режиме строка поиска ещё и фильтрует (prefix по № пробы).
-     */
     private val isFilterMode: Boolean
         get() = selectedArea != null && selectedOrder != null
 
-    /**
-     * Группы для конкретного запроса. С фильтрами.
-     */
     fun filteredGroupsForQuery(qg: QueryGroup): List<SampleGroup> {
         val groupsForQ = qg.variants.mapNotNull { v ->
             _groups.firstOrNull { it.id == v.groupId }
@@ -127,7 +126,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         get() = _queryGroups.isNotEmpty() && _queryGroups.all { it.isUnique }
 
     // ================================================================
-    // Производные (для одиночного запроса)
+    // Производные
     // ================================================================
 
     val hasSelection: Boolean get() = selectedArea != null || selectedOrder != null
@@ -313,10 +312,8 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         settings: BlankWeightSettings
     ): Int {
         if (settings.mode == BlankWeightMode.MANUAL) return 0
-
         val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
         if (gi < 0) return 0
-
         val group = _groups[gi]
         var changed = 0
         val newRows = group.rows.map { row ->
@@ -339,7 +336,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     fun resetBlankWeightsForOrder(orderTitle: String): Int {
         val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
         if (gi < 0) return 0
-
         val group = _groups[gi]
         var changed = 0
         val newRows = group.rows.map { row ->
@@ -463,7 +459,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         val group = _groups[gi]
         val settings = blankWeightFor(group.orderTitle)
         var marked = 0
-
         val changes = group.rows.map { it.id to it.found }
 
         val newRows = group.rows.map { row ->
@@ -473,19 +468,14 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             if (row.weightControl && row.controlWeight == null) {
                 val w = weights[row.id]
                 if (w != null && w > 0) {
-                    marked++
-                    row.copy(controlWeight = w, found = true)
+                    marked++; row.copy(controlWeight = w, found = true)
                 } else row
             } else if (row.postponed) {
                 val doMark = postponedActions[row.id] ?: false
-                if (doMark) {
-                    marked++
-                    row.copy(found = true)
-                } else row
+                if (doMark) { marked++; row.copy(found = true) } else row
             } else if (row.isBlank) {
                 if (row.weight != null) {
-                    marked++
-                    row.copy(found = true)
+                    marked++; row.copy(found = true)
                 } else {
                     val w = when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue
@@ -493,13 +483,11 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                         BlankWeightMode.MANUAL -> null
                     }
                     if (w != null && w > 0) {
-                        marked++
-                        row.copy(weight = w, found = true)
+                        marked++; row.copy(weight = w, found = true)
                     } else row
                 }
             } else {
-                marked++
-                row.copy(found = true)
+                marked++; row.copy(found = true)
             }
         }
 
@@ -522,44 +510,27 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         val (gi, ri) = findRow(rowId) ?: return
         val group = _groups[gi]
         val row = group.rows[ri]
-
         val before = snapshotWellCells(group.rows, row.wellNumber)
-
         val newRows = group.rows.toMutableList().apply { removeAt(ri) }
         val finalRows = if (recalc) renumberWell(newRows, row.wellNumber)
         else recalcNumberInWellOnly(newRows, row.wellNumber)
-
         _groups[gi] = group.copy(rows = finalRows)
-
         val after = snapshotWellCells(finalRows, row.wellNumber)
-
         pushUndo(
             UndoAction.DeleteRow(
-                groupId = group.id,
-                rowIndex = ri,
-                row = row,
-                recalc = recalc,
-                before = before,
-                after = after
+                groupId = group.id, rowIndex = ri, row = row,
+                recalc = recalc, before = before, after = after
             )
         )
     }
 
-    private fun snapshotWellCells(
-        rows: List<SampleRow>,
-        wellNumber: String
-    ): List<WellCellSnapshot> {
-        return rows.filter { it.wellNumber == wellNumber }
+    private fun snapshotWellCells(rows: List<SampleRow>, wellNumber: String): List<WellCellSnapshot> =
+        rows.filter { it.wellNumber == wellNumber }
             .map { WellCellSnapshot(it.id, it.sampleNumber, it.numberInWell) }
-    }
 
-    private fun recalcNumberInWellOnly(
-        rows: List<SampleRow>, wellNumber: String
-    ): List<SampleRow> {
-        val indices = rows.indices
-            .filter { rows[it].wellNumber == wellNumber }
+    private fun recalcNumberInWellOnly(rows: List<SampleRow>, wellNumber: String): List<SampleRow> {
+        val indices = rows.indices.filter { rows[it].wellNumber == wellNumber }
             .sortedBy { rows[it].numberInWell }
-
         val newRows = rows.toMutableList()
         indices.forEachIndexed { newIndex, rowIndex ->
             newRows[rowIndex] = newRows[rowIndex].copy(numberInWell = newIndex + 1)
@@ -568,23 +539,17 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 
     private fun renumberWell(rows: List<SampleRow>, wellNumber: String): List<SampleRow> {
-        val indices = rows.indices
-            .filter { rows[it].wellNumber == wellNumber }
+        val indices = rows.indices.filter { rows[it].wellNumber == wellNumber }
             .sortedBy { rows[it].numberInWell }
-
         if (indices.isEmpty()) return rows
-
         val firstSample = rows[indices.first()].sampleNumber
         val suffixLen = detectSuffixLength(firstSample, wellNumber)
-
         val newRows = rows.toMutableList()
         indices.forEachIndexed { newIndex, rowIndex ->
             val newNumberInWell = newIndex + 1
-            val newSampleNumber = wellNumber +
-                    newNumberInWell.toString().padStart(suffixLen, '0')
+            val newSampleNumber = wellNumber + newNumberInWell.toString().padStart(suffixLen, '0')
             newRows[rowIndex] = newRows[rowIndex].copy(
-                sampleNumber = newSampleNumber,
-                numberInWell = newNumberInWell
+                sampleNumber = newSampleNumber, numberInWell = newNumberInWell
             )
         }
         return newRows

@@ -1,5 +1,7 @@
 package com.example.geosamplemanager.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -31,58 +33,40 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.util.PhotoStorage
+import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
-
-/**
- * Экран «Сверка и поиск».
- */
 
 sealed interface ReconItem {
     val key: String
 
-    data class QueryHeader(
-        val group: QueryGroup,
-        val expanded: Boolean
-    ) : ReconItem {
+    data class QueryHeader(val group: QueryGroup, val expanded: Boolean) : ReconItem {
         override val key: String get() = "q_${group.id}"
     }
-
     data class GroupHeader(
-        val queryGroupId: String?,
-        val group: SampleGroup,
-        val kind: GroupKind,
-        val isForeign: Boolean,
-        val expanded: Boolean
+        val queryGroupId: String?, val group: SampleGroup,
+        val kind: GroupKind, val isForeign: Boolean, val expanded: Boolean
     ) : ReconItem {
         override val key: String
-            get() = if (queryGroupId == null) "h_${group.id}"
-            else "h_${queryGroupId}_${group.id}"
+            get() = if (queryGroupId == null) "h_${group.id}" else "h_${queryGroupId}_${group.id}"
     }
-
     data class Sample(
-        val queryGroupId: String?,
-        val row: SampleRow,
-        val serial: Int,
-        val showCharacteristic: Boolean
+        val queryGroupId: String?, val row: SampleRow,
+        val serial: Int, val showCharacteristic: Boolean
     ) : ReconItem {
         override val key: String
-            get() = if (queryGroupId == null) "r_${row.id}"
-            else "r_${queryGroupId}_${row.id}"
+            get() = if (queryGroupId == null) "r_${row.id}" else "r_${queryGroupId}_${row.id}"
     }
-
     data class TableHead(
-        val queryGroupId: String?,
-        val groupId: String,
-        val showCharacteristic: Boolean,
-        val wellColumnTitle: String
+        val queryGroupId: String?, val groupId: String,
+        val showCharacteristic: Boolean, val wellColumnTitle: String
     ) : ReconItem {
         override val key: String
-            get() = if (queryGroupId == null) "t_$groupId"
-            else "t_${queryGroupId}_$groupId"
+            get() = if (queryGroupId == null) "t_$groupId" else "t_${queryGroupId}_$groupId"
     }
 }
 
@@ -91,7 +75,6 @@ sealed interface ReconItem {
 fun SearchScreen(
     viewModel: ReconciliationViewModel = viewModel()
 ) {
-
     val state = viewModel.state
     val context = LocalContext.current
 
@@ -108,6 +91,8 @@ fun SearchScreen(
     var confirmResetBlankWeight by remember { mutableStateOf(false) }
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
+    var voiceDialogOpen by remember { mutableStateOf(false) }
+    var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
 
     var noteText by remember { mutableStateOf("") }
     var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
@@ -126,6 +111,22 @@ fun SearchScreen(
         }
     }
 
+    // ================================================================
+    // РАЗРЕШЕНИЯ (проверки)
+    // ================================================================
+
+    fun hasMic(): Boolean = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.RECORD_AUDIO
+    ) == PackageManager.PERMISSION_GRANTED
+
+    fun hasCamera(): Boolean = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.CAMERA
+    ) == PackageManager.PERMISSION_GRANTED
+
+    // ================================================================
+    // ЛОНЧЕРЫ (объявлены до функций, которые их используют)
+    // ================================================================
+
     val takePictureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
     ) { success ->
@@ -133,7 +134,6 @@ fun SearchScreen(
         val sid = cameraTargetSampleId
         cameraTempFile = null
         cameraTargetSampleId = null
-
         if (success && file != null && sid != null) {
             scope.launch {
                 val ok = viewModel.addPhotoFromFile(sid, file)
@@ -146,9 +146,7 @@ fun SearchScreen(
                     file.delete()
                 }
             }
-        } else {
-            file?.delete()
-        }
+        } else file?.delete()
     }
 
     val pickMediaLauncher = rememberLauncherForActivityResult(
@@ -169,12 +167,56 @@ fun SearchScreen(
         }
     }
 
-    fun launchCamera(sampleId: Long) {
-        val tmp = PhotoStorage.createTempFile(context)
-        cameraTempFile = tmp
-        cameraTargetSampleId = sampleId
-        val uri = PhotoStorage.getUriForFile(context, tmp)
-        takePictureLauncher.launch(uri)
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            voiceDialogOpen = true
+        } else {
+            scope.launch {
+                snackbarHostState.showSnackbar("Без разрешения микрофона голос не работает")
+            }
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val sid = pendingCameraForSampleId
+        pendingCameraForSampleId = null
+        if (granted && sid != null) {
+            val tmp = PhotoStorage.createTempFile(context)
+            cameraTempFile = tmp
+            cameraTargetSampleId = sid
+            val uri = PhotoStorage.getUriForFile(context, tmp)
+            takePictureLauncher.launch(uri)
+        } else if (!granted) {
+            scope.launch {
+                snackbarHostState.showSnackbar("Без разрешения камеры фото не сделать")
+            }
+        }
+    }
+
+    // ================================================================
+    // ЛОКАЛЬНЫЕ ФУНКЦИИ (используют лончеры выше)
+    // ================================================================
+
+    fun requestMic() {
+        if (hasMic()) voiceDialogOpen = true
+        else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+
+    fun requestCamera(sampleId: Long) {
+        if (hasCamera()) {
+            val tmp = PhotoStorage.createTempFile(context)
+            cameraTempFile = tmp
+            cameraTargetSampleId = sampleId
+            val uri = PhotoStorage.getUriForFile(context, tmp)
+            takePictureLauncher.launch(uri)
+        } else {
+            pendingCameraForSampleId = sampleId
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     fun launchGallery() {
@@ -200,32 +242,22 @@ fun SearchScreen(
             return
         }
         if (row.isBlank) {
-            if (row.weight != null) {
-                viewModel.setFound(row.id, true)
-                return
-            }
+            if (row.weight != null) { viewModel.setFound(row.id, true); return }
             val settings = state.currentBlankWeight
             when (settings.mode) {
                 BlankWeightMode.FIXED -> {
                     val v = settings.fixedValue
                     if (v != null && v > 0) viewModel.setBlankWeightAndMarkFound(row.id, v)
-                    else {
-                        weightDialogRowId = row.id
-                        weightDialogIsControl = false
-                    }
+                    else { weightDialogRowId = row.id; weightDialogIsControl = false }
                 }
                 BlankWeightMode.AVERAGE -> {
                     val group = state.groupById(row.groupId)
                     val avg = group?.let { calculateAverageNeighborWeight(it, row.id) }
                     if (avg != null && avg > 0) viewModel.setBlankWeightAndMarkFound(row.id, avg)
-                    else {
-                        weightDialogRowId = row.id
-                        weightDialogIsControl = false
-                    }
+                    else { weightDialogRowId = row.id; weightDialogIsControl = false }
                 }
                 BlankWeightMode.MANUAL -> {
-                    weightDialogRowId = row.id
-                    weightDialogIsControl = false
+                    weightDialogRowId = row.id; weightDialogIsControl = false
                 }
             }
             return
@@ -238,21 +270,14 @@ fun SearchScreen(
         if (decisions.isEmpty()) {
             val marked = viewModel.applyBulkMarkFound(groupId, emptyMap(), emptyMap())
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
-        } else {
-            bulkDialogGroupId = groupId
-        }
+        } else bulkDialogGroupId = groupId
     }
 
     val isMulti = state.isMultiQuery
     val items by remember(
-        state.showCharacteristic,
-        state.activeFilters,
-        state.isMultiQuery,
-        state.queryTokens,
-        state.queryGroups,
-        state.groups,
-        state.selectedArea,
-        state.selectedOrder
+        state.showCharacteristic, state.activeFilters, state.isMultiQuery,
+        state.queryTokens, state.queryGroups, state.groups,
+        state.selectedArea, state.selectedOrder
     ) {
         derivedStateOf {
             if (state.isMultiQuery) buildMultiQueryList(state) else buildFlatList(state)
@@ -261,12 +286,9 @@ fun SearchScreen(
 
     Box(modifier = Modifier.fillMaxSize().imePadding()) {
         Column(modifier = Modifier.fillMaxSize()) {
-
             TopActionsPanel(
-                canUndo = state.canUndo,
-                canRedo = state.canRedo,
-                undoCount = state.undoCount,
-                redoCount = state.redoCount,
+                canUndo = state.canUndo, canRedo = state.canRedo,
+                undoCount = state.undoCount, redoCount = state.redoCount,
                 undoDescription = state.describeTopUndoAction(),
                 showCharacteristic = state.showCharacteristic,
                 onUndo = { viewModel.undo() },
@@ -282,7 +304,6 @@ fun SearchScreen(
                 verticalArrangement = Arrangement.spacedBy(0.dp),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-
                 item(key = "selectors") {
                     Box(modifier = Modifier.padding(bottom = 8.dp)) {
                         AreaAndOrderSelectors(
@@ -311,9 +332,7 @@ fun SearchScreen(
                             hasSelection = state.hasSelection,
                             onSearchAction = { keyboard?.hide() },
                             onClear = { viewModel.setQuery("") },
-                            onVoiceClick = {
-                                scope.launch { snackbarHostState.showSnackbar("Голос — в разработке") }
-                            }
+                            onVoiceClick = { requestMic() }
                         )
                     }
                 }
@@ -363,8 +382,7 @@ fun SearchScreen(
                     !state.hasSelection && state.query.isBlank() -> {
                         item(key = "empty") { EmptyState() }
                     }
-                    state.selectedArea != null &&
-                            state.selectedOrder == null &&
+                    state.selectedArea != null && state.selectedOrder == null &&
                             state.query.isBlank() -> {
                         item(key = "hint") { HintSelectOrderState() }
                     }
@@ -374,72 +392,63 @@ fun SearchScreen(
                     else -> {
                         items(items, key = { it.key }) { item ->
                             when (item) {
-                                is ReconItem.QueryHeader -> {
-                                    QueryHeaderCard(
-                                        group = item.group,
-                                        expanded = item.expanded,
-                                        onToggleExpand = {
-                                            state.toggleQueryGroup(item.group.id)
+                                is ReconItem.QueryHeader -> QueryHeaderCard(
+                                    group = item.group, expanded = item.expanded,
+                                    onToggleExpand = { state.toggleQueryGroup(item.group.id) }
+                                )
+                                is ReconItem.GroupHeader -> GroupHeaderCard(
+                                    group = item.group, kind = item.kind,
+                                    expanded = item.expanded,
+                                    onToggleExpand = { state.toggleGroupExpanded(item.group.id) },
+                                    onMarkAllClick = { onMarkAllClick(item.group.id) },
+                                    onClearAllClick = { confirmClearAllGroupId = item.group.id },
+                                    onAddSample = {
+                                        scope.launch {
+                                            snackbarHostState.showSnackbar("Добавить пробу — в разработке")
                                         }
-                                    )
-                                }
-                                is ReconItem.GroupHeader -> {
-                                    GroupHeaderCard(
-                                        group = item.group,
-                                        kind = item.kind,
-                                        expanded = item.expanded,
-                                        onToggleExpand = { state.toggleGroupExpanded(item.group.id) },
-                                        onMarkAllClick = { onMarkAllClick(item.group.id) },
-                                        onClearAllClick = { confirmClearAllGroupId = item.group.id },
-                                        onAddSample = {
+                                    }
+                                )
+                                is ReconItem.TableHead -> TableHeader(
+                                    showCharacteristic = item.showCharacteristic,
+                                    wellColumnTitle = item.wellColumnTitle
+                                )
+                                is ReconItem.Sample -> SampleRowItem(
+                                    serialNumber = item.serial, row = item.row,
+                                    showCharacteristic = item.showCharacteristic,
+                                    onToggleFound = { onToggleFound(item.row) },
+                                    onOpenNote = { noteDialogRowId = item.row.id },
+                                    onTogglePostponed = {
+                                        viewModel.setPostponed(item.row.id, !item.row.postponed)
+                                    },
+                                    onOpenEdit = { editDialogRowId = item.row.id },
+                                    onOpenDelete = { deleteDialogRowId = item.row.id },
+                                    onToggleControl = {
+                                        val ok = viewModel.toggleWeightControl(item.row.id)
+                                        if (!ok) {
                                             scope.launch {
-                                                snackbarHostState.showSnackbar("Добавить пробу — в разработке")
+                                                snackbarHostState.showSnackbar(
+                                                    "Холостая не может быть весовым контролем"
+                                                )
                                             }
-                                        }
-                                    )
-                                }
-                                is ReconItem.TableHead -> {
-                                    TableHeader(
-                                        showCharacteristic = item.showCharacteristic,
-                                        wellColumnTitle = item.wellColumnTitle
-                                    )
-                                }
-                                is ReconItem.Sample -> {
-                                    SampleRowItem(
-                                        serialNumber = item.serial,
-                                        row = item.row,
-                                        showCharacteristic = item.showCharacteristic,
-                                        onToggleFound = { onToggleFound(item.row) },
-                                        onOpenNote = { noteDialogRowId = item.row.id },
-                                        onTogglePostponed = {
-                                            viewModel.setPostponed(item.row.id, !item.row.postponed)
-                                        },
-                                        onOpenEdit = { editDialogRowId = item.row.id },
-                                        onOpenDelete = { deleteDialogRowId = item.row.id },
-                                        onToggleControl = {
-                                            val ok = viewModel.toggleWeightControl(item.row.id)
-                                            if (!ok) {
-                                                scope.launch {
-                                                    snackbarHostState.showSnackbar(
-                                                        "Холостая не может быть весовым контролем"
-                                                    )
-                                                }
-                                            } else if (!item.row.weightControl) {
-                                                weightDialogRowId = item.row.id
-                                                weightDialogIsControl = true
-                                            }
-                                        },
-                                        onWeightClick = {
+                                        } else if (!item.row.weightControl) {
                                             weightDialogRowId = item.row.id
-                                            weightDialogIsControl = item.row.weightControl
-                                        },
-                                        onCharacteristicClick = { characteristicDialogRowId = item.row.id }
-                                    )
-                                }
+                                            weightDialogIsControl = true
+                                        }
+                                    },
+                                    onWeightClick = {
+                                        weightDialogRowId = item.row.id
+                                        weightDialogIsControl = item.row.weightControl
+                                    },
+                                    onCharacteristicClick = { characteristicDialogRowId = item.row.id }
+                                )
                             }
                         }
                     }
                 }
+            }
+
+            if (state.voiceStatus != VoiceStatus.Idle) {
+                VoiceStatusBar(state.voiceStatus)
             }
         }
 
@@ -450,7 +459,7 @@ fun SearchScreen(
     }
 
     // ================================================================
-    // Диалоги
+    // ДИАЛОГИ
     // ================================================================
 
     weightDialogRowId?.let { id ->
@@ -460,8 +469,7 @@ fun SearchScreen(
             val initial = if (isControl) row.controlWeight else row.weight
             val title = if (isControl) "Весовой контроль" else "Вес холостой пробы"
             WeightDialog(
-                title = title,
-                sampleNumber = row.sampleNumber,
+                title = title, sampleNumber = row.sampleNumber,
                 initialWeight = initial,
                 onConfirm = { v ->
                     if (isControl) viewModel.setControlWeightAndFound(id, v)
@@ -475,138 +483,113 @@ fun SearchScreen(
 
     characteristicDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            CharacteristicDialog(
-                sampleNumber = row.sampleNumber,
-                characteristic = row.characteristic,
-                onDismiss = { characteristicDialogRowId = null }
-            )
-        }
+        if (row != null) CharacteristicDialog(
+            sampleNumber = row.sampleNumber,
+            characteristic = row.characteristic,
+            onDismiss = { characteristicDialogRowId = null }
+        )
     }
 
     noteDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            NotePhotoDialog(
-                sampleNumber = row.sampleNumber,
-                initialText = noteText,
-                photos = notePhotos,
-                onSaveText = { text ->
-                    val sid = id.toLongOrNull()
-                    if (sid != null) {
-                        scope.launch {
-                            val ok = viewModel.saveNoteText(sid, text)
-                            if (ok) {
-                                snackbarHostState.showSnackbar("Заметка сохранена")
-                                noteDialogRowId = null
-                            } else {
-                                snackbarHostState.showSnackbar("Не удалось сохранить заметку")
-                            }
-                        }
-                    }
-                },
-                onTakePhoto = {
-                    val sid = id.toLongOrNull()
-                    if (sid != null) launchCamera(sid)
-                },
-                onPickFromGallery = { launchGallery() },
-                onDeletePhoto = { imageId ->
-                    val sid = id.toLongOrNull()
-                    if (sid != null) {
-                        scope.launch {
-                            val ok = viewModel.deletePhoto(imageId, sid)
-                            if (ok) {
-                                val (_, photos) = viewModel.loadNoteWithPhotos(sid)
-                                notePhotos = photos
-                                snackbarHostState.showSnackbar("Фото удалено")
-                            } else {
-                                snackbarHostState.showSnackbar("Не удалось удалить фото")
-                            }
-                        }
-                    }
-                },
-                onDismiss = {
+        if (row != null) NotePhotoDialog(
+            sampleNumber = row.sampleNumber,
+            initialText = noteText, photos = notePhotos,
+            onSaveText = { text ->
+                val sid = id.toLongOrNull()
+                if (sid != null) {
+                    // Закрываем окно СРАЗУ, не ждём snackbar.
                     noteDialogRowId = null
                     noteText = ""
                     notePhotos = emptyList()
+                    // Сохранение + snackbar — в отдельной корутине.
+                    scope.launch {
+                        val ok = viewModel.saveNoteText(sid, text)
+                        snackbarHostState.showSnackbar(
+                            if (ok) "Заметка сохранена"
+                            else "Не удалось сохранить заметку"
+                        )
+                    }
                 }
-            )
-        }
+            },
+            onTakePhoto = { id.toLongOrNull()?.let { requestCamera(it) } },
+            onPickFromGallery = { launchGallery() },
+            onDeletePhoto = { imageId ->
+                val sid = id.toLongOrNull()
+                if (sid != null) scope.launch {
+                    val ok = viewModel.deletePhoto(imageId, sid)
+                    if (ok) {
+                        val (_, photos) = viewModel.loadNoteWithPhotos(sid)
+                        notePhotos = photos
+                        snackbarHostState.showSnackbar("Фото удалено")
+                    } else snackbarHostState.showSnackbar("Не удалось удалить фото")
+                }
+            },
+            onDismiss = { noteDialogRowId = null; noteText = ""; notePhotos = emptyList() }
+        )
     }
 
     editDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            EditSampleDialog(
-                row = row,
-                onSave = {
-                    scope.launch { snackbarHostState.showSnackbar("Редактор — в разработке") }
-                    editDialogRowId = null
-                },
-                onDismiss = { editDialogRowId = null }
-            )
-        }
+        if (row != null) EditSampleDialog(
+            row = row,
+            onSave = {
+                scope.launch { snackbarHostState.showSnackbar("Редактор — в разработке") }
+                editDialogRowId = null
+            },
+            onDismiss = { editDialogRowId = null }
+        )
     }
 
     deleteDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            DeleteSampleDialog(
-                row = row,
-                onConfirm = { recalc ->
-                    viewModel.deleteRow(id, recalc)
-                    deleteDialogRowId = null
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            if (recalc) "Проба удалена, номера пересчитаны"
-                            else "Проба удалена"
-                        )
-                    }
-                },
-                onDismiss = { deleteDialogRowId = null }
-            )
-        }
+        if (row != null) DeleteSampleDialog(
+            row = row,
+            onConfirm = { recalc ->
+                viewModel.deleteRow(id, recalc)
+                deleteDialogRowId = null
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        if (recalc) "Проба удалена, номера пересчитаны" else "Проба удалена"
+                    )
+                }
+            },
+            onDismiss = { deleteDialogRowId = null }
+        )
     }
 
     alreadyFoundRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            AlreadyFoundDialog(
-                row = row,
-                onUnmarkFound = { viewModel.setFound(id, false); alreadyFoundRowId = null },
-                onTogglePostponed = {
-                    viewModel.setPostponed(id, !row.postponed)
-                    alreadyFoundRowId = null
-                },
-                onViewNote = { noteDialogRowId = id; alreadyFoundRowId = null },
-                onEdit = { editDialogRowId = id; alreadyFoundRowId = null },
-                onDismiss = { alreadyFoundRowId = null }
-            )
-        }
+        if (row != null) AlreadyFoundDialog(
+            row = row,
+            onUnmarkFound = { viewModel.setFound(id, false); alreadyFoundRowId = null },
+            onTogglePostponed = {
+                viewModel.setPostponed(id, !row.postponed); alreadyFoundRowId = null
+            },
+            onViewNote = { noteDialogRowId = id; alreadyFoundRowId = null },
+            onEdit = { editDialogRowId = id; alreadyFoundRowId = null },
+            onDismiss = { alreadyFoundRowId = null }
+        )
     }
 
     errorDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            ImportErrorDialog(
-                row = row,
-                onConfirm = { viewModel.setFound(id, true); errorDialogRowId = null },
-                onEdit = { editDialogRowId = id; errorDialogRowId = null },
-                onDismiss = { errorDialogRowId = null }
-            )
-        }
+        if (row != null) ImportErrorDialog(
+            row = row,
+            onConfirm = { viewModel.setFound(id, true); errorDialogRowId = null },
+            onEdit = { editDialogRowId = id; errorDialogRowId = null },
+            onDismiss = { errorDialogRowId = null }
+        )
     }
 
     postponedDialogRowId?.let { id ->
         val row = state.rowById(id)
-        if (row != null) {
-            PostponedDialog(
-                row = row,
-                onConfirm = { viewModel.setFound(id, true); postponedDialogRowId = null },
-                onViewNote = { noteDialogRowId = id; postponedDialogRowId = null },
-                onDismiss = { postponedDialogRowId = null }
-            )
-        }
+        if (row != null) PostponedDialog(
+            row = row,
+            onConfirm = { viewModel.setFound(id, true); postponedDialogRowId = null },
+            onViewNote = { noteDialogRowId = id; postponedDialogRowId = null },
+            onDismiss = { postponedDialogRowId = null }
+        )
     }
 
     settingsOrderTitle?.let { orderTitle ->
@@ -679,13 +662,12 @@ fun SearchScreen(
                 onDismissRequest = { confirmClearAllGroupId = null },
                 title = { Text("Сбросить все отметки?") },
                 text = {
-                    Text("Все отметки «найдена» в группе «${group.areaTitle} / ${group.orderTitle}» " +
-                            "будут сняты. Продолжить?")
+                    Text("Все отметки «найдена» в группе " +
+                            "«${group.areaTitle} / ${group.orderTitle}» будут сняты. Продолжить?")
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.clearAllFound(gid)
-                        confirmClearAllGroupId = null
+                        viewModel.clearAllFound(gid); confirmClearAllGroupId = null
                     }) { Text("Да") }
                 },
                 dismissButton = {
@@ -697,6 +679,24 @@ fun SearchScreen(
 
     if (state.showLegend) {
         LegendDialog(onDismiss = { state.showLegend = false })
+    }
+
+    if (state.voiceHelpVisible) {
+        VoiceHelpDialog(onDismiss = { state.voiceHelpVisible = false })
+    }
+
+    if (voiceDialogOpen) {
+        VoiceDialog(
+            viewModel = viewModel,
+            onDismiss = { voiceDialogOpen = false }
+        )
+    }
+
+    if (state.voiceOnboardingVisible) {
+        VoiceOnboarding(
+            onDismiss = { state.voiceOnboardingVisible = false },
+            onDontShowAgain = { viewModel.dismissOnboarding() }
+        )
     }
 }
 
@@ -715,7 +715,6 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
         val kind = determineGroupKind(group, selectedArea, selectedOrder)
         val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
         val expanded = state.isGroupExpanded(group.id)
-
         result.add(ReconItem.GroupHeader(null, group, kind, isForeign, expanded))
         if (expanded) {
             val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
@@ -733,14 +732,11 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
     val selectedArea = state.selectedArea
     val selectedOrder = state.selectedOrder
     val showCharacteristic = state.showCharacteristic
-
-    // Ненайденные — выше, найденные — ниже.
     val sorted = state.queryGroups.sortedBy { if (it.isFound) 1 else 0 }
 
     sorted.forEach { qg ->
         val expanded = state.isQueryGroupExpanded(qg.id)
         result.add(ReconItem.QueryHeader(qg, expanded))
-
         if (!expanded) return@forEach
 
         val filteredGroups = state.filteredGroupsForQuery(qg)
@@ -748,7 +744,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
             val kind = determineGroupKind(group, selectedArea, selectedOrder)
             val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
             val groupExpanded = state.isGroupExpanded(group.id)
-
             result.add(ReconItem.GroupHeader(qg.id, group, kind, isForeign, groupExpanded))
             if (groupExpanded) {
                 val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
@@ -766,23 +761,12 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
 // Компоненты
 // ====================================================================
 
-/**
- * Заголовок группы запроса.
- *
- * Формат:
- *   Запрос №N: «номер»
- *   X вариантов | Наряд - Y [ / Участок «Название»]
- *   [⚠ Другой участок]
- */
 @Composable
 private fun QueryHeaderCard(
-    group: QueryGroup,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit
+    group: QueryGroup, expanded: Boolean, onToggleExpand: () -> Unit
 ) {
     val isFound = group.isFound
     val isForeign = group.isForeignArea
-
     val bgColor: Color = when {
         !isFound -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
         isForeign -> Color(0xFFFFE0B2).copy(alpha = 0.55f)
@@ -793,32 +777,25 @@ private fun QueryHeaderCard(
         isForeign -> Color(0xFFB53D00)
         else -> Color(0xFF2E7D32)
     }
-
     val variantText = when (group.variantCount) {
         0 -> "Нет ответов"
         1 -> "1 вариант"
         else -> "${group.variantCount} вариантов"
     }
-
     val ordersText = group.orderNumbersLabel
     val areasText = group.areaTitlesLabel
-
-    val line2: String = when {
+    val line2 = when {
         ordersText.isEmpty() -> variantText
         isForeign -> "$variantText | Наряд - $ordersText / Участок «$areasText»"
         else -> "$variantText | Наряд - $ordersText"
     }
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-        color = bgColor,
-        shape = RoundedCornerShape(8.dp)
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        color = bgColor, shape = RoundedCornerShape(8.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
                 .clickable { onToggleExpand() }
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -827,22 +804,13 @@ private fun QueryHeaderCard(
                 Text(
                     "Запрос №${group.id.removePrefix("q")}: «${group.query}»",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = titleColor
+                    fontWeight = FontWeight.Bold, color = titleColor
                 )
-                Text(
-                    line2,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (isForeign) {
-                    Text(
-                        "⚠ Другой участок",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFB53D00)
-                    )
-                }
+                Text(line2, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isForeign) Text("⚠ Другой участок",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold, color = Color(0xFFB53D00))
             }
             Icon(
                 if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
@@ -855,40 +823,34 @@ private fun QueryHeaderCard(
 
 @Composable
 private fun GroupHeaderCard(
-    group: SampleGroup,
-    kind: GroupKind,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit,
-    onMarkAllClick: () -> Unit,
-    onClearAllClick: () -> Unit,
-    onAddSample: () -> Unit
+    group: SampleGroup, kind: GroupKind, expanded: Boolean,
+    onToggleExpand: () -> Unit, onMarkAllClick: () -> Unit,
+    onClearAllClick: () -> Unit, onAddSample: () -> Unit
 ) {
     val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
     val cardColor = when (kind) {
         GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.surface
-        GroupKind.SAME_AREA     -> MaterialTheme.colorScheme.surfaceVariant
-        GroupKind.OTHER_AREA    -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
-        GroupKind.NEUTRAL       -> MaterialTheme.colorScheme.surface
+        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.surfaceVariant
+        GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+        GroupKind.NEUTRAL -> MaterialTheme.colorScheme.surface
     }
     val titleColor = when (kind) {
         GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.onSurface
-        GroupKind.SAME_AREA     -> MaterialTheme.colorScheme.tertiary
-        GroupKind.OTHER_AREA    -> MaterialTheme.colorScheme.error
-        GroupKind.NEUTRAL       -> MaterialTheme.colorScheme.onSurface
+        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
+        GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
+        GroupKind.NEUTRAL -> MaterialTheme.colorScheme.onSurface
     }
     val stripeColor = when (kind) {
-        GroupKind.SAME_AREA  -> MaterialTheme.colorScheme.tertiary
+        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
         GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
-        else                 -> Color.Transparent
+        else -> Color.Transparent
     }
-
     val subtitle = buildGroupSubtitle(group)
     val stats = calculateGroupStats(group)
 
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-        color = cardColor,
-        shape = RoundedCornerShape(6.dp)
+        color = cardColor, shape = RoundedCornerShape(6.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
@@ -910,16 +872,15 @@ private fun GroupHeaderCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary)
                 }
-                if (kind == GroupKind.SAME_AREA) {
+                if (kind == GroupKind.SAME_AREA)
                     Text("Не из выбранного наряда",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.tertiary)
-                } else if (kind == GroupKind.OTHER_AREA) {
+                else if (kind == GroupKind.OTHER_AREA)
                     Text("Другой участок",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.error)
-                }
                 Spacer(Modifier.height(2.dp))
                 Text(subtitle, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -947,11 +908,9 @@ private fun GroupHeaderCard(
 private fun TopActionsPanel(
     canUndo: Boolean, canRedo: Boolean,
     undoCount: Int, redoCount: Int,
-    undoDescription: String,
-    showCharacteristic: Boolean,
+    undoDescription: String, showCharacteristic: Boolean,
     onUndo: () -> Unit, onRedo: () -> Unit,
-    onShowCharacteristicChange: (Boolean) -> Unit,
-    onHelpClick: () -> Unit
+    onShowCharacteristicChange: (Boolean) -> Unit, onHelpClick: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
@@ -985,8 +944,7 @@ private fun TopActionsPanel(
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Text(undoDescription,
-                    style = MaterialTheme.typography.labelSmall,
+                Text(undoDescription, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
@@ -995,8 +953,7 @@ private fun TopActionsPanel(
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .clip(RoundedCornerShape(4.dp))
+            modifier = Modifier.clip(RoundedCornerShape(4.dp))
                 .clickable { onShowCharacteristicChange(!showCharacteristic) }
                 .padding(horizontal = 4.dp)
         ) {
@@ -1015,22 +972,16 @@ private fun TopActionsPanel(
 
 @Composable
 private fun SearchRowWithIndicator(
-    query: String,
-    onQueryChange: (String) -> Unit,
-    matchInfo: MatchInfo,
-    quickAnswers: List<QuickAnswer>,
-    allQuickUnique: Boolean,
-    isMulti: Boolean,
-    hasSelection: Boolean,
-    onSearchAction: () -> Unit,
-    onClear: () -> Unit,
-    onVoiceClick: () -> Unit
+    query: String, onQueryChange: (String) -> Unit,
+    matchInfo: MatchInfo, quickAnswers: List<QuickAnswer>,
+    allQuickUnique: Boolean, isMulti: Boolean, hasSelection: Boolean,
+    onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
 ) {
     val isLit = if (isMulti) allQuickUnique else matchInfo is MatchInfo.Unique
     val lampColor = if (isLit) Color(0xFFFFC107)
     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
 
-    val indicatorText: String = if (isMulti) {
+    val indicatorText = if (isMulti) {
         if (quickAnswers.isEmpty()) ""
         else quickAnswers.joinToString("\n") { qa ->
             val suffix = when {
@@ -1040,12 +991,10 @@ private fun SearchRowWithIndicator(
             }
             "№${qa.index} — $suffix"
         }
-    } else {
-        when (matchInfo) {
-            is MatchInfo.None     -> ""
-            is MatchInfo.Unique   -> matchInfo.display
-            is MatchInfo.Multiple -> "Несколько"
-        }
+    } else when (matchInfo) {
+        is MatchInfo.None -> ""
+        is MatchInfo.Unique -> matchInfo.display
+        is MatchInfo.Multiple -> "Несколько"
     }
 
     val placeholder = if (hasSelection)
@@ -1139,13 +1088,13 @@ private fun AreaAndOrderSelectors(
                 onExpandedChange = { if (ordersEnabled) expanded = !expanded }
             ) {
                 OutlinedTextField(
-                    value = valueText,
-                    onValueChange = {},
-                    readOnly = true,
-                    enabled = ordersEnabled,
+                    value = valueText, onValueChange = {},
+                    readOnly = true, enabled = ordersEnabled,
                     label = { Text(labelText, fontSize = 11.sp) },
                     textStyle = MaterialTheme.typography.bodyMedium,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded && ordersEnabled) },
+                    trailingIcon = {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded && ordersEnabled)
+                    },
                     modifier = Modifier.menuAnchor().fillMaxWidth().height(56.dp)
                 )
                 ExposedDropdownMenu(expanded, { expanded = false }) {
@@ -1214,12 +1163,8 @@ private fun StatChip(stat: StatItem) {
 
 @Composable
 private fun FiltersHeader(
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    activeCount: Int,
-    showToggleAll: Boolean,
-    allExpanded: Boolean,
-    onToggleAll: () -> Unit
+    expanded: Boolean, onToggle: () -> Unit, activeCount: Int,
+    showToggleAll: Boolean, allExpanded: Boolean, onToggleAll: () -> Unit
 ) {
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onToggle, modifier = Modifier.size(32.dp)) {
@@ -1253,8 +1198,7 @@ private fun FiltersHeader(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FiltersRow(
-    activeFilters: Set<ResultFilter>,
-    onFilterToggle: (ResultFilter) -> Unit
+    activeFilters: Set<ResultFilter>, onFilterToggle: (ResultFilter) -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -1306,17 +1250,10 @@ private fun HeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
 
 @Composable
 private fun SampleRowItem(
-    serialNumber: Int,
-    row: SampleRow,
-    showCharacteristic: Boolean,
-    onToggleFound: () -> Unit,
-    onOpenNote: () -> Unit,
-    onTogglePostponed: () -> Unit,
-    onOpenEdit: () -> Unit,
-    onOpenDelete: () -> Unit,
-    onToggleControl: () -> Unit,
-    onWeightClick: () -> Unit,
-    onCharacteristicClick: () -> Unit
+    serialNumber: Int, row: SampleRow, showCharacteristic: Boolean,
+    onToggleFound: () -> Unit, onOpenNote: () -> Unit, onTogglePostponed: () -> Unit,
+    onOpenEdit: () -> Unit, onOpenDelete: () -> Unit, onToggleControl: () -> Unit,
+    onWeightClick: () -> Unit, onCharacteristicClick: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -1328,12 +1265,9 @@ private fun SampleRowItem(
     ) {
         Checkbox(checked = row.found, onCheckedChange = { onToggleFound() })
 
-        Text(
-            text = serialNumber.toString(),
-            style = MaterialTheme.typography.labelSmall,
+        Text(serialNumber.toString(), style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(36.dp)
-        )
+            modifier = Modifier.width(36.dp))
 
         Column(modifier = Modifier.width(90.dp)) {
             Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
@@ -1357,8 +1291,7 @@ private fun SampleRowItem(
         val weightClickable = row.weightControl || row.isBlank
         Column(
             modifier = Modifier.width(90.dp)
-                .then(if (weightClickable) Modifier.clickable { onWeightClick() }
-                else Modifier)
+                .then(if (weightClickable) Modifier.clickable { onWeightClick() } else Modifier)
         ) {
             Text(text = row.weight?.let { "$it кг" } ?: "—",
                 style = MaterialTheme.typography.bodyMedium,
@@ -1392,8 +1325,7 @@ private fun SampleRowItem(
         ) {
             Text(
                 text = displayType(row.type, row.status),
-                fontSize = 11.sp,
-                maxLines = 1,
+                fontSize = 11.sp, maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1462,11 +1394,11 @@ private fun SampleRowItem(
 private fun rowBackgroundColor(row: SampleRow): Color {
     if (row.found) return Color(0xFFA5D6A7).copy(alpha = 0.35f)
     return when {
-        row.hasImportError  -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
-        row.postponed       -> Color(0xFF90CAF9).copy(alpha = 0.35f)
-        row.isBlank         -> Color(0xFFFFF59D).copy(alpha = 0.35f)
-        row.weightControl   -> Color(0xFFCE93D8).copy(alpha = 0.30f)
-        else                -> Color.Transparent
+        row.hasImportError -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
+        row.postponed -> Color(0xFF90CAF9).copy(alpha = 0.35f)
+        row.isBlank -> Color(0xFFFFF59D).copy(alpha = 0.35f)
+        row.weightControl -> Color(0xFFCE93D8).copy(alpha = 0.30f)
+        else -> Color.Transparent
     }
 }
 
@@ -1541,9 +1473,7 @@ private fun LegendDialog(onDismiss: () -> Unit) {
         title = { Text("Пояснения к символике") },
         text = {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1557,10 +1487,9 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("Строка поиска",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text(
-                    "• Ничего не выбрано — строгое совпадение (номер скважины или пробы целиком).\n" +
-                            "• Выбран только участок — строгое совпадение, участок задаёт приоритет.\n" +
-                            "• Выбраны участок И наряд — строка ещё и фильтрует выбранный наряд " +
-                            "(совпадение по началу номера пробы).",
+                    "• Ничего не выбрано — строгое совпадение.\n" +
+                            "• Выбран только участок — строгое совпадение, участок = приоритет.\n" +
+                            "• Выбраны участок И наряд — строка ещё и фильтрует (по началу № пробы).",
                     style = MaterialTheme.typography.bodySmall
                 )
 
@@ -1570,8 +1499,7 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("• Холостые — режим веса: единый, среднее или вручную.\n" +
                         "• Весовой контроль — каждая N-я рядовая проба.\n" +
                         "• Кнопка «Сбросить вес холостых» очищает вес.\n\n" +
-                        "Вес холостых проставляется СРАЗУ, но не отмечает пробы. " +
-                        "Отметить нужно вручную.",
+                        "Вес холостых проставляется СРАЗУ, но не отмечает пробы.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))

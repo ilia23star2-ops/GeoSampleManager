@@ -2,9 +2,6 @@ package com.example.geosamplemanager.data.voice
 
 /**
  * Разбор голосовой фразы в VoiceCommand.
- *
- * Порядок проверок важен: «снять первую» должно сработать как ClearOrdinal,
- * а не как MarkOrdinal(1). «Вес два пять» — как SetWeight, не как Search.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -64,29 +61,49 @@ class VoiceCommandParser(
         return VoiceCommand.Search(raw)
     }
 
+    /**
+     * Парсит свободный ответ на «Вес?»: пользователь говорит без слова
+     * «вес», просто «два с половиной» или «два пять».
+     *
+     * Возвращает вес в килограммах или null, если не разобрать.
+     */
+    fun parseWeightAnswer(input: String): Double? {
+        val norm = numberParser.normalize(input).trim()
+        if (norm.isEmpty()) return null
+
+        // «с половиной» → + 0.5
+        val halfSuffix = "с половиной"
+        if (norm.endsWith(halfSuffix)) {
+            val baseText = norm.removeSuffix(halfSuffix).trim()
+            val base = parseWeightAnswer(baseText) ?: return null
+            return base + 0.5
+        }
+
+        // «с четвертью» → + 0.25
+        val quarterSuffix = "с четвертью"
+        if (norm.endsWith(quarterSuffix)) {
+            val baseText = norm.removeSuffix(quarterSuffix).trim()
+            val base = parseWeightAnswer(baseText) ?: return null
+            return base + 0.25
+        }
+
+        return parseWeight(norm)
+    }
+
     // ================================================================
-    // Разбор веса
+    // Разбор веса (общая логика)
     // ================================================================
 
-    /**
-     * «вес 2.5», «вес 2,5», «вес два пять» → 2.5
-     * «вес два ноль пять» → 2.05
-     * «вес пять» → 5.0
-     */
     private fun parseWeight(text: String): Double? {
         if (text.isEmpty()) return null
 
-        // Прямое число с точкой или запятой
         text.replace(',', '.').toDoubleOrNull()?.let { return it }
 
-        // Через парсер
         val r = numberParser.parse(text)
         val c = r.primary ?: return null
 
-        // Один блок
         if (!c.contains('|')) {
             c.toDoubleOrNull()?.let {
-                // Две цифры подряд без точки: «25» → 2.5
                 if (c.length == 2 && c.all { ch -> ch.isDigit() }) {
                     val a = c[0].digitToInt()
                     val b = c[1].digitToInt()
@@ -97,7 +114,6 @@ class VoiceCommandParser(
             return null
         }
 
-        // Два блока: «2|5» → 2.5
         val parts = c.split('|')
         if (parts.size == 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
             return "${parts[0]}.${parts[1]}".toDoubleOrNull()
