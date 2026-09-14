@@ -3,9 +3,6 @@ package com.example.geosamplemanager.data.voice
 import android.util.Log
 import kotlin.math.abs
 
-/**
- * Проба, найденная голосовым поиском.
- */
 data class VoiceSampleHit(
     val sampleId: Long,
     val sampleNumber: String,
@@ -15,18 +12,10 @@ data class VoiceSampleHit(
     val areaTitle: String
 )
 
-/**
- * Источник данных для голосового поиска.
- */
 interface VoiceSampleSource {
     suspend fun loadAll(): List<VoiceSampleHit>
 }
 
-/**
- * Результат поиска.
- *
- * @property isSample true — нашли ПРОБУ (показываем одну), false — СКВАЖИНУ.
- */
 sealed class VoiceSearchResult {
     data class FoundOne(
         val hit: VoiceSampleHit,
@@ -44,17 +33,6 @@ sealed class VoiceSearchResult {
     data object NotFound : VoiceSearchResult()
 }
 
-/**
- * Голосовой поиск.
- *
- * Уровни:
- *   1. sample_number == кандидат     → ПРОБА (одна)
- *   2. well_number == кандидат       → СКВАЖИНА (все пробы)
- *   3. well_number.endsWith(кандидат) → СКВАЖИНА
- *   4. sample_number.endsWith(кандидат) → ПРОБА (одна)
- *   5. нормализация нулей            → смотрим по совпадению
- *   6. fuzzy                         → по совпадению
- */
 class VoiceSearch(private val source: VoiceSampleSource) {
 
     suspend fun search(candidates: List<String>): VoiceSearchResult {
@@ -84,8 +62,12 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                 val hits = all.filter { it.wellNumber == clean }
                 Log.d(TAG, "  L2 (well==): ${hits.size}")
                 if (hits.isNotEmpty()) {
-                    val first = hits.first()
-                    return VoiceSearchResult.FoundOne(first, clean, 2, isSample = false)
+                    // FIX И-14: проверяем уникальность пары (orderId, wellNumber)
+                    val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
+                    if (uniqueWells.size == 1) {
+                        return VoiceSearchResult.FoundOne(hits.first(), clean, 2, isSample = false)
+                    }
+                    return VoiceSearchResult.FoundMany(hits, clean, 2)
                 }
             }
 
@@ -94,11 +76,10 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                 val hits = all.filter { it.wellNumber.endsWith(clean) }
                 Log.d(TAG, "  L3 (well.endsWith): ${hits.size}")
                 if (hits.isNotEmpty()) {
-                    val first = hits.first()
-                    if (hits.all { it.wellNumber == first.wellNumber }) {
-                        return VoiceSearchResult.FoundOne(
-                            first, clean, 3, isSample = false
-                        )
+                    // FIX И-14: уникальность пары (orderId, wellNumber)
+                    val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
+                    if (uniqueWells.size == 1) {
+                        return VoiceSearchResult.FoundOne(hits.first(), clean, 3, isSample = false)
                     }
                     return VoiceSearchResult.FoundMany(hits, clean, 3)
                 }
@@ -122,12 +103,15 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                             normalizeZeroes(it.wellNumber) == normalized
                 }
                 Log.d(TAG, "  L5 (norm zeroes): ${hits.size}")
-                if (hits.size == 1) {
-                    val h = hits[0]
-                    val isSample = h.sampleNumber == clean || h.sampleNumber.endsWith(clean)
-                    return VoiceSearchResult.FoundOne(h, clean, 5, isSample)
+                if (hits.isNotEmpty()) {
+                    val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
+                    if (uniqueWells.size == 1 && hits.size == 1) {
+                        val h = hits[0]
+                        val isSample = h.sampleNumber == clean || h.sampleNumber.endsWith(clean)
+                        return VoiceSearchResult.FoundOne(h, clean, 5, isSample)
+                    }
+                    return VoiceSearchResult.FoundMany(hits, clean, 5)
                 }
-                if (hits.size > 1) return VoiceSearchResult.FoundMany(hits, clean, 5)
             }
         }
 
@@ -139,12 +123,15 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                 fuzzyMatch(it.sampleNumber, clean) || fuzzyMatch(it.wellNumber, clean)
             }
             Log.d(TAG, "  L6 (fuzzy «$clean»): ${hits.size}")
-            if (hits.size == 1) {
-                val h = hits[0]
-                val isSample = fuzzyMatch(h.sampleNumber, clean)
-                return VoiceSearchResult.FoundOne(h, clean, 6, isSample)
+            if (hits.isNotEmpty()) {
+                val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
+                if (uniqueWells.size == 1 && hits.size == 1) {
+                    val h = hits[0]
+                    val isSample = fuzzyMatch(h.sampleNumber, clean)
+                    return VoiceSearchResult.FoundOne(h, clean, 6, isSample)
+                }
+                return VoiceSearchResult.FoundMany(hits, clean, 6)
             }
-            if (hits.size > 1) return VoiceSearchResult.FoundMany(hits, clean, 6)
         }
 
         return VoiceSearchResult.NotFound

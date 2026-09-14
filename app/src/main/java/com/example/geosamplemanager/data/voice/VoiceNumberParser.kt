@@ -1,13 +1,5 @@
 package com.example.geosamplemanager.data.voice
 
-/**
- * Парсер числовой части голосовой команды.
- */
-
-// ====================================================================
-// Типы токенов
-// ====================================================================
-
 enum class TokenKind { D, T, X, H, K, M }
 
 sealed class VoiceToken {
@@ -34,10 +26,6 @@ data class VoiceParseResult(
 ) {
     val primary: String? get() = candidates.firstOrNull()
 }
-
-// ====================================================================
-// Парсер
-// ====================================================================
 
 class VoiceNumberParser {
 
@@ -260,18 +248,20 @@ class VoiceNumberParser {
         }
     }
 
+    // FIX И-12: убираем дубликаты из списка кандидатов
     fun buildCandidates(blocks: List<RawBlock>): List<String> {
         if (blocks.isEmpty()) return emptyList()
-        val candidates = ArrayList<String>(3)
-        candidates.add(blocks.joinToString("") { it.asString() })
+        val raw = ArrayList<String>(3)
+        raw.add(blocks.joinToString("") { it.asString() })
         if (blocks.size > 1) {
-            candidates.add(blocks.joinToString("|") { it.asString() })
+            raw.add(blocks.joinToString("|") { it.asString() })
         }
         if (blocks.size > 2) {
             val head = blocks[0].asString() + blocks[1].asString()
             val tail = blocks.drop(2).joinToString("|") { it.asString() }
-            candidates.add("$head|$tail")
+            raw.add("$head|$tail")
         }
-        return candidates
+        // Убираем пустые и дублирующиеся кандидаты, сохраняя порядок
+        return raw.filter { it.isNotBlank() }.distinct()
     }
 }

@@ -41,6 +41,11 @@ import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
 
+// Цвета неоднозначного ответа (найден в нескольких нарядах)
+private val AmbiguousBg = Color(0xFFFFCDD2)      // светло-красный фон
+private val AmbiguousFg = Color(0xFFB71C1C)      // тёмно-красный текст/иконка
+private val AmbiguousLamp = Color(0xFFC62828)    // цвет фонарика
+
 sealed interface ReconItem {
     val key: String
 
@@ -49,7 +54,8 @@ sealed interface ReconItem {
     }
     data class GroupHeader(
         val queryGroupId: String?, val group: SampleGroup,
-        val kind: GroupKind, val isForeign: Boolean, val expanded: Boolean
+        val kind: GroupKind, val isForeign: Boolean, val expanded: Boolean,
+        val isAmbiguous: Boolean = false
     ) : ReconItem {
         override val key: String
             get() = if (queryGroupId == null) "h_${group.id}" else "h_${queryGroupId}_${group.id}"
@@ -390,6 +396,10 @@ fun SearchScreen(
                         item(key = "no_results") { NoResultsState() }
                     }
                     else -> {
+                        // Баннер «Найден в нескольких нарядах» — только для одиночного поиска.
+                        if (!isMulti && state.matchInfo is MatchInfo.Multiple) {
+                            item(key = "ambiguous_banner") { AmbiguousBanner() }
+                        }
                         items(items, key = { it.key }) { item ->
                             when (item) {
                                 is ReconItem.QueryHeader -> QueryHeaderCard(
@@ -399,6 +409,7 @@ fun SearchScreen(
                                 is ReconItem.GroupHeader -> GroupHeaderCard(
                                     group = item.group, kind = item.kind,
                                     expanded = item.expanded,
+                                    isAmbiguous = item.isAmbiguous,
                                     onToggleExpand = { state.toggleGroupExpanded(item.group.id) },
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
                                     onClearAllClick = { confirmClearAllGroupId = item.group.id },
@@ -498,11 +509,9 @@ fun SearchScreen(
             onSaveText = { text ->
                 val sid = id.toLongOrNull()
                 if (sid != null) {
-                    // Закрываем окно СРАЗУ, не ждём snackbar.
                     noteDialogRowId = null
                     noteText = ""
                     notePhotos = emptyList()
-                    // Сохранение + snackbar — в отдельной корутине.
                     scope.launch {
                         val ok = viewModel.saveNoteText(sid, text)
                         snackbarHostState.showSnackbar(
@@ -710,12 +719,18 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
     val selectedArea = state.selectedArea
     val selectedOrder = state.selectedOrder
     val showCharacteristic = state.showCharacteristic
+    // FIX 5.8.8g: неоднозначный ответ (один номер — несколько нарядов).
+    val isAmbiguous = state.matchInfo is MatchInfo.Multiple
 
     visible.forEach { group ->
         val kind = determineGroupKind(group, selectedArea, selectedOrder)
         val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
         val expanded = state.isGroupExpanded(group.id)
-        result.add(ReconItem.GroupHeader(null, group, kind, isForeign, expanded))
+        result.add(
+            ReconItem.GroupHeader(
+                null, group, kind, isForeign, expanded, isAmbiguous
+            )
+        )
         if (expanded) {
             val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
             result.add(ReconItem.TableHead(null, group.id, showCharacteristic, wellTitle))
@@ -739,12 +754,19 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
         result.add(ReconItem.QueryHeader(qg, expanded))
         if (!expanded) return@forEach
 
+        // FIX 5.8.8g: запрос нашёл несколько нарядов — неоднозначно.
+        val isAmbiguous = qg.variantCount > 1 && qg.isFound
+
         val filteredGroups = state.filteredGroupsForQuery(qg)
         filteredGroups.forEach { group ->
             val kind = determineGroupKind(group, selectedArea, selectedOrder)
             val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
             val groupExpanded = state.isGroupExpanded(group.id)
-            result.add(ReconItem.GroupHeader(qg.id, group, kind, isForeign, groupExpanded))
+            result.add(
+                ReconItem.GroupHeader(
+                    qg.id, group, kind, isForeign, groupExpanded, isAmbiguous
+                )
+            )
             if (groupExpanded) {
                 val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
                 result.add(ReconItem.TableHead(qg.id, group.id, showCharacteristic, wellTitle))
@@ -761,19 +783,62 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
 // Компоненты
 // ====================================================================
 
+/**
+ * Баннер «Найден в нескольких нарядах».
+ * Показывается в одиночном поиске, когда MatchInfo.Multiple.
+ */
+@Composable
+private fun AmbiguousBanner() {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        color = AmbiguousBg,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Warning, "Внимание",
+                tint = AmbiguousFg, modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Найден в нескольких нарядах",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = AmbiguousFg
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "Выберите нужный наряд в списке ниже",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AmbiguousFg.copy(alpha = 0.85f)
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun QueryHeaderCard(
     group: QueryGroup, expanded: Boolean, onToggleExpand: () -> Unit
 ) {
     val isFound = group.isFound
     val isForeign = group.isForeignArea
+    // FIX 5.8.8g: неоднозначный ответ в мультипоиске.
+    val isMultipleOrders = group.variantCount > 1 && isFound
+
     val bgColor: Color = when {
         !isFound -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
+        isMultipleOrders -> AmbiguousBg.copy(alpha = 0.65f)
         isForeign -> Color(0xFFFFE0B2).copy(alpha = 0.55f)
         else -> Color(0xFFA5D6A7).copy(alpha = 0.40f)
     }
     val titleColor: Color = when {
         !isFound -> Color(0xFFC62828)
+        isMultipleOrders -> AmbiguousFg
         isForeign -> Color(0xFFB53D00)
         else -> Color(0xFF2E7D32)
     }
@@ -800,6 +865,13 @@ private fun QueryHeaderCard(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isMultipleOrders) {
+                Icon(
+                    Icons.Filled.Warning, "Внимание",
+                    tint = titleColor, modifier = Modifier.size(22.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     "Запрос №${group.id.removePrefix("q")}: «${group.query}»",
@@ -808,6 +880,11 @@ private fun QueryHeaderCard(
                 )
                 Text(line2, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isMultipleOrders) {
+                    Text("⚠ Найден в нескольких нарядах",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold, color = titleColor)
+                }
                 if (isForeign) Text("⚠ Другой участок",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold, color = Color(0xFFB53D00))
@@ -824,25 +901,30 @@ private fun QueryHeaderCard(
 @Composable
 private fun GroupHeaderCard(
     group: SampleGroup, kind: GroupKind, expanded: Boolean,
+    isAmbiguous: Boolean,
     onToggleExpand: () -> Unit, onMarkAllClick: () -> Unit,
     onClearAllClick: () -> Unit, onAddSample: () -> Unit
 ) {
     val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-    val cardColor = when (kind) {
-        GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.surface
-        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.surfaceVariant
-        GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
-        GroupKind.NEUTRAL -> MaterialTheme.colorScheme.surface
+    // FIX 5.8.8g: красный фон — когда ответ неоднозначный (несколько нарядов).
+    val cardColor = when {
+        isAmbiguous -> AmbiguousBg.copy(alpha = 0.55f)
+        kind == GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.surface
+        kind == GroupKind.SAME_AREA -> MaterialTheme.colorScheme.surfaceVariant
+        kind == GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+        else -> MaterialTheme.colorScheme.surface
     }
-    val titleColor = when (kind) {
-        GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.onSurface
-        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
-        GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
-        GroupKind.NEUTRAL -> MaterialTheme.colorScheme.onSurface
+    val titleColor = when {
+        isAmbiguous -> AmbiguousFg
+        kind == GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.onSurface
+        kind == GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
+        kind == GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurface
     }
-    val stripeColor = when (kind) {
-        GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
-        GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
+    val stripeColor = when {
+        isAmbiguous -> AmbiguousFg
+        kind == GroupKind.SAME_AREA -> MaterialTheme.colorScheme.tertiary
+        kind == GroupKind.OTHER_AREA -> MaterialTheme.colorScheme.error
         else -> Color.Transparent
     }
     val subtitle = buildGroupSubtitle(group)
@@ -856,13 +938,20 @@ private fun GroupHeaderCard(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (isForeign) {
+            if (isForeign || isAmbiguous) {
                 Box(modifier = Modifier.width(4.dp).height(40.dp)
                     .clip(RoundedCornerShape(2.dp)).background(stripeColor))
                 Spacer(Modifier.width(12.dp))
             }
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isAmbiguous) {
+                        Icon(
+                            Icons.Filled.Warning, "Внимание",
+                            tint = titleColor, modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
                     Text("${group.areaTitle} / ${group.orderTitle}",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold, color = titleColor,
@@ -872,7 +961,11 @@ private fun GroupHeaderCard(
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary)
                 }
-                if (kind == GroupKind.SAME_AREA)
+                if (isAmbiguous)
+                    Text("⚠ Найден в нескольких нарядах",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold, color = AmbiguousFg)
+                else if (kind == GroupKind.SAME_AREA)
                     Text("Не из выбранного наряда",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.tertiary)
@@ -978,10 +1071,23 @@ private fun SearchRowWithIndicator(
     onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
 ) {
     val isLit = if (isMulti) allQuickUnique else matchInfo is MatchInfo.Unique
-    val lampColor = if (isLit) Color(0xFFFFC107)
-    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+    // FIX 5.8.8g: неоднозначный ответ — красный фонарик с ⚠.
+    val isAmbiguous = if (isMulti) {
+        quickAnswers.any { it.isMultiple }
+    } else {
+        matchInfo is MatchInfo.Multiple
+    }
 
-    val indicatorText = if (isMulti) {
+    val lampColor = when {
+        isAmbiguous -> AmbiguousLamp
+        isLit -> Color(0xFFFFC107)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+    }
+    val lampIcon = if (isAmbiguous) Icons.Filled.Warning else Icons.Filled.Lightbulb
+
+    val indicatorText = if (isAmbiguous) {
+        "В нескольких нарядах"
+    } else if (isMulti) {
         if (quickAnswers.isEmpty()) ""
         else quickAnswers.joinToString("\n") { qa ->
             val suffix = when {
@@ -994,7 +1100,7 @@ private fun SearchRowWithIndicator(
     } else when (matchInfo) {
         is MatchInfo.None -> ""
         is MatchInfo.Unique -> matchInfo.display
-        is MatchInfo.Multiple -> "Несколько"
+        is MatchInfo.Multiple -> "В нескольких нарядах"
     }
 
     val placeholder = if (hasSelection)
@@ -1006,10 +1112,10 @@ private fun SearchRowWithIndicator(
             modifier = Modifier.width(110.dp).padding(end = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(Icons.Filled.Lightbulb, null, tint = lampColor, modifier = Modifier.size(26.dp))
+            Icon(lampIcon, null, tint = lampColor, modifier = Modifier.size(26.dp))
             if (indicatorText.isNotEmpty()) {
                 Text(indicatorText, style = MaterialTheme.typography.labelSmall,
-                    color = if (isLit) MaterialTheme.colorScheme.onSurface
+                    color = if (isLit || isAmbiguous) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 6, overflow = TextOverflow.Ellipsis,
                     fontSize = 10.sp, textAlign = TextAlign.Center)
@@ -1480,7 +1586,8 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("Индикатор слева от поиска",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text("Фонарик горит, если ответ единственный. " +
-                        "При нескольких запросах — если все однозначны.",
+                        "При нескольких запросах — если все однозначны.\n" +
+                        "⚠ красный — найден в нескольких нарядах, выберите на экране.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
@@ -1533,9 +1640,10 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("Заголовки групп при мультипоиске",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text("• Зелёный — запрос нашёл наряд в выбранном участке.\n" +
-                        "• Оранжевый с ⚠ — запрос нашёл наряд только в другом участке " +
-                        "(в заголовке указан участок).\n" +
-                        "• Красный — запрос ничего не нашёл (такие группы идут сверху).",
+                        "• Оранжевый с ⚠ — запрос нашёл наряд только в другом участке.\n" +
+                        "• Красный — запрос ничего не нашёл (такие группы идут сверху).\n" +
+                        "• Красный с ⚠ — запрос нашёл несколько нарядов " +
+                        "(«Найден в нескольких нарядах»).",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))

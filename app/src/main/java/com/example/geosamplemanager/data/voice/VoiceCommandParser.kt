@@ -52,9 +52,16 @@ class VoiceCommandParser(
         if (ord != null) return VoiceCommand.MarkOrdinal(ord)
 
         // ---- Сортировка: "<X> и <Y>" ----
+        // FIX И-11: Vosk присылает словами, а не цифрами.
+        // Проверяем, что каждая часть парсится в число, а не «есть ли цифры».
         val sortParts = norm.split(Regex("\\s+и\\s+"))
-        if (sortParts.size in 2..5 && sortParts.all { it.any { c -> c.isDigit() } }) {
-            return VoiceCommand.Sort(sortParts.map { it.trim() })
+        if (sortParts.size in 2..5) {
+            val parsed = sortParts.map { part ->
+                numberParser.parse(part).primary?.takeIf { it.isNotBlank() }
+            }
+            if (parsed.all { it != null }) {
+                return VoiceCommand.Sort(parsed.filterNotNull())
+            }
         }
 
         // ---- Всё остальное — поиск ----

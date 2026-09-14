@@ -21,6 +21,13 @@ class VoiceSession {
      */
     var awaitingWeight: Boolean = false
 
+    /**
+     * true — ГП только что ответил «Найден в нескольких нарядах».
+     * Следующая фраза обрабатывается только как «продолжить» / «стоп» / «пауза».
+     * Остальные команды игнорируются с подсказкой.
+     */
+    var awaitingContinue: Boolean = false
+
     val hasContext: Boolean
         get() = currentOrderId != null && currentQuery != null
 
@@ -35,6 +42,7 @@ class VoiceSession {
         isAutoMode = false
         isPaused = false
         awaitingWeight = false
+        awaitingContinue = false
     }
 
     fun advanceToNext() {
@@ -44,5 +52,6 @@ class VoiceSession {
         lastMarkedSampleNumber = null
         isAutoMode = false
         awaitingWeight = false
+        awaitingContinue = false
     }
 }

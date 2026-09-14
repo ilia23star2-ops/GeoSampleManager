@@ -286,7 +286,34 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     suspend fun voiceExecute(cmd: VoiceCommand): VoiceExecResult {
-        Log.i(TAG, "voiceExecute: $cmd (awaitingWeight=${voiceSession.awaitingWeight})")
+        Log.i(
+            TAG,
+            "voiceExecute: $cmd " +
+                    "(awaitingWeight=${voiceSession.awaitingWeight}, " +
+                    "awaitingContinue=${voiceSession.awaitingContinue})"
+        )
+
+        // ---- Ждём «продолжить» после «Найден в нескольких нарядах»? ----
+        // Разрешаем только: продолжить / стоп / пауза.
+        if (voiceSession.awaitingContinue) {
+            return when (cmd) {
+                VoiceCommand.Resume -> {
+                    voiceSession.awaitingContinue = false
+                    VoiceExecResult.Message("Продолжаю")
+                }
+                VoiceCommand.Stop -> {
+                    voiceSession.awaitingContinue = false
+                    VoiceExecResult.Stopped
+                }
+                VoiceCommand.Pause -> {
+                    voiceSession.awaitingContinue = false
+                    VoiceExecResult.Message("Пауза")
+                }
+                else -> VoiceExecResult.Message(
+                    "Скажите «продолжить» или «стоп»."
+                )
+            }
+        }
 
         // ---- Ждём вес? ----
         if (voiceSession.awaitingWeight) {
@@ -376,6 +403,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentWellNumber = hit.wellNumber
                     voiceSession.isAutoMode = true
                     voiceSession.awaitingWeight = false
+                    voiceSession.awaitingContinue = false
 
                     val displayQuery: String
                     val foundSamples: Int
@@ -383,7 +411,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
                     if (isSample) {
                         displayQuery = hit.sampleNumber
-                        // Ищем конкретную пробу.
                         ensureOrderSamplesLoaded(hit.orderId)
                         val group = state.groupById(hit.orderId.toString())
                         val sampleRow = group?.rows?.firstOrNull {
@@ -418,8 +445,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         isSample = isSample
                     )
                 }
-                is VoiceSearchResult.FoundMany ->
+                is VoiceSearchResult.FoundMany -> {
+                    // FIX 5.8.8h: неоднозначный ответ — ждём «продолжить/стоп».
+                    voiceSession.awaitingContinue = true
+                    voiceSession.isAutoMode = false
                     VoiceExecResult.FoundMany(result.candidate, result.hits.size)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "voiceSearch: упал", e)
@@ -543,6 +574,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
+        voiceSession.awaitingContinue = false
         val joined = queries.joinToString(" ")
         setQuery(joined)
         return VoiceExecResult.Message("Сортировка: $joined")

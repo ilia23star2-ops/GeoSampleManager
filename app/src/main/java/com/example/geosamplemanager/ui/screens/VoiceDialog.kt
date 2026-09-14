@@ -274,8 +274,10 @@ private fun handleFeedback(
         }
 
         is VoiceExecResult.FoundMany -> {
+            // FIX 5.8.8h: пользователь видит красные заголовки на экране;
+            // ГП объясняет, что делать, и уходит в автопаузу.
             fb.error()
-            controller?.speak("Несколько вариантов. Уточните.")
+            controller?.speak("Найден в нескольких нарядах. Выберите на экране.")
         }
 
         VoiceExecResult.NotFound -> {
@@ -291,7 +293,7 @@ private fun handleFeedback(
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
     is VoiceExecResult.FoundOne -> VoiceStatus.Found("${result.query} — ${result.orderTitle}")
-    is VoiceExecResult.FoundMany -> VoiceStatus.Found("Несколько вариантов")
+    is VoiceExecResult.FoundMany -> VoiceStatus.Found("Найден в нескольких нарядах")
     is VoiceExecResult.Marked -> VoiceStatus.Marked(result.sampleNumber)
     is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
     is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
@@ -311,7 +313,7 @@ private fun describeResult(result: VoiceExecResult): String = when (result) {
                     "Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}"
         }
     }
-    is VoiceExecResult.FoundMany -> "Несколько вариантов (${result.variants})"
+    is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
     is VoiceExecResult.Marked -> {
         val extra = when {
             result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
