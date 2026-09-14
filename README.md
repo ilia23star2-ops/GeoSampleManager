@@ -8,15 +8,20 @@ Android-приложение для управления геохимическ�
 
 ## 🧭 Этот файл — главная точка входа для ИИ
 
-Если ты читаешь проект впервые — начни отсюда, затем прочитай по порядку:
+**Читай в таком порядке:**
 
-1. **`README.md`** (этот файл) — где что лежит, как всё связано.
-2. **`PROGRESS.md`** — что уже сделано, что в работе прямо сейчас.
-3. **`NEXT_STEPS.md`** — детальный план текущего этапа.
-4. **`DECISIONS.md`** — все договорённости по UI и логике.
-5. **`DATABASE.md`** — схема БД, как данные попадают в базу.
-6. **`ROADMAP.md`** — общий план развития до релиза MVP.
-7. **`VOICE.md`** — полная спецификация голосового помощника.
+1. **`AI_RULES.md`** — как работать. **Обязательно первым.**
+2. **`CONTEXT_BRIEF.md`** — где мы сейчас (одна страница).
+3. **`README.md`** (этот файл) — где что лежит.
+4. **`PROGRESS.md`** — полная история.
+5. **`NEXT_STEPS.md`** — текущий заход.
+6. **`DECISIONS.md`** — все решения по UI и логике.
+7. **`DATABASE.md`** — схема БД.
+8. **`ROADMAP.md`** — план до релиза.
+9. **`VOICE.md`** — спецификация ГП.
+10. **`GLOSSARY.md`** — термины.
+11. **`ISSUES.md`** — открытые проблемы.
+12. **`TESTING.md`** — что тестировать.
 
 **Правило:** перед изменением Room-сущностей — сверить с `DATABASE.md` и
 `NEXT_STEPS.md`, там указаны запланированные миграции.
@@ -29,7 +34,7 @@ Android-приложение для управления геохимическ�
 - **Room** (SQLite), KSP — **version = 2**
 - **Navigation Compose**
 - **Kotlin Coroutines + Flow**
-- **Vosk** — офлайн-распознавание речи (план, этап 5.8)
+- **Vosk** — офлайн-распознавание речи
 - **Свой парсер `.xlsx`** (без Apache POI)
 - **Gson** — настройки и история импорта
 
@@ -53,8 +58,9 @@ Android-приложение для управления геохимическ�
 4. **Room-сущности, DAO и репозиторий** — менять только с предупреждением
    и миграцией.
 5. **Настройки автосохраняются.**
-6. **Один заход = один законченный кусок.**
+6. **Один заход = 1–3 файла.** Больше — делить.
 7. **После кода — раздел «Как проверить».**
+8. **Стоп-сигналы** — см. `AI_RULES.md` §17.
 
 ---
 
@@ -97,9 +103,11 @@ Android-приложение для управления геохимическ�
 #### `data/util/`
 `PhotoStorage` — работа с фото.
 
-#### `data/voice/` (план, 5.8.2+)
-`VoiceNumberParser`, `VoicePrefixResolver`, `VoiceSearch`,
-`VoiceSegmenter`, `VoiceSettings`.
+#### `data/voice/`
+`VoiceController`, `VoiceDictionary`, `VoiceNumberParser`,
+`VoiceSegmenter`, `VoiceSettings`, `VoicePrefixResolver`, `VoiceSearch`,
+`VoiceCommand`, `VoiceCommandParser`, `VoiceOrdinals`, `VoiceSession`,
+`VoiceSpeaker`, `VoiceSearchRepository`.
 
 ### `ui/navigation/`
 `NavGraph.kt` (AppScaffold), `Screen.kt`.
@@ -141,7 +149,7 @@ Android-приложение для управления геохимическ�
 - **Заметки и фото** → `NotePhotoDialog` + `PhotoStorage` + `SampleImageDao`.
 - **Управление БД** → `DbScreen` + `DbViewModel`.
 - **Настройки** → `SettingsScreen` + `SettingsRepository`.
-- **Голосовой помощник** → см. `VOICE.md` (в разработке).
+- **Голосовой помощник** → `VOICE.md` + `data/voice/*`.
 
 ---
 
@@ -156,15 +164,23 @@ Android-приложение для управления геохимическ�
 | Настройки импорта | `ImportSettings.kt` + `SettingsRepository.kt` |
 | Диалог сверки | `ReconciliationDialogs.kt` + `SearchScreen.kt` |
 | Логика ГП | `VOICE.md` + `data/voice/*` |
+| Термин — что значит | `GLOSSARY.md` |
+| Что тестировать | `TESTING.md` |
+| Открытые проблемы | `ISSUES.md` |
 
 ---
 
 ## Файлы документации
 
+- `AI_RULES.md` — правила работы ИИ.
+- `CONTEXT_BRIEF.md` — где мы сейчас.
 - `README.md` — этот файл.
 - `PROGRESS.md` — статус проекта.
 - `NEXT_STEPS.md` — текущий этап.
-- `DECISIONS.md` — все решения по UI и логике.
+- `DECISIONS.md` — решения по UI и логике.
 - `DATABASE.md` — схема БД.
 - `ROADMAP.md` — план до релиза.
 - `VOICE.md` — спецификация ГП.
+- `GLOSSARY.md` — термины.
+- `ISSUES.md` — проблемы.
+- `TESTING.md` — тесты.
