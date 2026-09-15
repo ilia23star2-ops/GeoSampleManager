@@ -299,6 +299,15 @@ fun sortGroupsByRelevance(
     )
 }
 
+/**
+ * Анализ совпадения для одиночного запроса.
+ *
+ *  • 0 групп    → None.
+ *  • 1 группа   → Unique. Даже если эта группа из другого участка — это
+ *                 НЕ «несколько нарядов». Про «другой участок» UI узнаёт
+ *                 через determineGroupKind → GroupKind.OTHER_AREA.
+ *  • ≥2 групп   → Multiple (реально несколько нарядов).
+ */
 fun analyzeMatch(
     query: String, selectedArea: String?, selectedOrder: String?,
     allGroups: List<SampleGroup>
@@ -314,15 +323,9 @@ fun analyzeMatch(
 
     if (matching.size == 1) {
         val g = matching.first()
-        val inOrder = selectedOrder != null && g.orderTitle == selectedOrder
-        val inArea = selectedOrder == null && selectedArea != null && g.areaTitle == selectedArea
-        val noSel = selectedArea == null && selectedOrder == null
-        return if (inOrder || inArea || noSel) {
-            MatchInfo.Unique("${g.areaTitle} / ${g.orderTitle}")
-        } else {
-            MatchInfo.Multiple(matching.map { "${it.areaTitle} / ${it.orderTitle}" })
-        }
+        return MatchInfo.Unique("${g.areaTitle} / ${g.orderTitle}")
     }
+
     return MatchInfo.Multiple(matching.map { "${it.areaTitle} / ${it.orderTitle}" })
 }
 

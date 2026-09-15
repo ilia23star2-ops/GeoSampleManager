@@ -3,8 +3,11 @@ package com.example.geosamplemanager.data.voice
 /**
  * Произношение номеров для TTS.
  *
- *  • spellOut — для номеров с буквами (KPD1090031 → «ка пэ дэ один ноль ...»).
- *  • spellNumber — для чисел: короткие читаются как число, длинные — по цифрам.
+ * Основная идея: длинные номера вслух диктуют **парами цифр** — так же,
+ * как Vosk их слышит («15 24» → «пятнадцать двадцать четыре»).
+ *
+ *  • spellOut — для номеров с буквами (KPD1090031 → «ка пэ дэ 10 90 03 1»).
+ *  • spellNumber — для чисел: короткие читаются как число, длинные — по парам.
  */
 object VoiceSpeaker {
 
@@ -24,9 +27,87 @@ object VoiceSpeaker {
     )
 
     /**
-     * Произнести по буквам и цифрам: «KPD1090031» → «ка пэ дэ один ноль …».
+     * Произнести номер: буквы — по буквам, цифры — парами через пробел.
+     *
+     * «NV1524» → «эн вэ 15 24» → TTS: «эн вэ пятнадцать двадцать четыре»
+     * «KPD1090031» → «ка пэ дэ 10 90 03 1»
+     * «1524» → «15 24»
      */
     fun spellOut(text: String): String {
+        if (text.isBlank()) return text
+        val sb = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            val c = text[i]
+            if (c.isDigit()) {
+                // Собираем все цифры подряд и разбиваем на пары.
+                var j = i
+                while (j < text.length && text[j].isDigit()) j++
+                val digits = text.substring(i, j)
+                sb.append(breakIntoPairs(digits))
+                if (j < text.length) sb.append(' ')
+                i = j
+            } else {
+                val upper = c.uppercaseChar()
+                when {
+                    upper in letterNames -> {
+                        sb.append(letterNames[upper])
+                        sb.append(' ')
+                    }
+                    c == '-' || c == ' ' -> sb.append(' ')
+                    else -> {
+                        sb.append(c)
+                        sb.append(' ')
+                    }
+                }
+                i++
+            }
+        }
+        return sb.toString().trim().replace(Regex(" +"), " ")
+    }
+
+    /**
+     * Разбить строку цифр на пары слева направо, разделяя пробелом.
+     * Если последняя группа содержит одну цифру — оставить её как есть.
+     *
+     * «1524» → «15 24»
+     * «152401» → «15 24 01»
+     * «1090031» → «10 90 03 1»
+     * «5» → «5»
+     */
+    private fun breakIntoPairs(digits: String): String {
+        if (digits.length <= 2) return digits
+        val sb = StringBuilder()
+        var i = 0
+        while (i < digits.length) {
+            val end = minOf(i + 2, digits.length)
+            sb.append(digits.substring(i, end))
+            i = end
+            if (i < digits.length) sb.append(' ')
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Произнести число.
+     *
+     * Короткие числа (< 10000) возвращаются как есть — TTS читает
+     * их словами («10» → «десять», «2265» → «две тысячи двести шестьдесят
+     * пять»). Длинные — по парам, как spellOut.
+     */
+    fun spellNumber(value: Int): String {
+        return if (value in 0..9999) {
+            value.toString()
+        } else {
+            spellOut(value.toString())
+        }
+    }
+
+    /**
+     * Произнести по одной цифре (старый способ).
+     * Используется как запасной вариант, если пары почему-то не подходят.
+     */
+    fun spellByDigits(text: String): String {
         if (text.isBlank()) return text
         val parts = mutableListOf<String>()
         for (c in text) {
@@ -39,20 +120,5 @@ object VoiceSpeaker {
             }
         }
         return parts.joinToString(" ")
-    }
-
-    /**
-     * Произнести число.
-     *
-     * Короткие числа (< 10000) возвращаются как есть — TTS читает
-     * их словами («10» → «десять»). Длинные — по цифрам, иначе TTS
-     * может прочитать «1090031» как «один миллион …».
-     */
-    fun spellNumber(value: Int): String {
-        return if (value in 0..9999) {
-            value.toString()
-        } else {
-            spellOut(value.toString())
-        }
     }
 }

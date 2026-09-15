@@ -19,6 +19,7 @@ import com.example.geosamplemanager.data.voice.VoiceSearch
 import com.example.geosamplemanager.data.voice.VoiceSearchRepository
 import com.example.geosamplemanager.data.voice.VoiceSearchResult
 import com.example.geosamplemanager.data.voice.VoiceSession
+import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -293,8 +294,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     "awaitingContinue=${voiceSession.awaitingContinue})"
         )
 
-        // ---- Ждём «продолжить» после «Найден в нескольких нарядах»? ----
-        // Разрешаем только: продолжить / стоп / пауза.
+        // ---- Автопауза после «Найден в нескольких нарядах» ----
+        // Разрешаем: продолжить / стоп / пауза, а также Sort и Search —
+        // это явные новые команды, они снимают паузу.
         if (voiceSession.awaitingContinue) {
             return when (cmd) {
                 VoiceCommand.Resume -> {
@@ -309,6 +311,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.awaitingContinue = false
                     VoiceExecResult.Message("Пауза")
                 }
+                is VoiceCommand.Search -> {
+                    voiceSession.awaitingContinue = false
+                    voiceSearch(cmd.query)
+                }
+                is VoiceCommand.Sort -> {
+                    voiceSession.awaitingContinue = false
+                    voiceSort(cmd.queries)
+                }
                 else -> VoiceExecResult.Message(
                     "Скажите «продолжить» или «стоп»."
                 )
@@ -317,8 +327,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         // ---- Ждём вес? ----
         if (voiceSession.awaitingWeight) {
-            // Пользователь сказал просто «два с половиной» — это Search,
-            // но на самом деле — вес.
             if (cmd is VoiceCommand.Search) {
                 val weight = commandParser.parseWeightAnswer(cmd.query)
                 if (weight != null && weight > 0) {
@@ -327,11 +335,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 return VoiceExecResult.Message("Не понял вес. Повторите.")
             }
-            // Отмена — сбрасываем ожидание и обрабатываем команду.
             if (cmd is VoiceCommand.Undo || cmd is VoiceCommand.Stop) {
                 voiceSession.awaitingWeight = false
             }
-            // SetWeight идёт сам — не мешаем.
         }
 
         return when (cmd) {
@@ -385,12 +391,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 VoiceSearchResult.NotFound -> VoiceExecResult.NotFound
                 is VoiceSearchResult.FoundOne -> {
                     val hit = result.hit
-                    // Уровни:
-                    //   1 — sample == (ПРОБА)
-                    //   2 — well == (СКВАЖИНА)
-                    //   3 — well.endsWith (СКВАЖИНА)
-                    //   4 — sample.endsWith (ПРОБА)
-                    //   5, 6 — по обстоятельствам
                     val isSample = when (result.level) {
                         1, 4 -> true
                         2, 3 -> false
@@ -446,9 +446,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     )
                 }
                 is VoiceSearchResult.FoundMany -> {
-                    // FIX 5.8.8h: неоднозначный ответ — ждём «продолжить/стоп».
+                    // Показываем найденный номер в поле поиска, чтобы
+                    // в интерфейсе появился баннер «Найден в нескольких нарядах»
+                    // и красный фонарик. Иначе поле поиска остаётся пустым.
                     voiceSession.awaitingContinue = true
                     voiceSession.isAutoMode = false
+                    withContext(Dispatchers.Main) {
+                        setQuery(result.candidate)
+                    }
                     VoiceExecResult.FoundMany(result.candidate, result.hits.size)
                 }
             }
@@ -572,12 +577,82 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    private fun voiceSort(queries: List<String>): VoiceExecResult {
+    /**
+     * Сортировка.
+     *
+     *  • Ставим query в поле поиска.
+     *  • Для каждого номера ищем результат.
+     *  • Все однозначны — перечисляем «X, наряд Y» без участка.
+     *    Автопауза НЕ ставится.
+     *  • Есть неоднозначные — про них отдельно + «Выберите на экране»,
+     *    автопауза.
+     *
+     * Участок в TTS не называем — только номер наряда.
+     */
+    private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
+
         val joined = queries.joinToString(" ")
         setQuery(joined)
-        return VoiceExecResult.Message("Сортировка: $joined")
+
+        val source = VoiceSearchRepository(getApplication())
+        val search = VoiceSearch(source)
+
+        val descriptions = mutableListOf<String>()
+        val ambiguousQueries = mutableListOf<String>()
+
+        for (q in queries) {
+            val clean = q.trim()
+            if (clean.isEmpty()) continue
+
+            val candidates: List<String> = if (clean.all { it.isDigit() }) {
+                listOf(clean)
+            } else {
+                voiceParser.parse(clean).candidates
+                    .map { it.replace("|", "") }
+                    .filter { it.isNotBlank() }
+            }
+            Log.i(TAG, "voiceSort: q=«$clean» candidates=$candidates")
+
+            if (candidates.isEmpty()) {
+                descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
+                continue
+            }
+            try {
+                when (val r = search.search(candidates)) {
+                    is VoiceSearchResult.FoundOne -> {
+                        val hit = r.hit
+                        // FIX: не называем участок — только номер наряда.
+                        descriptions.add(
+                            "${VoiceSpeaker.spellOut(clean)}, наряд ${hit.orderNumber}"
+                        )
+                    }
+                    is VoiceSearchResult.FoundMany -> {
+                        ambiguousQueries.add(clean)
+                        descriptions.add(
+                            "${VoiceSpeaker.spellOut(clean)} — найден в нескольких нарядах"
+                        )
+                    }
+                    VoiceSearchResult.NotFound -> {
+                        descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "voiceSort: проверка «$clean» упала", e)
+                descriptions.add("${VoiceSpeaker.spellOut(clean)} — ошибка")
+            }
+        }
+
+        val hasAmbiguous = ambiguousQueries.isNotEmpty()
+        val text = if (hasAmbiguous) {
+            voiceSession.awaitingContinue = true
+            descriptions.joinToString(". ") + ". Выберите на экране."
+        } else {
+            descriptions.joinToString(". ") + "."
+        }
+        Log.i(TAG, "voiceSort: text=«$text», awaitingContinue=$hasAmbiguous")
+        return VoiceExecResult.Message(text)
     }
 
     // ================================================================
