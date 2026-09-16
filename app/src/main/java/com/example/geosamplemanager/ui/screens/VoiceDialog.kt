@@ -114,12 +114,13 @@ fun VoiceDialog(
                         resultText = describeResult(result)
                         status = "Готово"
                         viewModel.setVoiceStatus(statusFromResult(result))
-                        handleFeedback(result, fb, controller)
+                        handleFeedback(result, fb, controller, viewModel)
                     } catch (e: Exception) {
                         Log.e(LOG_TAG, "voiceExecute УПАЛ", e)
                         resultText = "Ошибка: ${e.message}"
                         status = "Ошибка"
                         viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
+                        fb.soundError()
                     }
                 }
             }
@@ -231,14 +232,26 @@ fun VoiceDialog(
     )
 }
 
+/**
+ * Звук + озвучка по результату.
+ *
+ * Правила (DECISIONS §13.4–13.5):
+ *   • OK_SINGLE — без звука, TTS о результате.
+ *   • FoundMany — soundAttention + TTS «Выберите на экране».
+ *   • Marked — soundOk + TTS подтверждения.
+ *   • WeightSet — soundOk.
+ *   • NotFound — soundError.
+ *   • Message с автопаузой — soundAttention (гвардия К5 глушит повторы).
+ */
 private fun handleFeedback(
     result: VoiceExecResult,
     fb: VoiceFeedback,
-    controller: VoiceController?
+    controller: VoiceController?,
+    viewModel: ReconciliationViewModel
 ) {
     when (result) {
         is VoiceExecResult.FoundOne -> {
-            fb.doubleUp()
+            // Успешный поиск — без звука.
             val spokenNumber = VoiceSpeaker.spellOut(result.query)
             val orderPart = result.orderTitle
             val phrase = if (result.isSample) {
@@ -247,13 +260,20 @@ private fun handleFeedback(
             } else {
                 val total = VoiceSpeaker.spellNumber(result.totalSamples)
                 val found = VoiceSpeaker.spellNumber(result.foundSamples)
-                "Скважина $spokenNumber. $orderPart. Проб: $total, отмечено: $found."
+                buildString {
+                    append("Скважина $spokenNumber. $orderPart. ")
+                    append("Проб $total, отмечено $found.")
+                    // Холостые / ВК / отложено — если есть.
+                    // Пока эта информация не приходит из VoiceExecResult,
+                    // добавим в заходе 5.8.9d вместе с расширением
+                    // VoiceExecResult.FoundOne.
+                }
             }
             controller?.speak(phrase)
         }
 
         is VoiceExecResult.Marked -> {
-            fb.doubleUp()
+            fb.soundOk()
             val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
@@ -269,24 +289,34 @@ private fun handleFeedback(
         }
 
         is VoiceExecResult.WeightSet -> {
+            fb.soundOk()
             val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
-            controller?.speak("Вес ${result.weight} килограмм. Проба $spoken.")
+            controller?.speak("Вес ${result.weight} килограмма. Проба $spoken.")
         }
 
         is VoiceExecResult.FoundMany -> {
-            // FIX 5.8.8h: пользователь видит красные заголовки на экране;
-            // ГП объясняет, что делать, и уходит в автопаузу.
-            fb.error()
+            fb.soundAttention()
             controller?.speak("Найден в нескольких нарядах. Выберите на экране.")
         }
 
         VoiceExecResult.NotFound -> {
-            fb.error()
+            fb.soundError()
             controller?.speak("Не нашёл.")
         }
 
-        is VoiceExecResult.Message -> controller?.speak(result.text)
-        VoiceExecResult.Next -> controller?.speak("Слушаю следующую скважину.")
+        is VoiceExecResult.Message -> {
+            // Если это ответ в автопаузе — это «внимание» (К5 глушит повторы).
+            if (viewModel.voiceSession.awaitingContinue) {
+                fb.soundAttention()
+            }
+            controller?.speak(result.text)
+        }
+
+        VoiceExecResult.Next -> {
+            fb.soundOk()
+            controller?.speak("Слушаю следующую скважину.")
+        }
+
         else -> {}
     }
 }
