@@ -37,14 +37,13 @@ object VoiceOrdinals {
     private val suffixes = listOf("ая", "ый", "ое", "ую")
 
     val map: Map<String, Int> = buildMap {
-        // 1..20 (кроме 3) — простые формы по суффиксам.
         for ((i, base) in bases) {
             for (suffix in suffixes) {
                 put("$base$suffix", i)
             }
         }
 
-        // 3 — особые формы. FIX 5.8.9e-5.
+        // 3 — особые формы.
         put("третья", 3)
         put("третий", 3)
         put("третье", 3)
@@ -77,5 +76,48 @@ object VoiceOrdinals {
             }
         }
         return best
+    }
+
+    /**
+     * FIX 5.8.9g-1: находит ВСЕ порядковые в тексте слева направо.
+     *
+     * Работает жадно: на каждой позиции берём самое длинное
+     * совпадение, сдвигаемся за него, продолжаем.
+     *
+     * Примеры:
+     *   «пятая шестая седьмая» → [5, 6, 7]
+     *   «двадцать первая двадцать третья» → [21, 23]
+     *   «первая» → [1]
+     *   «привет» → []
+     */
+    fun matchAll(normalizedText: String): List<Int> {
+        if (normalizedText.isEmpty()) return emptyList()
+        val result = mutableListOf<Int>()
+        var i = 0
+        while (i < normalizedText.length) {
+            var bestValue: Int? = null
+            var bestEnd = i
+            for ((word, value) in map) {
+                if (normalizedText.startsWith(word, i)) {
+                    val end = i + word.length
+                    // Границы слова: слева либо начало, либо не-буква;
+                    // справа либо конец, либо не-буква.
+                    val beforeOk = i == 0 || !normalizedText[i - 1].isLetter()
+                    val afterOk = end == normalizedText.length ||
+                            !normalizedText[end].isLetter()
+                    if (beforeOk && afterOk && end > bestEnd) {
+                        bestValue = value
+                        bestEnd = end
+                    }
+                }
+            }
+            if (bestValue != null) {
+                result.add(bestValue)
+                i = bestEnd
+            } else {
+                i++
+            }
+        }
+        return result
     }
 }

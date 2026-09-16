@@ -25,7 +25,14 @@ class VoiceCommandParser(
             "сколько осталось", "сколько осталось?" -> return VoiceCommand.HowManyLeft
             "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
             "показать найденные", "найденные" -> return VoiceCommand.ShowFound
+
+            // FIX 5.8.9g-1: снять все — как было.
             "снять все", "сбросить все", "очистить все" -> return VoiceCommand.ClearAll
+
+            // FIX 5.8.9g-1: отметить все пробы текущей скважины.
+            "все", "отметь все", "отметить все", "отметьте все" ->
+                return VoiceCommand.MarkAll
+
             "снять последнюю", "последнюю снять" -> return VoiceCommand.ClearLast
             "снять отложенную", "снять отложенную пробу" -> return VoiceCommand.Unpostpone
         }
@@ -47,9 +54,13 @@ class VoiceCommandParser(
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
         }
 
-        // ---- Отметить <ordinal> ----
-        val ord = VoiceOrdinals.match(norm)
-        if (ord != null) return VoiceCommand.MarkOrdinal(ord)
+        // ---- Отметить <ordinal> / <ordinal> <ordinal> ... ----
+        // FIX 5.8.9g-1: matchAll находит все порядковые подряд.
+        val ordinals = VoiceOrdinals.matchAll(norm)
+        when {
+            ordinals.size == 1 -> return VoiceCommand.MarkOrdinal(ordinals[0])
+            ordinals.size > 1 -> return VoiceCommand.MarkByNumbers(ordinals)
+        }
 
         // ---- Сортировка: "<X> и <Y>" ----
         // FIX И-11: Vosk присылает словами, а не цифрами.
@@ -78,7 +89,6 @@ class VoiceCommandParser(
         val norm = numberParser.normalize(input).trim()
         if (norm.isEmpty()) return null
 
-        // «с половиной» → + 0.5
         val halfSuffix = "с половиной"
         if (norm.endsWith(halfSuffix)) {
             val baseText = norm.removeSuffix(halfSuffix).trim()
@@ -86,7 +96,6 @@ class VoiceCommandParser(
             return base + 0.5
         }
 
-        // «с четвертью» → + 0.25
         val quarterSuffix = "с четвертью"
         if (norm.endsWith(quarterSuffix)) {
             val baseText = norm.removeSuffix(quarterSuffix).trim()

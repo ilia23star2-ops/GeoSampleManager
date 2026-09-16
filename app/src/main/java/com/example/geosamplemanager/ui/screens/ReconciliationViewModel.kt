@@ -334,8 +334,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         return when (cmd) {
-            is VoiceCommand.Search -> voiceSearch(cmd.query)
+            is VoiceCommand.Search -> handleSearchInSession(cmd.query)
             is VoiceCommand.MarkOrdinal -> voiceMarkOrdinal(cmd.ordinal)
+            is VoiceCommand.MarkByNumbers -> voiceMarkByNumbers(cmd.ordinals)
+            VoiceCommand.MarkAll -> voiceMarkAll()
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
             is VoiceCommand.ClearOrdinal -> voiceClearOrdinal(cmd.ordinal)
             VoiceCommand.ClearLast -> voiceClearLast()
@@ -354,6 +356,26 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
+    }
+
+    /**
+     * Search в активной сессии — если query парсится в число 1..30,
+     * это отметка пробы. Иначе — обычный поиск.
+     */
+    private suspend fun handleSearchInSession(query: String): VoiceExecResult {
+        val hasSession = voiceSession.currentOrderId != null &&
+                voiceSession.currentWellNumber != null
+
+        if (hasSession) {
+            val parsed = voiceParser.parse(query)
+            val num = parsed.primary?.toIntOrNull()
+            if (num != null && num in 1..30) {
+                Log.i(TAG, "handleSearchInSession: «$query» → MarkOrdinal($num)")
+                return voiceMarkOrdinal(num)
+            }
+        }
+
+        return voiceSearch(query)
     }
 
     private suspend fun voiceSearch(query: String): VoiceExecResult {
@@ -382,6 +404,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             when (result) {
                 VoiceSearchResult.NotFound -> {
+                    // FIX 5.8.9g-3: сбрасываем контекст сессии,
+                    // чтобы «первая» после неудачного поиска не отметила
+                    // пробу от предыдущей скважины.
+                    voiceSession.clear()
+
                     val displayQuery = candidates.firstOrNull() ?: query
                     withContext(Dispatchers.Main) {
                         setQuery(displayQuery)
@@ -396,10 +423,22 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         else -> hit.sampleNumber != hit.wellNumber
                     }
 
-                    voiceSession.currentOrderId = hit.orderId
+                    // FIX 5.8.9g-3: при смене скважины сбрасываем
+                    // lastMarked* и awaitingWeight — они относились к старой.
+                    val oldWell = voiceSession.currentWellNumber
+                    val oldOrder = voiceSession.currentOrderId
+                    val newWell = hit.wellNumber
+                    val newOrder = hit.orderId
+                    if (oldOrder != null && (oldOrder != newOrder || oldWell != newWell)) {
+                        voiceSession.lastMarkedRowId = null
+                        voiceSession.lastMarkedSampleNumber = null
+                        voiceSession.awaitingWeight = false
+                    }
+
+                    voiceSession.currentOrderId = newOrder
                     voiceSession.currentOrderTitle = "Наряд №${hit.orderNumber}"
                     voiceSession.currentAreaTitle = hit.areaTitle
-                    voiceSession.currentWellNumber = hit.wellNumber
+                    voiceSession.currentWellNumber = newWell
 
                     val selectedArea = state.selectedArea
                     val selectedOrder = state.selectedOrder
@@ -496,7 +535,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
         if (row.found) {
-            // FIX 5.8.9e-5: spell-out номера для TTS.
             val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
             return VoiceExecResult.Message("Проба $spoken уже отмечена")
         }
@@ -515,6 +553,57 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             isWeightControl = row.weightControl,
             needsWeight = needsWeight
         )
+    }
+
+    private fun voiceMarkByNumbers(ordinals: List<Int>): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+
+        val markedNumbers = mutableListOf<String>()
+        var lastId: String? = null
+        var lastNumber: String? = null
+
+        for (ord in ordinals) {
+            val row = group.rows.firstOrNull {
+                it.wellNumber == wellNumber && it.numberInWell == ord
+            } ?: continue
+            if (row.found) continue
+
+            setFound(row.id, true)
+            markedNumbers.add(row.sampleNumber)
+            lastId = row.id
+            lastNumber = row.sampleNumber
+        }
+
+        voiceSession.lastMarkedRowId = lastId
+        voiceSession.lastMarkedSampleNumber = lastNumber
+
+        if (markedNumbers.isEmpty()) {
+            return VoiceExecResult.Message("Пробы не найдены или уже отмечены")
+        }
+        return VoiceExecResult.MarkedMultiple(markedNumbers)
+    }
+
+    private fun voiceMarkAll(): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+        val rows = group.rows.filter { it.wellNumber == wellNumber && !it.found }
+        if (rows.isEmpty()) {
+            return VoiceExecResult.Message("Все пробы уже отмечены")
+        }
+        rows.forEach { setFound(it.id, true) }
+        val last = rows.last()
+        voiceSession.lastMarkedRowId = last.id
+        voiceSession.lastMarkedSampleNumber = last.sampleNumber
+        return VoiceExecResult.MarkedAll(rows.size)
     }
 
     private fun voiceSetWeight(value: Double): VoiceExecResult {
@@ -537,7 +626,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
         if (!row.found) {
-            // FIX 5.8.9e-5: spell-out номера для TTS.
             val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
             return VoiceExecResult.Message("Проба $spoken не отмечена")
         }

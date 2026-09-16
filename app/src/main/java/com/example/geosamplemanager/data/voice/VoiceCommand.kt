@@ -14,6 +14,19 @@ sealed class VoiceCommand {
     /** Отметить пробу по порядковому номеру (1..30). */
     data class MarkOrdinal(val ordinal: Int) : VoiceCommand()
 
+    /**
+     * FIX 5.8.9g-1: отметить несколько проб подряд одной фразой.
+     * Пример: «пятая шестая седьмая» → [5, 6, 7].
+     * Порядок сохраняется — отмечаем как сказано.
+     */
+    data class MarkByNumbers(val ordinals: List<Int>) : VoiceCommand()
+
+    /**
+     * FIX 5.8.9g-1: отметить все пробы текущей скважины.
+     * Пример: «отметь все», «отметить все», «все».
+     */
+    data object MarkAll : VoiceCommand()
+
     /** Установить вес. */
     data class SetWeight(val value: Double) : VoiceCommand()
 

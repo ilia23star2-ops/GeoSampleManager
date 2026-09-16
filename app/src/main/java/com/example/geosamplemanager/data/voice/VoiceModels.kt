@@ -18,23 +18,11 @@ sealed class VoiceExecResult {
         val wellNumber: String,
         val totalSamples: Int,
         val foundSamples: Int,
-        /** true — нашли конкретную пробу; false — скважину. */
         val isSample: Boolean,
-        /** Холостые пробы (для озвучки). */
         val blanks: Int = 0,
-        /** Пробы с весовым контролем (для озвучки). */
         val weightControls: Int = 0,
-        /** Отложенные пробы (для озвучки). */
         val postponed: Int = 0,
-        /**
-         * FIX 5.8.9e-4: причина внимания, если результат — единственный,
-         * но не в выбранном участке/наряде.
-         *   FOUND_OTHER_AREA  — ответ в другом участке.
-         *   FOUND_OTHER_ORDER — ответ в другом наряде.
-         *   null              — всё в порядке.
-         */
         val attentionReason: AnswerReason? = null,
-        /** Доп.информация для фразы: другой участок / другой наряд. */
         val otherAreaTitle: String? = null,
         val otherOrderNumber: String? = null
     ) : VoiceExecResult()
@@ -47,6 +35,18 @@ sealed class VoiceExecResult {
         val isWeightControl: Boolean,
         val needsWeight: Boolean
     ) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.9g-2: отметили несколько проб одной фразой.
+     * `sampleNumbers` — какие отметились (в порядке произнесения).
+     */
+    data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.9g-2: отметили все пробы текущей скважины.
+     * `count` — сколько было отмечено.
+     */
+    data class MarkedAll(val count: Int) : VoiceExecResult()
 
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
