@@ -15,6 +15,22 @@ import com.google.gson.Gson
 object VoiceGrammar {
 
     /**
+     * FIX 5.8.9g-3: явные слова команд, которых нет в общем словаре,
+     * но которые Vosk должен распознавать без подмены.
+     *
+     * Если их нет в грамматике — Vosk подменяет ближайшими:
+     *   «все» → «семь»
+     *   «отметь» → «отменить»
+     */
+    private val explicitCommandWords = listOf(
+        "все",
+        "отметь",
+        "отметьте",
+        "отметить",
+        "отметить" // дубликат безвреден, LinkedHashSet сам уберёт
+    )
+
+    /**
      * Собрать грамматику.
      *
      * @param extra дополнительные слова (например, пользовательские
@@ -40,6 +56,9 @@ object VoiceGrammar {
 
         // Команды.
         words.addAll(VoiceDictionary.commands)
+
+        // FIX 5.8.9g-3: явные слова, которых может не быть в словаре.
+        words.addAll(explicitCommandWords)
 
         // Дополнительные слова от вызывающей стороны.
         words.addAll(extra)
