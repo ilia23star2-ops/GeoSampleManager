@@ -220,11 +220,36 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         replaceRow(gi, ri, row.copy(hasNote = hasNote, hasPhoto = hasPhoto))
     }
 
+    // ================================================================
+    // Развёрнутость групп
+    // ================================================================
+
+    /** Старое поведение — по умолчанию развёрнуто. Для совместимости. */
     fun isGroupExpanded(groupId: String): Boolean = _expandedGroups[groupId] ?: true
 
-    fun toggleGroupExpanded(groupId: String) {
-        _expandedGroups[groupId] = !isGroupExpanded(groupId)
+    /**
+     * FIX 5.8.9e-1: эффективная развёрнутость с учётом контекста.
+     *
+     *   • Если пользователь явно свернул/развернул — берём его выбор.
+     *   • Иначе: при ATTENTION (несколько результатов) — свёрнуто,
+     *     в остальных случаях — развёрнуто.
+     */
+    fun effectiveGroupExpanded(groupId: String, isAttention: Boolean): Boolean {
+        _expandedGroups[groupId]?.let { return it }
+        return !isAttention
     }
+
+    /**
+     * FIX 5.8.9e-1: переключение с учётом текущего эффективного состояния.
+     */
+    fun toggleGroupExpanded(groupId: String, isAttention: Boolean) {
+        val current = effectiveGroupExpanded(groupId, isAttention)
+        _expandedGroups[groupId] = !current
+    }
+
+    // ================================================================
+    // Undo / redo описание
+    // ================================================================
 
     fun describeTopUndoAction(): String {
         val a = undoStack.lastOrNull() ?: return ""
@@ -276,14 +301,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 
     // ================================================================
-    // Настройки наряда: холостые + ВК — РАЗДЕЛЬНО
+    // Настройки наряда: холостые + ВК — раздельно
     // ================================================================
 
-    /**
-     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО холостые.
-     *
-     * Шаг ВК сохраняется отдельно — при нажатии «Применить ВК».
-     */
     fun applyBlankSettingsForOrder(
         orderTitle: String,
         settings: BlankWeightSettings
@@ -310,9 +330,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return changed
     }
 
-    /**
-     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО весовой контроль.
-     */
     fun applyWeightControlForOrder(orderTitle: String, step: Int): Int {
         _weightControlStepByOrder[orderTitle] = step
 
@@ -336,9 +353,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return changed
     }
 
-    /**
-     * Снять все ВК в наряде.
-     */
     fun resetWeightControlForOrder(orderTitle: String): Int {
         val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
         if (gi < 0) return 0
@@ -365,9 +379,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return changed
     }
 
-    /**
-     * Сбросить настройки наряда к глобальным + пересобрать холостые.
-     */
     fun resetBlankSettingsToGlobal(orderTitle: String): Int {
         _blankWeightByOrder.remove(orderTitle)
         _weightControlStepByOrder.remove(orderTitle)

@@ -10,6 +10,7 @@ import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
+import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
@@ -399,9 +400,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentOrderTitle = "Наряд №${hit.orderNumber}"
                     voiceSession.currentAreaTitle = hit.areaTitle
                     voiceSession.currentWellNumber = hit.wellNumber
-                    voiceSession.isAutoMode = true
+
+                    val selectedArea = state.selectedArea
+                    val selectedOrder = state.selectedOrder
+                    val attentionReason: AnswerReason? = when {
+                        selectedArea != null && hit.areaTitle != selectedArea ->
+                            AnswerReason.FOUND_OTHER_AREA
+                        selectedOrder != null &&
+                                "Наряд №${hit.orderNumber}" != selectedOrder ->
+                            AnswerReason.FOUND_OTHER_ORDER
+                        else -> null
+                    }
+
+                    voiceSession.isAutoMode = attentionReason == null
                     voiceSession.awaitingWeight = false
-                    voiceSession.awaitingContinue = false
 
                     val displayQuery: String
                     var totalSamples = 0
@@ -452,7 +464,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         isSample = isSample,
                         blanks = blanks,
                         weightControls = weightControls,
-                        postponed = postponed
+                        postponed = postponed,
+                        attentionReason = attentionReason,
+                        otherAreaTitle = hit.areaTitle,
+                        otherOrderNumber = hit.orderNumber
                     )
                 }
                 is VoiceSearchResult.FoundMany -> {
@@ -480,7 +495,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
-        if (row.found) return VoiceExecResult.Message("Проба ${row.sampleNumber} уже отмечена")
+        if (row.found) {
+            // FIX 5.8.9e-5: spell-out номера для TTS.
+            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+            return VoiceExecResult.Message("Проба $spoken уже отмечена")
+        }
 
         setFound(row.id, true)
         voiceSession.lastMarkedRowId = row.id
@@ -517,7 +536,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
-        if (!row.found) return VoiceExecResult.Message("Проба ${row.sampleNumber} не отмечена")
+        if (!row.found) {
+            // FIX 5.8.9e-5: spell-out номера для TTS.
+            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+            return VoiceExecResult.Message("Проба $spoken не отмечена")
+        }
         setFound(row.id, false)
         return VoiceExecResult.Unmarked(row.sampleNumber)
     }
@@ -773,9 +796,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         persistAll()
     }
 
-    /**
-     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО холостые.
-     */
     fun applyBlankSettingsForOrder(
         orderTitle: String,
         settings: BlankWeightSettings
@@ -785,9 +805,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return changed
     }
 
-    /**
-     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО весовой контроль.
-     */
     fun applyWeightControlForOrder(
         orderTitle: String,
         weightControlStep: Int

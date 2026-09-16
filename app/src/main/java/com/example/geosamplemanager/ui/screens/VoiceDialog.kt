@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.geosamplemanager.data.util.VoiceController
+import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceCallback
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
@@ -235,13 +236,9 @@ fun VoiceDialog(
 /**
  * Звук + озвучка по результату.
  *
- * Правила (DECISIONS §13.4–13.5, VOICE §10):
- *   • OK_SINGLE — без звука, TTS о результате + ненулевые категории.
- *   • FoundMany — soundAttention + TTS «Выберите на экране».
- *   • Marked — soundOk + TTS подтверждения.
- *   • WeightSet — soundOk.
- *   • NotFound — soundError.
- *   • Message с автопаузой — soundAttention (гвардия К5 глушит повторы).
+ * FIX 5.8.9e-4: при FoundOne с attentionReason != null — играем
+ * soundAttention, ставим автопаузу, озвучиваем «другой участок»
+ * или «другой наряд».
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -251,9 +248,18 @@ private fun handleFeedback(
 ) {
     when (result) {
         is VoiceExecResult.FoundOne -> {
-            // Успешный поиск — без звука.
-            val phrase = buildFoundOnePhrase(result)
-            controller?.speak(phrase)
+            if (result.attentionReason != null) {
+                // Другой участок / другой наряд — как ATTENTION.
+                fb.soundAttention()
+                viewModel.voiceSession.awaitingContinue = true
+                viewModel.voiceSession.isAutoMode = false
+                val phrase = buildAttentionFoundOnePhrase(result)
+                controller?.speak(phrase)
+            } else {
+                // Успешный поиск — без звука.
+                val phrase = buildFoundOnePhrase(result)
+                controller?.speak(phrase)
+            }
         }
 
         is VoiceExecResult.Marked -> {
@@ -305,14 +311,36 @@ private fun handleFeedback(
 }
 
 /**
- * Собрать фразу для FoundOne.
+ * Фраза при внимании (другой участок / другой наряд).
  *
- *   «Скважина 15 24. Наряд 7. Проб 3, отмечено 0.»
- *   + если blanks > 0: «Холостых 1.»
- *   + если weightControls > 0: «Весовой контроль 1.»
- *   + если postponed > 0: «Отложено 2.»
- *
- * Нулевые категории не упоминаем.
+ *   «Скважина 10 90 03 1. Другой участок — Коптеловский, наряд 27. Выберите на экране.»
+ *   «Скважина 15 24. Другой наряд — 2. Выберите на экране.»
+ */
+private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
+    val spoken = VoiceSpeaker.spellOut(r.wellNumber)
+    val sb = StringBuilder()
+    sb.append("Скважина $spoken. ")
+
+    when (r.attentionReason) {
+        AnswerReason.FOUND_OTHER_AREA -> {
+            val area = r.otherAreaTitle ?: "другой"
+            val ord = r.otherOrderNumber ?: ""
+            sb.append("Другой участок — $area")
+            if (ord.isNotEmpty()) sb.append(", наряд $ord")
+            sb.append(". ")
+        }
+        AnswerReason.FOUND_OTHER_ORDER -> {
+            val ord = r.otherOrderNumber ?: "другой"
+            sb.append("Другой наряд — $ord. ")
+        }
+        else -> {}
+    }
+    sb.append("Выберите на экране.")
+    return sb.toString()
+}
+
+/**
+ * Собрать фразу для FoundOne без внимания.
  */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = VoiceSpeaker.spellOut(r.query)
@@ -346,7 +374,13 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 }
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
-    is VoiceExecResult.FoundOne -> VoiceStatus.Found("${result.query} — ${result.orderTitle}")
+    is VoiceExecResult.FoundOne -> {
+        if (result.attentionReason != null) {
+            VoiceStatus.Found("${result.query} — ${result.attentionReason.shortLabel}")
+        } else {
+            VoiceStatus.Found("${result.query} — ${result.orderTitle}")
+        }
+    }
     is VoiceExecResult.FoundMany -> VoiceStatus.Found("Найден в нескольких нарядах")
     is VoiceExecResult.Marked -> VoiceStatus.Marked(result.sampleNumber)
     is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
@@ -359,7 +393,25 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
 
 private fun describeResult(result: VoiceExecResult): String = when (result) {
     is VoiceExecResult.FoundOne -> {
-        if (result.isSample) {
+        if (result.attentionReason != null) {
+            val sb = StringBuilder()
+            sb.append("Скважина ${result.query}. ")
+            when (result.attentionReason) {
+                AnswerReason.FOUND_OTHER_AREA -> {
+                    val area = result.otherAreaTitle ?: "другой"
+                    val ord = result.otherOrderNumber ?: ""
+                    sb.append("⚠ Другой участок — $area")
+                    if (ord.isNotEmpty()) sb.append(", наряд $ord")
+                    sb.append(". Выберите на экране.")
+                }
+                AnswerReason.FOUND_OTHER_ORDER -> {
+                    val ord = result.otherOrderNumber ?: "другой"
+                    sb.append("⚠ Другой наряд — $ord. Выберите на экране.")
+                }
+                else -> {}
+            }
+            sb.toString()
+        } else if (result.isSample) {
             val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
             "Проба ${result.query} → ${result.orderTitle}. $label"
         } else {

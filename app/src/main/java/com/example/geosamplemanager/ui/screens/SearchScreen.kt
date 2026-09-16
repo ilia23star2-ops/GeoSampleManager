@@ -386,14 +386,21 @@ fun SearchScreen(
                         items(items, key = { it.key }) { item ->
                             when (item) {
                                 is ReconItem.QueryHeader -> QueryHeaderCard(
-                                    group = item.group, expanded = item.expanded,
+                                    group = item.group,
+                                    expanded = item.expanded,
+                                    selectedArea = state.selectedArea,
                                     onToggleExpand = { state.toggleQueryGroup(item.group.id) }
                                 )
                                 is ReconItem.GroupHeader -> GroupHeaderCard(
                                     group = item.group, kind = item.kind,
                                     expanded = item.expanded,
                                     state = item.state,
-                                    onToggleExpand = { state.toggleGroupExpanded(item.group.id) },
+                                    onToggleExpand = {
+                                        state.toggleGroupExpanded(
+                                            item.group.id,
+                                            isAttention = item.state == AnswerState.ATTENTION
+                                        )
+                                    },
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
                                     onClearAllClick = { confirmClearAllGroupId = item.group.id },
                                     onAddSample = {
@@ -736,7 +743,11 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
     visible.forEach { group ->
         val kind = determineGroupKind(group, selectedArea, selectedOrder)
         val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-        val expanded = state.isGroupExpanded(group.id)
+        // FIX 5.8.9e-1: ATTENTION — по умолчанию свёрнуто.
+        val expanded = state.effectiveGroupExpanded(
+            group.id,
+            isAttention = groupState == AnswerState.ATTENTION
+        )
         result.add(
             ReconItem.GroupHeader(
                 null, group, kind, isForeign, expanded, groupState
@@ -776,7 +787,11 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
         filteredGroups.forEach { group ->
             val kind = determineGroupKind(group, selectedArea, selectedOrder)
             val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-            val groupExpanded = state.isGroupExpanded(group.id)
+            // FIX 5.8.9e-1: ATTENTION — свёрнуто по умолчанию.
+            val groupExpanded = state.effectiveGroupExpanded(
+                group.id,
+                isAttention = groupState == AnswerState.ATTENTION
+            )
             result.add(
                 ReconItem.GroupHeader(
                     qg.id, group, kind, isForeign, groupExpanded, groupState
@@ -840,9 +855,23 @@ private fun AttentionBanner(reason: AnswerReason) {
     }
 }
 
+/**
+ * FIX 5.8.9e-1: заголовок запроса в мультипоиске.
+ *
+ * Формат:
+ *   Запрос №1: «1524»
+ *   Тестовый · 3 варианта · Наряд 1, 2, 7
+ *   Коптеловский · 1 вариант · Наряд 27
+ *   ⚠ Другой участок
+ *
+ * Строка на каждый участок: <участок> · N вариантов · Наряды X, Y.
+ */
 @Composable
 private fun QueryHeaderCard(
-    group: QueryGroup, expanded: Boolean, onToggleExpand: () -> Unit
+    group: QueryGroup,
+    expanded: Boolean,
+    selectedArea: String?,
+    onToggleExpand: () -> Unit
 ) {
     val state = when {
         !group.isFound -> AnswerState.ERROR
@@ -852,26 +881,30 @@ private fun QueryHeaderCard(
     }
     val colors = AnswerStateColors.of(state)
 
-    val variantText = when (group.variantCount) {
-        0 -> "Нет ответов"
-        1 -> "1 вариант"
-        else -> "${group.variantCount} вариантов"
-    }
-    val ordersText = group.orderNumbersLabel
-    val areasText = group.areaTitlesLabel
-    val line2 = when {
-        ordersText.isEmpty() -> variantText
-        group.isForeignArea ->
-            "$variantText | Наряд - $ordersText / Участок «$areasText»"
-        else -> "$variantText | Наряд - $ordersText"
-    }
-
     val reasonText = when {
         !group.isFound -> ""
         group.variantCount > 1 -> "⚠ Несколько нарядов"
         group.isForeignArea -> "⚠ Другой участок"
         else -> ""
     }
+
+    // Группируем варианты по участкам.
+    val areaLines: List<AreaVariantsLine> = if (group.isFound) {
+        group.variants
+            .groupBy { it.areaTitle }
+            .map { (area, list) ->
+                AreaVariantsLine(
+                    areaTitle = area,
+                    count = list.size,
+                    orderNumbers = list
+                        .map { it.orderTitle.removePrefix("Наряд №").trim() }
+                        .distinct()
+                        .sorted()
+                        .joinToString(", ")
+                )
+            }
+            .sortedBy { it.areaTitle }
+    } else emptyList()
 
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -893,8 +926,24 @@ private fun QueryHeaderCard(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                Text(line2, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                if (!group.isFound) {
+                    Text(
+                        "Нет ответов",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    areaLines.forEach { line ->
+                        val foreign = selectedArea != null && line.areaTitle != selectedArea
+                        Text(
+                            text = buildAreaLineText(line, foreign),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 if (reasonText.isNotEmpty()) {
                     Text(reasonText,
                         style = MaterialTheme.typography.labelSmall,
@@ -908,6 +957,31 @@ private fun QueryHeaderCard(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/** Промежуточная модель для строки по участку. */
+private data class AreaVariantsLine(
+    val areaTitle: String,
+    val count: Int,
+    val orderNumbers: String
+)
+
+/** «Тестовый · 3 варианта · Наряд 1, 2, 7» (или «⚠ Другой участок»). */
+private fun buildAreaLineText(line: AreaVariantsLine, foreign: Boolean): String {
+    val vWord = variantWord(line.count)
+    val orderWord = if (line.count == 1) "Наряд" else "Наряды"
+    val base = "${line.areaTitle} · ${line.count} $vWord · $orderWord ${line.orderNumbers}"
+    return if (foreign) "$base ⚠" else base
+}
+
+private fun variantWord(n: Int): String {
+    val mod100 = n % 100
+    if (mod100 in 11..14) return "вариантов"
+    return when (n % 10) {
+        1 -> "вариант"
+        2, 3, 4 -> "варианта"
+        else -> "вариантов"
     }
 }
 
@@ -1642,7 +1716,8 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("Фон и полоска слева — цвет состояния:\n" +
                         "• 🟢 зелёный — всё ок.\n" +
                         "• 🟡 жёлтый — внимание (другой наряд / участок / несколько).\n" +
-                        "• 🔴 красный — не найдено.",
+                        "• 🔴 красный — не найдено.\n\n" +
+                        "При «внимании» группы по умолчанию свёрнуты.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))

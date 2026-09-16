@@ -25,7 +25,18 @@ sealed class VoiceExecResult {
         /** Пробы с весовым контролем (для озвучки). */
         val weightControls: Int = 0,
         /** Отложенные пробы (для озвучки). */
-        val postponed: Int = 0
+        val postponed: Int = 0,
+        /**
+         * FIX 5.8.9e-4: причина внимания, если результат — единственный,
+         * но не в выбранном участке/наряде.
+         *   FOUND_OTHER_AREA  — ответ в другом участке.
+         *   FOUND_OTHER_ORDER — ответ в другом наряде.
+         *   null              — всё в порядке.
+         */
+        val attentionReason: AnswerReason? = null,
+        /** Доп.информация для фразы: другой участок / другой наряд. */
+        val otherAreaTitle: String? = null,
+        val otherOrderNumber: String? = null
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()
