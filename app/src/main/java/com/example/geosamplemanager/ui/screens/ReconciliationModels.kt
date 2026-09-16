@@ -103,8 +103,7 @@ data class SampleRow(
     val id: String,
     val groupId: String,
     /**
-     * FIX 5.8.9bug-3-fix-2: порядковый номер в наряде.
-     * Берётся из SampleEntity.serialNumber как есть.
+     * Порядковый номер в наряде. Из SampleEntity.serialNumber.
      * Не зависит от фильтров и текущей позиции в списке.
      */
     val serialNumber: Int = 0,
@@ -214,6 +213,24 @@ sealed class UndoAction {
         val recalc: Boolean,
         val before: List<WellCellSnapshot>,
         val after: List<WellCellSnapshot>
+    ) : UndoAction()
+
+    /**
+     * Массовое изменение строк наряда — снимок до и после.
+     *
+     * Используется операциями из настроек наряда:
+     *   • применение холостых + ВК,
+     *   • сброс ВК,
+     *   • сброс веса холостых,
+     *   • сброс к глобальным настройкам.
+     *
+     * @property label — готовая подпись для кнопки «Отмена».
+     */
+    data class BulkRowsChange(
+        val groupId: String,
+        val before: List<SampleRow>,
+        val after: List<SampleRow>,
+        val label: String
     ) : UndoAction()
 }
 

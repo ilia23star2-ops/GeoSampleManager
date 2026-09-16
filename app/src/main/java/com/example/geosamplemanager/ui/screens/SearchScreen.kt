@@ -92,6 +92,7 @@ fun SearchScreen(
     var postponedDialogRowId by remember { mutableStateOf<String?>(null) }
     var settingsOrderTitle by remember { mutableStateOf<String?>(null) }
     var confirmResetBlankWeight by remember { mutableStateOf(false) }
+    var confirmResetWeightControl by remember { mutableStateOf(false) }
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
     var voiceDialogOpen by remember { mutableStateOf(false) }
@@ -589,13 +590,21 @@ fun SearchScreen(
             initialBlank = state.blankWeightFor(orderTitle),
             initialWeightControlStep = state.weightControlStepFor(orderTitle),
             isUsingGlobal = state.isUsingGlobal(orderTitle),
-            onSave = { settings, step ->
-                val changed = viewModel.applyBlankSettingsForOrder(orderTitle, settings, step)
-                settingsOrderTitle = null
+            onApplyBlank = { settings ->
+                val changed = viewModel.applyBlankSettingsForOrder(orderTitle, settings)
                 scope.launch {
                     snackbarHostState.showSnackbar(
-                        if (changed == 0) "Настройки сохранены. Изменений нет."
-                        else "Настройки сохранены. Обновлено проб: $changed."
+                        if (changed == 0) "Холостые: изменений нет."
+                        else "Холостые применены. Обновлено проб: $changed."
+                    )
+                }
+            },
+            onApplyWeightControl = { step ->
+                val changed = viewModel.applyWeightControlForOrder(orderTitle, step)
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        if (changed == 0) "Весовой контроль: изменений нет."
+                        else "Весовой контроль применён. Обновлено проб: $changed."
                     )
                 }
             },
@@ -610,6 +619,7 @@ fun SearchScreen(
                 }
             },
             onResetBlankWeights = { confirmResetBlankWeight = true },
+            onResetWeightControl = { confirmResetWeightControl = true },
             onDismiss = { settingsOrderTitle = null }
         )
     }
@@ -630,6 +640,25 @@ fun SearchScreen(
                 confirmResetBlankWeight = false
             },
             onDismiss = { confirmResetBlankWeight = false }
+        )
+    }
+
+    if (confirmResetWeightControl) {
+        val orderTitle = settingsOrderTitle
+        ConfirmResetWeightControlDialog(
+            onConfirm = {
+                if (orderTitle != null) {
+                    val changed = viewModel.resetWeightControlForOrder(orderTitle)
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            if (changed == 0) "Весовой контроль не найден"
+                            else "Снят весовой контроль у $changed проб"
+                        )
+                    }
+                }
+                confirmResetWeightControl = false
+            },
+            onDismiss = { confirmResetWeightControl = false }
         )
     }
 
@@ -1319,10 +1348,6 @@ private fun HeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
         modifier = Modifier.width(width))
 }
 
-/**
- * FIX 5.8.9bug-3-fix-2: показывает row.serialNumber вместо индекса в списке.
- * Порядковый номер из БД не зависит от фильтров и поиска.
- */
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,
@@ -1577,9 +1602,10 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Spacer(Modifier.height(4.dp))
                 Text("Настройки наряда",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("• Холостые — режим веса: единый, среднее или вручную.\n" +
-                        "• Весовой контроль — каждая N-я рядовая проба.\n" +
-                        "• Кнопка «Сбросить вес холостых» очищает вес.\n\n" +
+                Text("• Холостые и ВК применяются раздельно:\n" +
+                        "    — «Применить холостые» — проставляет вес;\n" +
+                        "    — «Применить весовой контроль» — ставит ВК на N-ю пробу.\n" +
+                        "• Кнопки «Сбросить» очищают только свою часть.\n\n" +
                         "Вес холостых проставляется СРАЗУ, но не отмечает пробы.",
                     style = MaterialTheme.typography.bodySmall)
 
