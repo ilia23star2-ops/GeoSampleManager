@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -80,6 +81,14 @@ fun SearchScreen(
 ) {
     val state = viewModel.state
     val context = LocalContext.current
+
+    // FIX 5.8.9e-3: не даём экрану гаснуть, пока сессия ГП активна.
+    // Как только voiceStatus вернулся в Idle — снимаем флаг.
+    val view = LocalView.current
+    DisposableEffect(state.voiceStatus) {
+        view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
+        onDispose { view.keepScreenOn = false }
+    }
 
     var weightDialogRowId by remember { mutableStateOf<String?>(null) }
     var weightDialogIsControl by remember { mutableStateOf(false) }
