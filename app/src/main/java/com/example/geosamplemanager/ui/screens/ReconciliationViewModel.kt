@@ -774,26 +774,29 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * Сохранить настройки наряда:
-     *   1. Холостые — проставить вес по режиму (FIXED / AVERAGE).
-     *   2. ВК — полная пересборка: снять все, поставить на каждой N-й.
+     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО холостые.
      */
     fun applyBlankSettingsForOrder(
         orderTitle: String,
-        settings: BlankWeightSettings,
-        weightControlStep: Int
+        settings: BlankWeightSettings
     ): Int {
-        val blankChanged = state.applyBlankSettingsForOrder(
-            orderTitle, settings, weightControlStep
-        )
-        val vkChanged = state.applyWeightControlForOrder(orderTitle, weightControlStep)
+        val changed = state.applyBlankSettingsForOrder(orderTitle, settings)
         persistOrder(orderTitle)
-        return blankChanged + vkChanged
+        return changed
     }
 
     /**
-     * FIX 5.8.9bug-3-fix-1: снять все ВК в наряде.
+     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО весовой контроль.
      */
+    fun applyWeightControlForOrder(
+        orderTitle: String,
+        weightControlStep: Int
+    ): Int {
+        val changed = state.applyWeightControlForOrder(orderTitle, weightControlStep)
+        persistOrder(orderTitle)
+        return changed
+    }
+
     fun resetWeightControlForOrder(orderTitle: String): Int {
         val changed = state.resetWeightControlForOrder(orderTitle)
         persistOrder(orderTitle)

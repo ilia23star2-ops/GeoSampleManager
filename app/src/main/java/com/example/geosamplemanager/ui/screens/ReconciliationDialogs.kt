@@ -105,17 +105,9 @@ fun CharacteristicDialog(
 }
 
 // ====================================================================
-// ЗАМЕТКА И ФОТО (5.8.7)
+// ЗАМЕТКА И ФОТО
 // ====================================================================
 
-/**
- * Диалог заметки и фото.
- *
- * ВАЖНО:
- *  • Тап мимо окна НЕ закрывает диалог (dismissOnClickOutside = false).
- *    Раньше пользователь случайно терял введённый текст.
- *  • Флаг isSaving блокирует кнопки, пока идёт сохранение.
- */
 @Composable
 fun NotePhotoDialog(
     sampleNumber: String,
@@ -135,7 +127,7 @@ fun NotePhotoDialog(
 
     AlertDialog(
         onDismissRequest = {
-            // Тап мимо окна — ничего не делаем. Пользователь сам нажмёт «Закрыть».
+            // Тап мимо окна — ничего не делаем.
         },
         properties = DialogProperties(
             dismissOnBackPress = true,
@@ -245,7 +237,6 @@ fun NotePhotoDialog(
         }
     )
 
-    // ==== Подтверждение удаления фото ====
     photoToDelete?.let { photo ->
         AlertDialog(
             onDismissRequest = { photoToDelete = null },
@@ -516,15 +507,26 @@ fun DeleteSampleDialog(
 // НАСТРОЙКИ НАРЯДА
 // ====================================================================
 
+/**
+ * FIX 5.8.9bug-3-fix-5: холостые и ВК применяются раздельно.
+ *
+ * В диалоге две секции, в каждой своя кнопка «Применить»:
+ *   • Холостые — режим + фикс.значение → «Применить холостые».
+ *   • Весовой контроль — шаг N → «Применить весовой контроль».
+ *
+ * Диалог НЕ закрывается после применения — можно настроить обе секции.
+ */
 @Composable
 fun OrderSettingsDialog(
     orderTitle: String,
     initialBlank: BlankWeightSettings,
     initialWeightControlStep: Int,
     isUsingGlobal: Boolean,
-    onSave: (BlankWeightSettings, Int) -> Unit,
+    onApplyBlank: (BlankWeightSettings) -> Unit,
+    onApplyWeightControl: (Int) -> Unit,
     onResetToGlobal: () -> Unit,
     onResetBlankWeights: () -> Unit,
+    onResetWeightControl: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var mode by remember { mutableStateOf(initialBlank.mode) }
@@ -538,9 +540,9 @@ fun OrderSettingsDialog(
     val fixedParsed = fixedValue.replace(',', '.').toDoubleOrNull()
     val stepParsed = stepValue.toIntOrNull()
 
-    val canSave = (mode != BlankWeightMode.FIXED
-            || (fixedParsed != null && fixedParsed > 0))
-            && (stepParsed != null && stepParsed > 0)
+    val canApplyBlank = mode != BlankWeightMode.FIXED
+            || (fixedParsed != null && fixedParsed > 0)
+    val canApplyWeightControl = stepParsed != null && stepParsed > 0
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -550,7 +552,7 @@ fun OrderSettingsDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 480.dp)
+                    .heightIn(max = 520.dp)
                     .verticalScroll(rememberScrollState())
             ) {
                 Text(
@@ -566,6 +568,9 @@ fun OrderSettingsDialog(
                     )
                 }
 
+                // ============================================================
+                // СЕКЦИЯ 1: ХОЛОСТЫЕ
+                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.CheckBoxOutlineBlank, null,
@@ -634,13 +639,27 @@ fun OrderSettingsDialog(
                         Spacer(Modifier.width(6.dp))
                         Text(
                             "Единый и средний вес проставляются только тем холостым пробам, " +
-                                    "у которых вес ещё не введён. Если вес уже был задан — " +
-                                    "он не меняется. Чтобы задать вес заново всем холостым, " +
-                                    "нажмите «Сбросить вес холостых».",
+                                    "у которых вес ещё не введён.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+
+                Button(
+                    onClick = {
+                        val settings = BlankWeightSettings(
+                            mode = mode,
+                            fixedValue = if (mode == BlankWeightMode.FIXED) fixedParsed else null
+                        )
+                        onApplyBlank(settings)
+                    },
+                    enabled = canApplyBlank,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Check, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Применить холостые")
                 }
 
                 TextButton(
@@ -655,6 +674,9 @@ fun OrderSettingsDialog(
                     Text("Сбросить вес холостых в наряде")
                 }
 
+                // ============================================================
+                // СЕКЦИЯ 2: ВЕСОВОЙ КОНТРОЛЬ
+                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Scale, null,
@@ -667,8 +689,9 @@ fun OrderSettingsDialog(
                     )
                 }
                 Text(
-                    "Каждая N-я рядовая проба будет помечаться как весовой контроль " +
-                            "при следующем импорте. Холостые при счёте пропускаются.",
+                    "Каждая N-я рядовая проба будет помечена как весовой контроль. " +
+                            "Холостые при счёте пропускаются. При применении флаги " +
+                            "пересобираются заново.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -680,29 +703,40 @@ fun OrderSettingsDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Button(
+                    onClick = {
+                        stepParsed?.let { onApplyWeightControl(it) }
+                    },
+                    enabled = canApplyWeightControl,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.Check, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Применить весовой контроль")
+                }
+
+                TextButton(
+                    onClick = onResetWeightControl,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Filled.RestartAlt, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Сбросить весовой контроль в наряде")
+                }
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    val settings = BlankWeightSettings(
-                        mode = mode,
-                        fixedValue = if (mode == BlankWeightMode.FIXED) fixedParsed else null
-                    )
-                    onSave(settings, stepParsed ?: 5)
-                },
-                enabled = canSave
-            ) { Text("Сохранить") }
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
         },
         dismissButton = {
-            Row {
-                if (!isUsingGlobal) {
-                    TextButton(onClick = onResetToGlobal) {
-                        Text("Сбросить к глобальным")
-                    }
-                    Spacer(Modifier.width(4.dp))
+            if (!isUsingGlobal) {
+                TextButton(onClick = onResetToGlobal) {
+                    Text("Сбросить к глобальным")
                 }
-                TextButton(onClick = onDismiss) { Text("Отмена") }
             }
         }
     )
@@ -724,6 +758,37 @@ fun ConfirmResetBlankWeightDialog(
             Text(
                 "У всех холостых проб в этом наряде будет сброшен вес и " +
                         "снята отметка «найдена». Действие можно будет отменить.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) { Text("Сбросить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+// ====================================================================
+// Подтверждение сброса ВК
+// ====================================================================
+
+@Composable
+fun ConfirmResetWeightControlDialog(
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Сбросить весовой контроль?") },
+        text = {
+            Text(
+                "У всех проб в этом наряде будет снят флаг «весовой контроль» " +
+                        "и очищен вес ВК. Действие можно будет отменить.",
                 style = MaterialTheme.typography.bodyMedium
             )
         },

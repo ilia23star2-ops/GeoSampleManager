@@ -265,6 +265,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             "$verb (${a.changes.size})"
         }
         is UndoAction.DeleteRow -> "Удалить: ${a.row.sampleNumber}"
+        is UndoAction.BulkRowsChange -> a.label
     }
 
     private fun findSampleNumber(rowId: String): String? {
@@ -275,35 +276,120 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 
     // ================================================================
-    // Настройки наряда: холостые + ВК
+    // Настройки наряда: холостые + ВК — РАЗДЕЛЬНО
     // ================================================================
 
+    /**
+     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО холостые.
+     *
+     * Шаг ВК сохраняется отдельно — при нажатии «Применить ВК».
+     */
     fun applyBlankSettingsForOrder(
         orderTitle: String,
-        settings: BlankWeightSettings,
-        weightControlStep: Int
+        settings: BlankWeightSettings
     ): Int {
         _blankWeightByOrder[orderTitle] = settings
-        _weightControlStepByOrder[orderTitle] = weightControlStep
-        return applyBlankWeightsInternal(orderTitle, settings)
+
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val before = _groups[gi].rows.toList()
+
+        val changed = applyBlankWeightsInternal(orderTitle, settings)
+
+        if (changed > 0) {
+            val after = _groups[gi].rows.toList()
+            pushUndo(
+                UndoAction.BulkRowsChange(
+                    groupId = _groups[gi].id,
+                    before = before,
+                    after = after,
+                    label = "Холостые: ${shortOrder(orderTitle)}"
+                )
+            )
+        }
+        return changed
     }
 
     /**
-     * FIX 5.8.9bug-3-fix-1: полная пересборка ВК.
-     *
-     * Логика:
-     *   • Идём по пробам наряда в порядке списка.
-     *   • Холостые и ошибочные пропускаем и **снимаем** с них ВК
-     *     (холостая не может быть весовым контролем).
-     *   • Счётчик идёт только по нормальным пробам.
-     *   • Каждой N-й нормальной ставим `weightControl = true`.
-     *   • Со всех остальных нормальных **снимаем** ВК.
-     *   • Это полностью пересобирает состояние ВК по наряду,
-     *     убирая старые флаги от предыдущего применения.
-     *
-     * @return количество проб, у которых флаг ВК изменился.
+     * FIX 5.8.9bug-3-fix-5: применяем ТОЛЬКО весовой контроль.
      */
     fun applyWeightControlForOrder(orderTitle: String, step: Int): Int {
+        _weightControlStepByOrder[orderTitle] = step
+
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val before = _groups[gi].rows.toList()
+
+        val changed = applyWeightControlInternal(orderTitle, step)
+
+        if (changed > 0) {
+            val after = _groups[gi].rows.toList()
+            pushUndo(
+                UndoAction.BulkRowsChange(
+                    groupId = _groups[gi].id,
+                    before = before,
+                    after = after,
+                    label = "ВК: ${shortOrder(orderTitle)}"
+                )
+            )
+        }
+        return changed
+    }
+
+    /**
+     * Снять все ВК в наряде.
+     */
+    fun resetWeightControlForOrder(orderTitle: String): Int {
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val before = _groups[gi].rows.toList()
+        val group = _groups[gi]
+        var changed = 0
+        val newRows = group.rows.map { row ->
+            if (row.weightControl) {
+                changed++
+                row.copy(weightControl = false)
+            } else row
+        }
+        if (changed > 0) {
+            _groups[gi] = group.copy(rows = newRows)
+            pushUndo(
+                UndoAction.BulkRowsChange(
+                    groupId = group.id,
+                    before = before,
+                    after = newRows,
+                    label = "Сброс ВК: ${shortOrder(orderTitle)}"
+                )
+            )
+        }
+        return changed
+    }
+
+    /**
+     * Сбросить настройки наряда к глобальным + пересобрать холостые.
+     */
+    fun resetBlankSettingsToGlobal(orderTitle: String): Int {
+        _blankWeightByOrder.remove(orderTitle)
+        _weightControlStepByOrder.remove(orderTitle)
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val before = _groups[gi].rows.toList()
+        val changed = applyBlankWeightsInternal(orderTitle, globalBlankWeight)
+        if (changed > 0) {
+            val after = _groups[gi].rows.toList()
+            pushUndo(
+                UndoAction.BulkRowsChange(
+                    groupId = _groups[gi].id,
+                    before = before,
+                    after = after,
+                    label = "Сброс к глобальным: ${shortOrder(orderTitle)}"
+                )
+            )
+        }
+        return changed
+    }
+
+    private fun applyWeightControlInternal(orderTitle: String, step: Int): Int {
         if (step <= 0) return 0
         val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
         if (gi < 0) return 0
@@ -312,7 +398,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         var changed = 0
         val newRows = group.rows.map { row ->
             if (row.isBlank || row.hasImportError) {
-                // Холостые и ошибочные — гарантированно без ВК.
                 if (row.weightControl) {
                     changed++
                     row.copy(weightControl = false)
@@ -330,34 +415,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             _groups[gi] = group.copy(rows = newRows)
         }
         return changed
-    }
-
-    /**
-     * FIX 5.8.9bug-3-fix-1: снять все ВК в наряде.
-     *
-     * @return количество снятых флагов.
-     */
-    fun resetWeightControlForOrder(orderTitle: String): Int {
-        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
-        if (gi < 0) return 0
-        val group = _groups[gi]
-        var changed = 0
-        val newRows = group.rows.map { row ->
-            if (row.weightControl) {
-                changed++
-                row.copy(weightControl = false)
-            } else row
-        }
-        if (changed > 0) {
-            _groups[gi] = group.copy(rows = newRows)
-        }
-        return changed
-    }
-
-    fun resetBlankSettingsToGlobal(orderTitle: String): Int {
-        _blankWeightByOrder.remove(orderTitle)
-        _weightControlStepByOrder.remove(orderTitle)
-        return applyBlankWeightsInternal(orderTitle, globalBlankWeight)
     }
 
     private fun applyBlankWeightsInternal(
@@ -382,13 +439,16 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 } else row
             } else row
         }
-        _groups[gi] = group.copy(rows = newRows)
+        if (changed > 0) {
+            _groups[gi] = group.copy(rows = newRows)
+        }
         return changed
     }
 
     fun resetBlankWeightsForOrder(orderTitle: String): Int {
         val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
         if (gi < 0) return 0
+        val before = _groups[gi].rows.toList()
         val group = _groups[gi]
         var changed = 0
         val newRows = group.rows.map { row ->
@@ -397,9 +457,22 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 row.copy(weight = null, found = false)
             } else row
         }
-        _groups[gi] = group.copy(rows = newRows)
+        if (changed > 0) {
+            _groups[gi] = group.copy(rows = newRows)
+            pushUndo(
+                UndoAction.BulkRowsChange(
+                    groupId = group.id,
+                    before = before,
+                    after = newRows,
+                    label = "Сброс веса холостых: ${shortOrder(orderTitle)}"
+                )
+            )
+        }
         return changed
     }
+
+    private fun shortOrder(orderTitle: String): String =
+        orderTitle.removePrefix("Наряд ").trim()
 
     fun toggleFound(rowId: String) {
         val (gi, ri) = findRow(rowId) ?: return
@@ -665,6 +738,12 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 }
                 _groups[gi] = group.copy(rows = updated)
             }
+            is UndoAction.BulkRowsChange -> {
+                val gi = _groups.indexOfFirst { it.id == action.groupId }
+                if (gi < 0) return
+                val group = _groups[gi]
+                _groups[gi] = group.copy(rows = action.after)
+            }
         }
     }
 
@@ -699,6 +778,12 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                     r.copy(sampleNumber = b.sampleNumber, numberInWell = b.numberInWell)
                 }
                 _groups[gi] = group.copy(rows = updated)
+            }
+            is UndoAction.BulkRowsChange -> {
+                val gi = _groups.indexOfFirst { it.id == action.groupId }
+                if (gi < 0) return
+                val group = _groups[gi]
+                _groups[gi] = group.copy(rows = action.before)
             }
         }
     }
