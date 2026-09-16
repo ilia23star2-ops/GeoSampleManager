@@ -294,9 +294,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     "awaitingContinue=${voiceSession.awaitingContinue})"
         )
 
-        // ---- Автопауза после «Найден в нескольких нарядах» ----
-        // Разрешаем: продолжить / стоп / пауза, а также Sort и Search —
-        // это явные новые команды, они снимают паузу.
         if (voiceSession.awaitingContinue) {
             return when (cmd) {
                 VoiceCommand.Resume -> {
@@ -325,7 +322,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             }
         }
 
-        // ---- Ждём вес? ----
         if (voiceSession.awaitingWeight) {
             if (cmd is VoiceCommand.Search) {
                 val weight = commandParser.parseWeightAnswer(cmd.query)
@@ -388,7 +384,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             Log.i(TAG, "voiceSearch: result=$result")
 
             when (result) {
-                VoiceSearchResult.NotFound -> VoiceExecResult.NotFound
+                VoiceSearchResult.NotFound -> {
+                    val displayQuery = candidates.firstOrNull() ?: query
+                    withContext(Dispatchers.Main) {
+                        setQuery(displayQuery)
+                    }
+                    VoiceExecResult.NotFound
+                }
                 is VoiceSearchResult.FoundOne -> {
                     val hit = result.hit
                     val isSample = when (result.level) {
@@ -406,8 +408,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.awaitingContinue = false
 
                     val displayQuery: String
-                    val foundSamples: Int
-                    val totalSamples: Int
+                    var totalSamples = 0
+                    var foundSamples = 0
+                    var blanks = 0
+                    var weightControls = 0
+                    var postponed = 0
 
                     if (isSample) {
                         displayQuery = hit.sampleNumber
@@ -416,8 +421,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         val sampleRow = group?.rows?.firstOrNull {
                             it.sampleNumber == hit.sampleNumber
                         }
-                        totalSamples = 1
-                        foundSamples = if (sampleRow?.found == true) 1 else 0
+                        if (sampleRow != null) {
+                            totalSamples = 1
+                            foundSamples = if (sampleRow.found) 1 else 0
+                            blanks = if (sampleRow.isBlank) 1 else 0
+                            weightControls = if (sampleRow.weightControl) 1 else 0
+                            postponed = if (sampleRow.postponed) 1 else 0
+                        }
                     } else {
                         displayQuery = hit.wellNumber
                         ensureOrderSamplesLoaded(hit.orderId)
@@ -426,13 +436,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             ?: emptyList()
                         totalSamples = wellRows.size
                         foundSamples = wellRows.count { it.found }
+                        blanks = wellRows.count { it.isBlank }
+                        weightControls = wellRows.count { it.weightControl }
+                        postponed = wellRows.count { it.postponed }
                     }
 
                     voiceSession.currentQuery = displayQuery
 
+                    // FIX 5.8.9bug-2: НЕ перезаписываем selectedArea и
+                    // selectedOrder. Пользователь их не выбирал —
+                    // иначе UI начнёт фильтровать по ним и разойдётся с ГП.
                     withContext(Dispatchers.Main) {
-                        state.selectedArea = hit.areaTitle
-                        state.selectedOrder = voiceSession.currentOrderTitle
                         state.query = displayQuery
                     }
 
@@ -442,13 +456,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         wellNumber = hit.wellNumber,
                         totalSamples = totalSamples,
                         foundSamples = foundSamples,
-                        isSample = isSample
+                        isSample = isSample,
+                        blanks = blanks,
+                        weightControls = weightControls,
+                        postponed = postponed
                     )
                 }
                 is VoiceSearchResult.FoundMany -> {
-                    // Показываем найденный номер в поле поиска, чтобы
-                    // в интерфейсе появился баннер «Найден в нескольких нарядах»
-                    // и красный фонарик. Иначе поле поиска остаётся пустым.
                     voiceSession.awaitingContinue = true
                     voiceSession.isAutoMode = false
                     withContext(Dispatchers.Main) {
@@ -577,18 +591,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * Сортировка.
-     *
-     *  • Ставим query в поле поиска.
-     *  • Для каждого номера ищем результат.
-     *  • Все однозначны — перечисляем «X, наряд Y» без участка.
-     *    Автопауза НЕ ставится.
-     *  • Есть неоднозначные — про них отдельно + «Выберите на экране»,
-     *    автопауза.
-     *
-     * Участок в TTS не называем — только номер наряда.
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -623,7 +625,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 when (val r = search.search(candidates)) {
                     is VoiceSearchResult.FoundOne -> {
                         val hit = r.hit
-                        // FIX: не называем участок — только номер наряда.
                         descriptions.add(
                             "${VoiceSpeaker.spellOut(clean)}, наряд ${hit.orderNumber}"
                         )

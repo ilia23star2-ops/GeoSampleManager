@@ -3,6 +3,9 @@ package com.example.geosamplemanager.data.voice
 import android.util.Log
 import kotlin.math.abs
 
+/**
+ * Проба, найденная голосовым поиском.
+ */
 data class VoiceSampleHit(
     val sampleId: Long,
     val sampleNumber: String,
@@ -12,10 +15,18 @@ data class VoiceSampleHit(
     val areaTitle: String
 )
 
+/**
+ * Источник данных для голосового поиска.
+ */
 interface VoiceSampleSource {
     suspend fun loadAll(): List<VoiceSampleHit>
 }
 
+/**
+ * Результат поиска.
+ *
+ * @property isSample true — нашли ПРОБУ (показываем одну), false — СКВАЖИНУ.
+ */
 sealed class VoiceSearchResult {
     data class FoundOne(
         val hit: VoiceSampleHit,
@@ -33,6 +44,23 @@ sealed class VoiceSearchResult {
     data object NotFound : VoiceSearchResult()
 }
 
+/**
+ * Голосовой поиск.
+ *
+ * Уровни:
+ *   1. sample_number == кандидат     → ПРОБА (одна)
+ *   2. well_number == кандидат       → СКВАЖИНА (все пробы)
+ *   3. well_number.endsWith(кандидат) → СКВАЖИНА (только если кандидат ≥ 3 символов)
+ *   4. sample_number.endsWith(кандидат) → ПРОБА (только если кандидат ≥ 3 символов)
+ *   5. нормализация нулей            → смотрим по совпадению
+ *   6. fuzzy                         → по совпадению
+ *
+ * ВАЖНО: суффиксный поиск (L3, L4) работает только для кандидатов
+ * длиной ≥ 3 символов. Иначе «1» найдёт почти все пробы.
+ *
+ * Порог неоднозначности: если найдено > [MAX_AMBIGUOUS] совпадений —
+ * это ошибка, а не результат. Такие случаи считаем «слишком общий запрос».
+ */
 class VoiceSearch(private val source: VoiceSampleSource) {
 
     suspend fun search(candidates: List<String>): VoiceSearchResult {
@@ -53,16 +81,16 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                 Log.d(TAG, "  L1 (sample==): ${hits.size}")
                 if (hits.size == 1)
                     return VoiceSearchResult.FoundOne(hits[0], clean, 1, isSample = true)
-                if (hits.size > 1)
+                if (hits.size > 1 && hits.size <= MAX_AMBIGUOUS)
                     return VoiceSearchResult.FoundMany(hits, clean, 1)
+                // > MAX_AMBIGUOUS — пропускаем, ищем точнее.
             }
 
             // L2: well_number == кандидат → СКВАЖИНА.
             run {
                 val hits = all.filter { it.wellNumber == clean }
                 Log.d(TAG, "  L2 (well==): ${hits.size}")
-                if (hits.isNotEmpty()) {
-                    // FIX И-14: проверяем уникальность пары (orderId, wellNumber)
+                if (hits.isNotEmpty() && hits.size <= MAX_AMBIGUOUS) {
                     val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
                     if (uniqueWells.size == 1) {
                         return VoiceSearchResult.FoundOne(hits.first(), clean, 2, isSample = false)
@@ -72,27 +100,32 @@ class VoiceSearch(private val source: VoiceSampleSource) {
             }
 
             // L3: суффикс well_number → СКВАЖИНА.
-            run {
-                val hits = all.filter { it.wellNumber.endsWith(clean) }
-                Log.d(TAG, "  L3 (well.endsWith): ${hits.size}")
-                if (hits.isNotEmpty()) {
-                    // FIX И-14: уникальность пары (orderId, wellNumber)
-                    val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
-                    if (uniqueWells.size == 1) {
-                        return VoiceSearchResult.FoundOne(hits.first(), clean, 3, isSample = false)
+            // Только если кандидат ≥ MIN_SUFFIX_LEN символов.
+            if (clean.length >= MIN_SUFFIX_LEN) {
+                run {
+                    val hits = all.filter { it.wellNumber.endsWith(clean) }
+                    Log.d(TAG, "  L3 (well.endsWith): ${hits.size}")
+                    if (hits.isNotEmpty() && hits.size <= MAX_AMBIGUOUS) {
+                        val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
+                        if (uniqueWells.size == 1) {
+                            return VoiceSearchResult.FoundOne(hits.first(), clean, 3, isSample = false)
+                        }
+                        return VoiceSearchResult.FoundMany(hits, clean, 3)
                     }
-                    return VoiceSearchResult.FoundMany(hits, clean, 3)
                 }
             }
 
             // L4: суффикс sample_number → ПРОБА (одна).
-            run {
-                val hits = all.filter { it.sampleNumber.endsWith(clean) }
-                Log.d(TAG, "  L4 (sample.endsWith): ${hits.size}")
-                if (hits.size == 1)
-                    return VoiceSearchResult.FoundOne(hits[0], clean, 4, isSample = true)
-                if (hits.size > 1)
-                    return VoiceSearchResult.FoundMany(hits, clean, 4)
+            // Только если кандидат ≥ MIN_SUFFIX_LEN символов.
+            if (clean.length >= MIN_SUFFIX_LEN) {
+                run {
+                    val hits = all.filter { it.sampleNumber.endsWith(clean) }
+                    Log.d(TAG, "  L4 (sample.endsWith): ${hits.size}")
+                    if (hits.size == 1)
+                        return VoiceSearchResult.FoundOne(hits[0], clean, 4, isSample = true)
+                    if (hits.size in 2..MAX_AMBIGUOUS)
+                        return VoiceSearchResult.FoundMany(hits, clean, 4)
+                }
             }
 
             // L5: нормализация нулей.
@@ -103,7 +136,7 @@ class VoiceSearch(private val source: VoiceSampleSource) {
                             normalizeZeroes(it.wellNumber) == normalized
                 }
                 Log.d(TAG, "  L5 (norm zeroes): ${hits.size}")
-                if (hits.isNotEmpty()) {
+                if (hits.isNotEmpty() && hits.size <= MAX_AMBIGUOUS) {
                     val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
                     if (uniqueWells.size == 1 && hits.size == 1) {
                         val h = hits[0]
@@ -119,11 +152,12 @@ class VoiceSearch(private val source: VoiceSampleSource) {
         for (candidate in candidates) {
             val clean = candidate.replace("|", "").trim()
             if (clean.isEmpty()) continue
+            if (clean.length < MIN_SUFFIX_LEN) continue
             val hits = all.filter {
                 fuzzyMatch(it.sampleNumber, clean) || fuzzyMatch(it.wellNumber, clean)
             }
             Log.d(TAG, "  L6 (fuzzy «$clean»): ${hits.size}")
-            if (hits.isNotEmpty()) {
+            if (hits.isNotEmpty() && hits.size <= MAX_AMBIGUOUS) {
                 val uniqueWells = hits.distinctBy { it.orderId to it.wellNumber }
                 if (uniqueWells.size == 1 && hits.size == 1) {
                     val h = hits[0]
@@ -139,6 +173,18 @@ class VoiceSearch(private val source: VoiceSampleSource) {
 
     companion object {
         private const val TAG = "VoiceSearch"
+
+        /**
+         * Минимальная длина кандидата для суффиксного поиска.
+         * Иначе «1» найдёт «101», «251», «3141» и т.д.
+         */
+        private const val MIN_SUFFIX_LEN = 3
+
+        /**
+         * Порог «слишком общий запрос». Если найдено больше — считаем
+         * это ошибкой. Такие результаты не показываем в UI.
+         */
+        private const val MAX_AMBIGUOUS = 50
 
         fun normalizeZeroes(s: String): String {
             val sb = StringBuilder(s.length)

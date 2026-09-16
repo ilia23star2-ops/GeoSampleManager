@@ -37,6 +37,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.util.PhotoStorage
+import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
@@ -388,7 +389,6 @@ fun SearchScreen(
                         item(key = "no_results") { NoResultsState() }
                     }
                     else -> {
-                        // Баннер — только в одиночном поиске при ATTENTION.
                         if (!isMulti && state.matchInfo.isAttention) {
                             item(key = "ambiguous_banner") {
                                 AttentionBanner(reason = state.matchInfo.reason)
@@ -713,7 +713,6 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
     val selectedArea = state.selectedArea
     val selectedOrder = state.selectedOrder
     val showCharacteristic = state.showCharacteristic
-    // Состояние для группы — из matchInfo.
     val groupState = if (state.matchInfo.isAttention) AnswerState.ATTENTION
     else AnswerState.OK
 
@@ -749,7 +748,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
         result.add(ReconItem.QueryHeader(qg, expanded))
         if (!expanded) return@forEach
 
-        // Состояние группы в мультипоиске — по самому запросу.
         val groupState = when {
             !qg.isFound -> AnswerState.ERROR
             qg.variantCount > 1 -> AnswerState.ATTENTION
@@ -786,21 +784,17 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
 /**
  * Баннер при ATTENTION (одиночный поиск).
  *
- * Показывается для причин FOUND_OTHER_ORDER / FOUND_OTHER_AREA /
- * FOUND_MULTIPLE / FOUND_MULTIPLE_AREA.
+ * Фон — цвет состояния. Текст — обычный (onSurface) + bold.
+ * Иконка — цвет состояния.
  */
 @Composable
-private fun AttentionBanner(reason: com.example.geosamplemanager.data.voice.AnswerReason) {
+private fun AttentionBanner(reason: AnswerReason) {
     val colors = AnswerStateColors.of(AnswerState.ATTENTION)
     val title = when (reason) {
-        com.example.geosamplemanager.data.voice.AnswerReason.FOUND_OTHER_ORDER ->
-            "Найден в другом наряде"
-        com.example.geosamplemanager.data.voice.AnswerReason.FOUND_OTHER_AREA ->
-            "Найден в другом участке"
-        com.example.geosamplemanager.data.voice.AnswerReason.FOUND_MULTIPLE ->
-            "Найден в нескольких нарядах"
-        com.example.geosamplemanager.data.voice.AnswerReason.FOUND_MULTIPLE_AREA ->
-            "Найден в нескольких участках"
+        AnswerReason.FOUND_OTHER_ORDER -> "Найден в другом наряде"
+        AnswerReason.FOUND_OTHER_AREA -> "Найден в другом участке"
+        AnswerReason.FOUND_MULTIPLE -> "Найден в нескольких нарядах"
+        AnswerReason.FOUND_MULTIPLE_AREA -> "Найден в нескольких участках"
         else -> "Внимание"
     }
     Surface(
@@ -822,13 +816,13 @@ private fun AttentionBanner(reason: com.example.geosamplemanager.data.voice.Answ
                     title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = colors.accent
+                    color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "Выберите нужный наряд в списке ниже",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -878,7 +872,6 @@ private fun QueryHeaderCard(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Полоска слева — цвет состояния.
             Box(modifier = Modifier.width(4.dp).height(40.dp)
                 .clip(RoundedCornerShape(2.dp)).background(colors.accent))
             Spacer(Modifier.width(10.dp))
@@ -895,7 +888,7 @@ private fun QueryHeaderCard(
                     Text(reasonText,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = colors.accent)
+                        color = MaterialTheme.colorScheme.onSurface)
                 }
             }
             Icon(
@@ -933,7 +926,6 @@ private fun GroupHeaderCard(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Полоска слева — цвет состояния. Показываем всегда.
             Box(modifier = Modifier.width(4.dp).height(48.dp)
                 .clip(RoundedCornerShape(2.dp)).background(colors.accent))
             Spacer(Modifier.width(12.dp))
@@ -956,7 +948,7 @@ private fun GroupHeaderCard(
                     Text(reasonText,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = colors.accent)
+                        color = MaterialTheme.colorScheme.onSurface)
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(subtitle, style = MaterialTheme.typography.bodySmall,
@@ -1060,7 +1052,6 @@ private fun SearchRowWithIndicator(
     isMulti: Boolean, hasSelection: Boolean,
     onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
 ) {
-    // Состояние: для одиночного — из matchInfo, для мульти — худшее среди запросов.
     val state: AnswerState = if (isMulti) {
         when {
             quickAnswers.isEmpty() -> AnswerState.IDLE

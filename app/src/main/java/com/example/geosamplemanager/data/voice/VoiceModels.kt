@@ -19,7 +19,13 @@ sealed class VoiceExecResult {
         val totalSamples: Int,
         val foundSamples: Int,
         /** true — нашли конкретную пробу; false — скважину. */
-        val isSample: Boolean
+        val isSample: Boolean,
+        /** Холостые пробы (для озвучки). */
+        val blanks: Int = 0,
+        /** Пробы с весовым контролем (для озвучки). */
+        val weightControls: Int = 0,
+        /** Отложенные пробы (для озвучки). */
+        val postponed: Int = 0
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()

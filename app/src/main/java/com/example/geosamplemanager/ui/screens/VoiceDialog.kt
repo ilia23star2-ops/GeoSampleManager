@@ -235,8 +235,8 @@ fun VoiceDialog(
 /**
  * Звук + озвучка по результату.
  *
- * Правила (DECISIONS §13.4–13.5):
- *   • OK_SINGLE — без звука, TTS о результате.
+ * Правила (DECISIONS §13.4–13.5, VOICE §10):
+ *   • OK_SINGLE — без звука, TTS о результате + ненулевые категории.
  *   • FoundMany — soundAttention + TTS «Выберите на экране».
  *   • Marked — soundOk + TTS подтверждения.
  *   • WeightSet — soundOk.
@@ -252,23 +252,7 @@ private fun handleFeedback(
     when (result) {
         is VoiceExecResult.FoundOne -> {
             // Успешный поиск — без звука.
-            val spokenNumber = VoiceSpeaker.spellOut(result.query)
-            val orderPart = result.orderTitle
-            val phrase = if (result.isSample) {
-                val stateText = if (result.foundSamples > 0) "уже отмечена" else "не отмечена"
-                "Проба $spokenNumber. $orderPart. $stateText."
-            } else {
-                val total = VoiceSpeaker.spellNumber(result.totalSamples)
-                val found = VoiceSpeaker.spellNumber(result.foundSamples)
-                buildString {
-                    append("Скважина $spokenNumber. $orderPart. ")
-                    append("Проб $total, отмечено $found.")
-                    // Холостые / ВК / отложено — если есть.
-                    // Пока эта информация не приходит из VoiceExecResult,
-                    // добавим в заходе 5.8.9d вместе с расширением
-                    // VoiceExecResult.FoundOne.
-                }
-            }
+            val phrase = buildFoundOnePhrase(result)
             controller?.speak(phrase)
         }
 
@@ -305,7 +289,6 @@ private fun handleFeedback(
         }
 
         is VoiceExecResult.Message -> {
-            // Если это ответ в автопаузе — это «внимание» (К5 глушит повторы).
             if (viewModel.voiceSession.awaitingContinue) {
                 fb.soundAttention()
             }
@@ -319,6 +302,47 @@ private fun handleFeedback(
 
         else -> {}
     }
+}
+
+/**
+ * Собрать фразу для FoundOne.
+ *
+ *   «Скважина 15 24. Наряд 7. Проб 3, отмечено 0.»
+ *   + если blanks > 0: «Холостых 1.»
+ *   + если weightControls > 0: «Весовой контроль 1.»
+ *   + если postponed > 0: «Отложено 2.»
+ *
+ * Нулевые категории не упоминаем.
+ */
+private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
+    val spokenNumber = VoiceSpeaker.spellOut(r.query)
+    val total = VoiceSpeaker.spellNumber(r.totalSamples)
+    val found = VoiceSpeaker.spellNumber(r.foundSamples)
+
+    val sb = StringBuilder()
+    if (r.isSample) {
+        sb.append("Проба $spokenNumber. ${r.orderTitle}. ")
+        val stateText = if (r.foundSamples > 0) "уже отмечена" else "не отмечена"
+        sb.append(stateText).append(".")
+    } else {
+        sb.append("Скважина $spokenNumber. ${r.orderTitle}. ")
+        sb.append("Проб $total, отмечено $found.")
+    }
+
+    val extras = mutableListOf<String>()
+    if (r.blanks > 0) {
+        extras.add("холостых ${VoiceSpeaker.spellNumber(r.blanks)}")
+    }
+    if (r.weightControls > 0) {
+        extras.add("весовой контроль ${VoiceSpeaker.spellNumber(r.weightControls)}")
+    }
+    if (r.postponed > 0) {
+        extras.add("отложено ${VoiceSpeaker.spellNumber(r.postponed)}")
+    }
+    if (extras.isNotEmpty()) {
+        sb.append(" ").append(extras.joinToString(", ")).append(".")
+    }
+    return sb.toString()
 }
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
@@ -339,8 +363,15 @@ private fun describeResult(result: VoiceExecResult): String = when (result) {
             val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
             "Проба ${result.query} → ${result.orderTitle}. $label"
         } else {
-            "Скважина ${result.query} → ${result.orderTitle}. " +
-                    "Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}"
+            buildString {
+                append("Скважина ${result.query} → ${result.orderTitle}. ")
+                append("Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}")
+                val extras = mutableListOf<String>()
+                if (result.blanks > 0) extras.add("холостых ${result.blanks}")
+                if (result.weightControls > 0) extras.add("ВК ${result.weightControls}")
+                if (result.postponed > 0) extras.add("отложено ${result.postponed}")
+                if (extras.isNotEmpty()) append(". ").append(extras.joinToString(", "))
+            }
         }
     }
     is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
