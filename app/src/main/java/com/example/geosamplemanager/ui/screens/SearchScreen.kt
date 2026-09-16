@@ -37,14 +37,15 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.util.PhotoStorage
+import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
 
 // Цвета неоднозначного ответа (найден в нескольких нарядах)
-private val AmbiguousBg = Color(0xFFFFCDD2)      // светло-красный фон
-private val AmbiguousFg = Color(0xFFB71C1C)      // тёмно-красный текст/иконка
-private val AmbiguousLamp = Color(0xFFC62828)    // цвет фонарика
+private val AmbiguousBg = Color(0xFFFFCDD2)
+private val AmbiguousFg = Color(0xFFB71C1C)
+private val AmbiguousLamp = Color(0xFFC62828)
 
 sealed interface ReconItem {
     val key: String
@@ -118,7 +119,7 @@ fun SearchScreen(
     }
 
     // ================================================================
-    // РАЗРЕШЕНИЯ (проверки)
+    // РАЗРЕШЕНИЯ
     // ================================================================
 
     fun hasMic(): Boolean = ContextCompat.checkSelfPermission(
@@ -130,7 +131,7 @@ fun SearchScreen(
     ) == PackageManager.PERMISSION_GRANTED
 
     // ================================================================
-    // ЛОНЧЕРЫ (объявлены до функций, которые их используют)
+    // ЛОНЧЕРЫ
     // ================================================================
 
     val takePictureLauncher = rememberLauncherForActivityResult(
@@ -204,7 +205,7 @@ fun SearchScreen(
     }
 
     // ================================================================
-    // ЛОКАЛЬНЫЕ ФУНКЦИИ (используют лончеры выше)
+    // ЛОКАЛЬНЫЕ ФУНКЦИИ
     // ================================================================
 
     fun requestMic() {
@@ -396,8 +397,8 @@ fun SearchScreen(
                         item(key = "no_results") { NoResultsState() }
                     }
                     else -> {
-                        // Баннер «Найден в нескольких нарядах» — только для одиночного поиска.
-                        if (!isMulti && state.matchInfo is MatchInfo.Multiple) {
+                        // Баннер — для случая, когда ответ не единственный.
+                        if (!isMulti && state.matchInfo.isAttention) {
                             item(key = "ambiguous_banner") { AmbiguousBanner() }
                         }
                         items(items, key = { it.key }) { item ->
@@ -719,8 +720,8 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
     val selectedArea = state.selectedArea
     val selectedOrder = state.selectedOrder
     val showCharacteristic = state.showCharacteristic
-    // FIX 5.8.8g: неоднозначный ответ (один номер — несколько нарядов).
-    val isAmbiguous = state.matchInfo is MatchInfo.Multiple
+    // Неоднозначный ответ (несколько нарядов / участков).
+    val isAttention = state.matchInfo.isAttention
 
     visible.forEach { group ->
         val kind = determineGroupKind(group, selectedArea, selectedOrder)
@@ -728,7 +729,7 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
         val expanded = state.isGroupExpanded(group.id)
         result.add(
             ReconItem.GroupHeader(
-                null, group, kind, isForeign, expanded, isAmbiguous
+                null, group, kind, isForeign, expanded, isAttention
             )
         )
         if (expanded) {
@@ -754,7 +755,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
         result.add(ReconItem.QueryHeader(qg, expanded))
         if (!expanded) return@forEach
 
-        // FIX 5.8.8g: запрос нашёл несколько нарядов — неоднозначно.
         val isAmbiguous = qg.variantCount > 1 && qg.isFound
 
         val filteredGroups = state.filteredGroupsForQuery(qg)
@@ -783,10 +783,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
 // Компоненты
 // ====================================================================
 
-/**
- * Баннер «Найден в нескольких нарядах».
- * Показывается в одиночном поиске, когда MatchInfo.Multiple.
- */
 @Composable
 private fun AmbiguousBanner() {
     Surface(
@@ -827,7 +823,6 @@ private fun QueryHeaderCard(
 ) {
     val isFound = group.isFound
     val isForeign = group.isForeignArea
-    // FIX 5.8.8g: неоднозначный ответ в мультипоиске.
     val isMultipleOrders = group.variantCount > 1 && isFound
 
     val bgColor: Color = when {
@@ -906,7 +901,6 @@ private fun GroupHeaderCard(
     onClearAllClick: () -> Unit, onAddSample: () -> Unit
 ) {
     val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-    // FIX 5.8.8g: красный фон — когда ответ неоднозначный (несколько нарядов).
     val cardColor = when {
         isAmbiguous -> AmbiguousBg.copy(alpha = 0.55f)
         kind == GroupKind.CURRENT_ORDER -> MaterialTheme.colorScheme.surface
@@ -1070,12 +1064,12 @@ private fun SearchRowWithIndicator(
     allQuickUnique: Boolean, isMulti: Boolean, hasSelection: Boolean,
     onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
 ) {
-    val isLit = if (isMulti) allQuickUnique else matchInfo is MatchInfo.Unique
-    // FIX 5.8.8g: неоднозначный ответ — красный фонарик с ⚠.
+    // Индикатор ответа. Логика — через AnswerState.
+    val isLit = if (isMulti) allQuickUnique else matchInfo.isUnique
     val isAmbiguous = if (isMulti) {
         quickAnswers.any { it.isMultiple }
     } else {
-        matchInfo is MatchInfo.Multiple
+        matchInfo.isAttention
     }
 
     val lampColor = when {
@@ -1085,22 +1079,27 @@ private fun SearchRowWithIndicator(
     }
     val lampIcon = if (isAmbiguous) Icons.Filled.Warning else Icons.Filled.Lightbulb
 
-    val indicatorText = if (isAmbiguous) {
-        "В нескольких нарядах"
-    } else if (isMulti) {
-        if (quickAnswers.isEmpty()) ""
-        else quickAnswers.joinToString("\n") { qa ->
-            val suffix = when {
-                qa.isMultiple -> "несколько"
-                qa.orderTitle != null -> qa.orderTitle.removePrefix("Наряд №").trim()
-                else -> "—"
+    val indicatorText = when {
+        isAmbiguous -> "Внимание"
+        isMulti -> {
+            if (quickAnswers.isEmpty()) ""
+            else quickAnswers.joinToString("\n") { qa ->
+                val suffix = when {
+                    qa.isMultiple -> "несколько"
+                    qa.orderTitle != null -> qa.orderTitle.removePrefix("Наряд №").trim()
+                    else -> "—"
+                }
+                "№${qa.index} — $suffix"
             }
-            "№${qa.index} — $suffix"
         }
-    } else when (matchInfo) {
-        is MatchInfo.None -> ""
-        is MatchInfo.Unique -> matchInfo.display
-        is MatchInfo.Multiple -> "В нескольких нарядах"
+        matchInfo.isIdle -> ""
+        matchInfo.isUnique -> matchInfo.display
+        matchInfo.reason == AnswerReason.FOUND_OTHER_ORDER -> "Другой наряд"
+        matchInfo.reason == AnswerReason.FOUND_OTHER_AREA -> "Другой участок"
+        matchInfo.reason == AnswerReason.FOUND_MULTIPLE -> "Несколько нарядов"
+        matchInfo.reason == AnswerReason.FOUND_MULTIPLE_AREA -> "Несколько участков"
+        matchInfo.isError -> matchInfo.reason.shortLabel
+        else -> ""
     }
 
     val placeholder = if (hasSelection)
@@ -1583,11 +1582,13 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Индикатор слева от поиска",
+                Text("Индикатор ответа",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("Фонарик горит, если ответ единственный. " +
-                        "При нескольких запросах — если все однозначны.\n" +
-                        "⚠ красный — найден в нескольких нарядах, выберите на экране.",
+                Text("Слева от строки поиска. Четыре состояния:\n" +
+                        "• 🟢 OK — единственный ответ.\n" +
+                        "• 🟡 Внимание — другой наряд / участок / несколько.\n" +
+                        "• 🔴 Ошибка — не найдено.\n" +
+                        "• ⚪ Жду — пустой запрос.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
@@ -1642,8 +1643,7 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("• Зелёный — запрос нашёл наряд в выбранном участке.\n" +
                         "• Оранжевый с ⚠ — запрос нашёл наряд только в другом участке.\n" +
                         "• Красный — запрос ничего не нашёл (такие группы идут сверху).\n" +
-                        "• Красный с ⚠ — запрос нашёл несколько нарядов " +
-                        "(«Найден в нескольких нарядах»).",
+                        "• Красный с ⚠ — запрос нашёл несколько нарядов.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
