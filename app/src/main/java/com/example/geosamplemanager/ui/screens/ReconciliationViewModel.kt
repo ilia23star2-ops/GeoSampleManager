@@ -278,10 +278,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return letters.ifEmpty { null }?.uppercase()
     }
 
-    // ================================================================
-    // ГОЛОСОВОЙ ПОМОЩНИК
-    // ================================================================
-
     fun setVoiceStatus(status: VoiceStatus) {
         state.voiceStatus = status
     }
@@ -443,9 +439,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
                     voiceSession.currentQuery = displayQuery
 
-                    // FIX 5.8.9bug-2: НЕ перезаписываем selectedArea и
-                    // selectedOrder. Пользователь их не выбирал —
-                    // иначе UI начнёт фильтровать по ним и разойдётся с ГП.
                     withContext(Dispatchers.Main) {
                         state.query = displayQuery
                     }
@@ -656,10 +649,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message(text)
     }
 
-    // ================================================================
-    // ДЕЙСТВИЯ НАД ПРОБАМИ
-    // ================================================================
-
     private fun rowById(rowId: String): SampleRow? = state.rowById(rowId)
 
     fun toggleFound(rowId: String) {
@@ -784,12 +773,29 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         persistAll()
     }
 
+    /**
+     * Сохранить настройки наряда:
+     *   1. Холостые — проставить вес по режиму (FIXED / AVERAGE).
+     *   2. ВК — полная пересборка: снять все, поставить на каждой N-й.
+     */
     fun applyBlankSettingsForOrder(
         orderTitle: String,
         settings: BlankWeightSettings,
         weightControlStep: Int
     ): Int {
-        val changed = state.applyBlankSettingsForOrder(orderTitle, settings, weightControlStep)
+        val blankChanged = state.applyBlankSettingsForOrder(
+            orderTitle, settings, weightControlStep
+        )
+        val vkChanged = state.applyWeightControlForOrder(orderTitle, weightControlStep)
+        persistOrder(orderTitle)
+        return blankChanged + vkChanged
+    }
+
+    /**
+     * FIX 5.8.9bug-3-fix-1: снять все ВК в наряде.
+     */
+    fun resetWeightControlForOrder(orderTitle: String): Int {
+        val changed = state.resetWeightControlForOrder(orderTitle)
         persistOrder(orderTitle)
         return changed
     }
@@ -805,10 +811,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         persistOrder(orderTitle)
         return changed
     }
-
-    // ================================================================
-    // ЗАМЕТКИ И ФОТО
-    // ================================================================
 
     suspend fun loadNoteWithPhotos(
         sampleId: Long
@@ -913,10 +915,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             state.updateRowFlags(sampleId.toString(), s.hasNote, s.hasPhoto)
         }
     }
-
-    // ================================================================
-    // СОХРАНЕНИЕ
-    // ================================================================
 
     private fun persistGroup(groupId: String) {
         val group = state.groups.firstOrNull { it.id == groupId } ?: return

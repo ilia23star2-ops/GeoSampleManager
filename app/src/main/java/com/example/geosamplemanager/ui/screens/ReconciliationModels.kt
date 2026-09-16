@@ -57,12 +57,6 @@ enum class GroupKind {
     NEUTRAL
 }
 
-/**
- * Результат анализа запроса: причина + отображаемая информация.
- *
- * Заменяет прежний sealed MatchInfo (None / Unique / Multiple).
- * Состояние (цвет, звук) вычисляется через [reason].state.
- */
 data class MatchInfo(
     val reason: AnswerReason,
     val display: String = "",
@@ -108,6 +102,12 @@ data class SampleGroup(
 data class SampleRow(
     val id: String,
     val groupId: String,
+    /**
+     * FIX 5.8.9bug-3-fix-2: порядковый номер в наряде.
+     * Берётся из SampleEntity.serialNumber как есть.
+     * Не зависит от фильтров и текущей позиции в списке.
+     */
+    val serialNumber: Int = 0,
     val wellNumber: String,
     val sampleNumber: String,
     val numberInWell: Int,
@@ -233,15 +233,6 @@ fun filterByOrder(groups: List<SampleGroup>, orderTitle: String?): List<SampleGr
     return groups.filter { it.orderTitle == orderTitle }
 }
 
-/**
- * Совпадение строки с запросом.
- *
- * Логика:
- *  • Строгий режим (по умолчанию): совпадает номер скважины ИЛИ номер пробы
- *    целиком.
- *  • Режим фильтра (выбраны участок И наряд): дополнительно разрешён префикс
- *    по номеру пробы.
- */
 private fun matchesQuery(row: SampleRow, q: String, filterMode: Boolean): Boolean {
     val well = normalizeNumber(row.wellNumber)
     val sample = normalizeNumber(row.sampleNumber)
@@ -310,20 +301,6 @@ fun sortGroupsByRelevance(
     )
 }
 
-/**
- * Анализ запроса для индикатора ответа.
- *
- * Логика:
- *   0 групп            → NOT_FOUND.
- *   1 группа           → OK_SINGLE / FOUND_OTHER_ORDER / FOUND_OTHER_AREA.
- *   ≥2 групп, 1 участок→ FOUND_MULTIPLE.
- *   ≥2 групп, ≥2 участка → FOUND_MULTIPLE_AREA.
- *
- * Пустой запрос → IDLE_WAITING.
- *
- * ВАЖНО: «Другой наряд» имеет смысл, только если выбран наряд.
- *        «Другой участок» имеет смысл, только если выбран участок.
- */
 fun analyzeMatch(
     query: String, selectedArea: String?, selectedOrder: String?,
     allGroups: List<SampleGroup>
@@ -338,7 +315,6 @@ fun analyzeMatch(
     }
     if (matching.isEmpty()) return MatchInfo(AnswerReason.NOT_FOUND)
 
-    // 1 группа → одиночный ответ.
     if (matching.size == 1) {
         val g = matching.first()
         val display = "${g.areaTitle} / ${g.orderTitle}"
@@ -357,7 +333,6 @@ fun analyzeMatch(
         )
     }
 
-    // ≥2 групп → смотрим, сколько участков.
     val areaTitles = matching.map { it.areaTitle }.distinct()
     val orderTitles = matching.map { "${it.areaTitle} / ${it.orderTitle}" }.distinct()
     val display = orderTitles.joinToString(", ")

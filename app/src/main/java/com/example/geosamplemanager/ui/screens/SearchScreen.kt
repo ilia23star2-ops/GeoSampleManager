@@ -59,7 +59,7 @@ sealed interface ReconItem {
     }
     data class Sample(
         val queryGroupId: String?, val row: SampleRow,
-        val serial: Int, val showCharacteristic: Boolean
+        val showCharacteristic: Boolean
     ) : ReconItem {
         override val key: String
             get() = if (queryGroupId == null) "r_${row.id}" else "r_${queryGroupId}_${row.id}"
@@ -114,10 +114,6 @@ fun SearchScreen(
         }
     }
 
-    // ================================================================
-    // РАЗРЕШЕНИЯ
-    // ================================================================
-
     fun hasMic(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.RECORD_AUDIO
     ) == PackageManager.PERMISSION_GRANTED
@@ -125,10 +121,6 @@ fun SearchScreen(
     fun hasCamera(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
-
-    // ================================================================
-    // ЛОНЧЕРЫ
-    // ================================================================
 
     val takePictureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
@@ -196,10 +188,6 @@ fun SearchScreen(
             }
         }
     }
-
-    // ================================================================
-    // ЛОКАЛЬНЫЕ ФУНКЦИИ
-    // ================================================================
 
     fun requestMic() {
         if (hasMic()) voiceDialogOpen = true
@@ -418,7 +406,7 @@ fun SearchScreen(
                                     wellColumnTitle = item.wellColumnTitle
                                 )
                                 is ReconItem.Sample -> SampleRowItem(
-                                    serialNumber = item.serial, row = item.row,
+                                    row = item.row,
                                     showCharacteristic = item.showCharacteristic,
                                     onToggleFound = { onToggleFound(item.row) },
                                     onOpenNote = { noteDialogRowId = item.row.id },
@@ -606,8 +594,8 @@ fun SearchScreen(
                 settingsOrderTitle = null
                 scope.launch {
                     snackbarHostState.showSnackbar(
-                        if (changed == 0) "Настройки сохранены. Холостых без веса не найдено."
-                        else "Настройки сохранены. Вес проставлен $changed пробам — отметьте их вручную."
+                        if (changed == 0) "Настройки сохранены. Изменений нет."
+                        else "Настройки сохранены. Обновлено проб: $changed."
                     )
                 }
             },
@@ -617,7 +605,7 @@ fun SearchScreen(
                 scope.launch {
                     snackbarHostState.showSnackbar(
                         if (changed == 0) "Сброшено к глобальным"
-                        else "Сброшено. Вес проставлен $changed пробам — отметьте их вручную."
+                        else "Сброшено. Обновлено проб: $changed."
                     )
                 }
             },
@@ -728,8 +716,8 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
         if (expanded) {
             val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
             result.add(ReconItem.TableHead(null, group.id, showCharacteristic, wellTitle))
-            group.rows.forEachIndexed { idx, row ->
-                result.add(ReconItem.Sample(null, row, idx + 1, showCharacteristic))
+            group.rows.forEach { row ->
+                result.add(ReconItem.Sample(null, row, showCharacteristic))
             }
         }
     }
@@ -768,8 +756,8 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
             if (groupExpanded) {
                 val wellTitle = if (groupHasChannel(group)) "Выработка" else "Скважина"
                 result.add(ReconItem.TableHead(qg.id, group.id, showCharacteristic, wellTitle))
-                group.rows.forEachIndexed { idx, row ->
-                    result.add(ReconItem.Sample(qg.id, row, idx + 1, showCharacteristic))
+                group.rows.forEach { row ->
+                    result.add(ReconItem.Sample(qg.id, row, showCharacteristic))
                 }
             }
         }
@@ -781,12 +769,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
 // Компоненты
 // ====================================================================
 
-/**
- * Баннер при ATTENTION (одиночный поиск).
- *
- * Фон — цвет состояния. Текст — обычный (onSurface) + bold.
- * Иконка — цвет состояния.
- */
 @Composable
 private fun AttentionBanner(reason: AnswerReason) {
     val colors = AnswerStateColors.of(AnswerState.ATTENTION)
@@ -1039,12 +1021,6 @@ private fun TopActionsPanel(
     }
 }
 
-/**
- * Индикатор ответа — три строки:
- *   1. Значок состояния.
- *   2. Краткий статус.
- *   3. Причина (если есть).
- */
 @Composable
 private fun SearchRowWithIndicator(
     query: String, onQueryChange: (String) -> Unit,
@@ -1343,9 +1319,13 @@ private fun HeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
         modifier = Modifier.width(width))
 }
 
+/**
+ * FIX 5.8.9bug-3-fix-2: показывает row.serialNumber вместо индекса в списке.
+ * Порядковый номер из БД не зависит от фильтров и поиска.
+ */
 @Composable
 private fun SampleRowItem(
-    serialNumber: Int, row: SampleRow, showCharacteristic: Boolean,
+    row: SampleRow, showCharacteristic: Boolean,
     onToggleFound: () -> Unit, onOpenNote: () -> Unit, onTogglePostponed: () -> Unit,
     onOpenEdit: () -> Unit, onOpenDelete: () -> Unit, onToggleControl: () -> Unit,
     onWeightClick: () -> Unit, onCharacteristicClick: () -> Unit
@@ -1360,9 +1340,12 @@ private fun SampleRowItem(
     ) {
         Checkbox(checked = row.found, onCheckedChange = { onToggleFound() })
 
-        Text(serialNumber.toString(), style = MaterialTheme.typography.labelSmall,
+        Text(
+            text = if (row.serialNumber > 0) row.serialNumber.toString() else "—",
+            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(36.dp))
+            modifier = Modifier.width(36.dp)
+        )
 
         Column(modifier = Modifier.width(90.dp)) {
             Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,

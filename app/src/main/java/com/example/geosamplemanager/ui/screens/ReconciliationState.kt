@@ -42,22 +42,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     var allOrderTitles: List<OrderInfo> by mutableStateOf(emptyList())
     var allAreaNames: List<String> by mutableStateOf(emptyList())
 
-    // ================================================================
-    // Голосовой помощник (5.8.5)
-    // ================================================================
-
-    /** Текущий статус ГП — для статус-бара. */
     var voiceStatus by mutableStateOf<VoiceStatus>(VoiceStatus.Idle)
-
-    /** Открыт диалог справки по командам. */
     var voiceHelpVisible by mutableStateOf(false)
-
-    /** Открыт онбординг. */
     var voiceOnboardingVisible by mutableStateOf(false)
-
-    // ================================================================
-    // Множественный поиск
-    // ================================================================
 
     var queryTokens by mutableStateOf<List<String>>(emptyList())
 
@@ -124,10 +111,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
 
     val allQuickAnswersUnique: Boolean
         get() = _queryGroups.isNotEmpty() && _queryGroups.all { it.isUnique }
-
-    // ================================================================
-    // Производные
-    // ================================================================
 
     val hasSelection: Boolean get() = selectedArea != null || selectedOrder != null
 
@@ -291,6 +274,10 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return null
     }
 
+    // ================================================================
+    // Настройки наряда: холостые + ВК
+    // ================================================================
+
     fun applyBlankSettingsForOrder(
         orderTitle: String,
         settings: BlankWeightSettings,
@@ -299,6 +286,72 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         _blankWeightByOrder[orderTitle] = settings
         _weightControlStepByOrder[orderTitle] = weightControlStep
         return applyBlankWeightsInternal(orderTitle, settings)
+    }
+
+    /**
+     * FIX 5.8.9bug-3-fix-1: полная пересборка ВК.
+     *
+     * Логика:
+     *   • Идём по пробам наряда в порядке списка.
+     *   • Холостые и ошибочные пропускаем и **снимаем** с них ВК
+     *     (холостая не может быть весовым контролем).
+     *   • Счётчик идёт только по нормальным пробам.
+     *   • Каждой N-й нормальной ставим `weightControl = true`.
+     *   • Со всех остальных нормальных **снимаем** ВК.
+     *   • Это полностью пересобирает состояние ВК по наряду,
+     *     убирая старые флаги от предыдущего применения.
+     *
+     * @return количество проб, у которых флаг ВК изменился.
+     */
+    fun applyWeightControlForOrder(orderTitle: String, step: Int): Int {
+        if (step <= 0) return 0
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val group = _groups[gi]
+        var counter = 0
+        var changed = 0
+        val newRows = group.rows.map { row ->
+            if (row.isBlank || row.hasImportError) {
+                // Холостые и ошибочные — гарантированно без ВК.
+                if (row.weightControl) {
+                    changed++
+                    row.copy(weightControl = false)
+                } else row
+            } else {
+                counter++
+                val shouldBeVk = counter % step == 0
+                if (shouldBeVk != row.weightControl) {
+                    changed++
+                    row.copy(weightControl = shouldBeVk)
+                } else row
+            }
+        }
+        if (changed > 0) {
+            _groups[gi] = group.copy(rows = newRows)
+        }
+        return changed
+    }
+
+    /**
+     * FIX 5.8.9bug-3-fix-1: снять все ВК в наряде.
+     *
+     * @return количество снятых флагов.
+     */
+    fun resetWeightControlForOrder(orderTitle: String): Int {
+        val gi = _groups.indexOfFirst { it.orderTitle == orderTitle }
+        if (gi < 0) return 0
+        val group = _groups[gi]
+        var changed = 0
+        val newRows = group.rows.map { row ->
+            if (row.weightControl) {
+                changed++
+                row.copy(weightControl = false)
+            } else row
+        }
+        if (changed > 0) {
+            _groups[gi] = group.copy(rows = newRows)
+        }
+        return changed
     }
 
     fun resetBlankSettingsToGlobal(orderTitle: String): Int {
