@@ -1,6 +1,8 @@
 package com.example.geosamplemanager.ui.screens
 
 import androidx.compose.ui.graphics.Color
+import com.example.geosamplemanager.data.voice.AnswerReason
+import com.example.geosamplemanager.data.voice.AnswerState
 
 /**
  * Модели и вспомогательная логика экрана «Сверка и поиск».
@@ -55,10 +57,23 @@ enum class GroupKind {
     NEUTRAL
 }
 
-sealed class MatchInfo {
-    data object None : MatchInfo()
-    data class Unique(val display: String) : MatchInfo()
-    data class Multiple(val display: List<String>) : MatchInfo()
+/**
+ * Результат анализа запроса: причина + отображаемая информация.
+ *
+ * Заменяет прежний sealed MatchInfo (None / Unique / Multiple).
+ * Состояние (цвет, звук) вычисляется через [reason].state.
+ */
+data class MatchInfo(
+    val reason: AnswerReason,
+    val display: String = "",
+    val areaTitles: List<String> = emptyList(),
+    val orderTitles: List<String> = emptyList()
+) {
+    val state: AnswerState get() = reason.state
+    val isIdle: Boolean get() = reason == AnswerReason.IDLE_WAITING
+    val isUnique: Boolean get() = reason == AnswerReason.OK_SINGLE
+    val isAttention: Boolean get() = state == AnswerState.ATTENTION
+    val isError: Boolean get() = state == AnswerState.ERROR
 }
 
 enum class BlankWeightMode(val title: String) {
@@ -223,9 +238,9 @@ fun filterByOrder(groups: List<SampleGroup>, orderTitle: String?): List<SampleGr
  *
  * Логика:
  *  • Строгий режим (по умолчанию): совпадает номер скважины ИЛИ номер пробы
- *    целиком. «1» не подсветит пробу «1524», но подсветит пробу с номером «1».
+ *    целиком.
  *  • Режим фильтра (выбраны участок И наряд): дополнительно разрешён префикс
- *    по номеру пробы. «109» подсветит «1090031» в выбранном наряде.
+ *    по номеру пробы.
  */
 private fun matchesQuery(row: SampleRow, q: String, filterMode: Boolean): Boolean {
     val well = normalizeNumber(row.wellNumber)
@@ -235,10 +250,6 @@ private fun matchesQuery(row: SampleRow, q: String, filterMode: Boolean): Boolea
     return false
 }
 
-/**
- * @param filterMode true — режим фильтрации (участок + наряд выбраны),
- *                   false — строгий поиск (полное совпадение).
- */
 fun filterByQuery(
     groups: List<SampleGroup>,
     query: String,
@@ -300,33 +311,69 @@ fun sortGroupsByRelevance(
 }
 
 /**
- * Анализ совпадения для одиночного запроса.
+ * Анализ запроса для индикатора ответа.
  *
- *  • 0 групп    → None.
- *  • 1 группа   → Unique. Даже если эта группа из другого участка — это
- *                 НЕ «несколько нарядов». Про «другой участок» UI узнаёт
- *                 через determineGroupKind → GroupKind.OTHER_AREA.
- *  • ≥2 групп   → Multiple (реально несколько нарядов).
+ * Логика:
+ *   0 групп            → NOT_FOUND.
+ *   1 группа           → OK_SINGLE / FOUND_OTHER_ORDER / FOUND_OTHER_AREA.
+ *   ≥2 групп, 1 участок→ FOUND_MULTIPLE.
+ *   ≥2 групп, ≥2 участка → FOUND_MULTIPLE_AREA.
+ *
+ * Пустой запрос → IDLE_WAITING.
+ *
+ * ВАЖНО: «Другой наряд» имеет смысл, только если выбран наряд.
+ *        «Другой участок» имеет смысл, только если выбран участок.
  */
 fun analyzeMatch(
     query: String, selectedArea: String?, selectedOrder: String?,
     allGroups: List<SampleGroup>
 ): MatchInfo {
     val q = normalizeNumber(query)
-    if (q.isBlank()) return MatchInfo.None
+    if (q.isBlank()) return MatchInfo(AnswerReason.IDLE_WAITING)
+
     val filterMode = selectedArea != null && selectedOrder != null
 
     val matching = allGroups.filter { g ->
         g.rows.any { row -> matchesQuery(row, q, filterMode) }
     }
-    if (matching.isEmpty()) return MatchInfo.None
+    if (matching.isEmpty()) return MatchInfo(AnswerReason.NOT_FOUND)
 
+    // 1 группа → одиночный ответ.
     if (matching.size == 1) {
         val g = matching.first()
-        return MatchInfo.Unique("${g.areaTitle} / ${g.orderTitle}")
+        val display = "${g.areaTitle} / ${g.orderTitle}"
+        val reason = when {
+            selectedArea != null && g.areaTitle != selectedArea ->
+                AnswerReason.FOUND_OTHER_AREA
+            selectedOrder != null && g.orderTitle != selectedOrder ->
+                AnswerReason.FOUND_OTHER_ORDER
+            else -> AnswerReason.OK_SINGLE
+        }
+        return MatchInfo(
+            reason = reason,
+            display = display,
+            areaTitles = listOf(g.areaTitle),
+            orderTitles = listOf(g.orderTitle)
+        )
     }
 
-    return MatchInfo.Multiple(matching.map { "${it.areaTitle} / ${it.orderTitle}" })
+    // ≥2 групп → смотрим, сколько участков.
+    val areaTitles = matching.map { it.areaTitle }.distinct()
+    val orderTitles = matching.map { "${it.areaTitle} / ${it.orderTitle}" }.distinct()
+    val display = orderTitles.joinToString(", ")
+
+    val reason = if (areaTitles.size > 1) {
+        AnswerReason.FOUND_MULTIPLE_AREA
+    } else {
+        AnswerReason.FOUND_MULTIPLE
+    }
+
+    return MatchInfo(
+        reason = reason,
+        display = display,
+        areaTitles = areaTitles,
+        orderTitles = orderTitles
+    )
 }
 
 fun ordersWithSamples(area: String?, groups: List<SampleGroup>): List<String> =
@@ -356,49 +403,38 @@ fun calculateAverageNeighborWeight(group: SampleGroup, blankRowId: String): Doub
 // Множественный поиск (5.11)
 // ====================================================================
 
-/**
- * Одна группа запроса. Используется, когда queryTokens.size > 1.
- */
 data class QueryGroup(
-    val id: String,                 // "q1", "q2", ...
-    val query: String,              // как введено пользователем
-    val prefix: String?,            // "KPD", "NV" и т.п. или null
+    val id: String,
+    val query: String,
+    val prefix: String?,
     val variants: List<QueryVariant>,
-    val isForeignArea: Boolean      // true, если найденные наряды не в выбранном участке
+    val isForeignArea: Boolean
 ) {
     val variantCount: Int get() = variants.size
     val isUnique: Boolean get() = variants.size == 1
     val uniqueVariant: QueryVariant? get() = variants.singleOrNull()
     val isFound: Boolean get() = variants.isNotEmpty()
 
-    /** Уникальные номера нарядов без префикса «Наряд №». */
     val orderNumbersLabel: String
         get() = variants.map { it.orderTitle.removePrefix("Наряд №").trim() }
             .distinct()
             .joinToString(", ")
 
-    /** Уникальные названия участков вариантов. */
     val areaTitlesLabel: String
         get() = variants.map { it.areaTitle }.distinct().joinToString(", ")
 }
 
-/**
- * Один вариант ответа для запроса: конкретный наряд.
- */
 data class QueryVariant(
     val areaTitle: String,
     val orderTitle: String,
-    val groupId: String,            // ссылка на SampleGroup.id
+    val groupId: String,
     val foundCount: Int,
     val totalCount: Int
 )
 
-/**
- * Быстрый ответ для фонарика.
- */
 data class QuickAnswer(
-    val index: Int,                 // 1, 2, 3...
+    val index: Int,
     val query: String,
-    val orderTitle: String?,        // null, если ответов несколько
+    val orderTitle: String?,
     val isMultiple: Boolean
 )
