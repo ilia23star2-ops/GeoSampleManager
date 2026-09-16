@@ -743,7 +743,6 @@ private fun buildFlatList(state: ReconciliationState): List<ReconItem> {
     visible.forEach { group ->
         val kind = determineGroupKind(group, selectedArea, selectedOrder)
         val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-        // FIX 5.8.9e-1: ATTENTION — по умолчанию свёрнуто.
         val expanded = state.effectiveGroupExpanded(
             group.id,
             isAttention = groupState == AnswerState.ATTENTION
@@ -787,7 +786,6 @@ private fun buildMultiQueryList(state: ReconciliationState): List<ReconItem> {
         filteredGroups.forEach { group ->
             val kind = determineGroupKind(group, selectedArea, selectedOrder)
             val isForeign = kind == GroupKind.SAME_AREA || kind == GroupKind.OTHER_AREA
-            // FIX 5.8.9e-1: ATTENTION — свёрнуто по умолчанию.
             val groupExpanded = state.effectiveGroupExpanded(
                 group.id,
                 isAttention = groupState == AnswerState.ATTENTION
@@ -855,17 +853,6 @@ private fun AttentionBanner(reason: AnswerReason) {
     }
 }
 
-/**
- * FIX 5.8.9e-1: заголовок запроса в мультипоиске.
- *
- * Формат:
- *   Запрос №1: «1524»
- *   Тестовый · 3 варианта · Наряд 1, 2, 7
- *   Коптеловский · 1 вариант · Наряд 27
- *   ⚠ Другой участок
- *
- * Строка на каждый участок: <участок> · N вариантов · Наряды X, Y.
- */
 @Composable
 private fun QueryHeaderCard(
     group: QueryGroup,
@@ -888,7 +875,6 @@ private fun QueryHeaderCard(
         else -> ""
     }
 
-    // Группируем варианты по участкам.
     val areaLines: List<AreaVariantsLine> = if (group.isFound) {
         group.variants
             .groupBy { it.areaTitle }
@@ -960,14 +946,12 @@ private fun QueryHeaderCard(
     }
 }
 
-/** Промежуточная модель для строки по участку. */
 private data class AreaVariantsLine(
     val areaTitle: String,
     val count: Int,
     val orderNumbers: String
 )
 
-/** «Тестовый · 3 варианта · Наряд 1, 2, 7» (или «⚠ Другой участок»). */
 private fun buildAreaLineText(line: AreaVariantsLine, foreign: Boolean): String {
     val vWord = variantWord(line.count)
     val orderWord = if (line.count == 1) "Наряд" else "Наряды"
@@ -994,7 +978,6 @@ private fun GroupHeaderCard(
 ) {
     val colors = AnswerStateColors.of(state)
     val subtitle = buildGroupSubtitle(group)
-    val stats = calculateGroupStats(group)
 
     val reasonText = when {
         state == AnswerState.ATTENTION && kind == GroupKind.OTHER_AREA -> "⚠ Другой участок"
@@ -1131,38 +1114,27 @@ private fun SearchRowWithIndicator(
     isMulti: Boolean, hasSelection: Boolean,
     onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
 ) {
-    val state: AnswerState = if (isMulti) {
-        when {
-            quickAnswers.isEmpty() -> AnswerState.IDLE
-            quickAnswers.any { !it.isMultiple && it.orderTitle == null } ->
-                AnswerState.ERROR
-            quickAnswers.any { it.isMultiple } -> AnswerState.ATTENTION
-            else -> AnswerState.OK
-        }
-    } else {
-        matchInfo.state
-    }
-
-    val colors = AnswerStateColors.of(state)
-    val icon = when (state) {
+    val singleState = matchInfo.state
+    val colors = AnswerStateColors.of(singleState)
+    val icon = when (singleState) {
         AnswerState.OK -> Icons.Filled.Lightbulb
         AnswerState.ATTENTION -> Icons.Filled.Warning
         AnswerState.ERROR -> Icons.Filled.Lightbulb
         AnswerState.IDLE -> Icons.Filled.Lightbulb
     }
 
-    val statusText = when (state) {
+    val statusText = when (singleState) {
         AnswerState.IDLE -> "Жду"
         AnswerState.OK -> "Найдено"
         AnswerState.ATTENTION -> "Внимание"
-        AnswerState.ERROR -> if (isMulti) "Не найдено" else matchInfo.reason.shortLabel
+        AnswerState.ERROR -> matchInfo.reason.shortLabel
     }
 
-    val reasonText = if (isMulti) {
-        if (state == AnswerState.ATTENTION) "См. ниже" else ""
-    } else {
-        matchInfo.reason.detailLabel
-    }
+    val reasonText = matchInfo.reason.detailLabel
+
+    // FIX 5.8.9e-2-fix-3: для одиночного запроса места больше —
+    // пишем «Наряд N · скв. X» / «Наряд N · проба Y» развёрнуто.
+    val matchedLine: String = if (!isMulti) buildSingleAnswerLine(matchInfo) else ""
 
     val placeholder = if (hasSelection)
         "Поиск (несколько номеров через пробел)"
@@ -1173,20 +1145,30 @@ private fun SearchRowWithIndicator(
             modifier = Modifier.width(110.dp).padding(end = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(icon, null, tint = colors.accent, modifier = Modifier.size(26.dp))
-            Spacer(Modifier.height(2.dp))
-            if (statusText.isNotEmpty()) {
-                Text(statusText, style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = colors.accent,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    fontSize = 11.sp, textAlign = TextAlign.Center)
-            }
-            if (reasonText.isNotEmpty()) {
-                Text(reasonText, style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    fontSize = 10.sp, textAlign = TextAlign.Center)
+            if (isMulti && quickAnswers.isNotEmpty()) {
+                MultiQueryIndicatorList(quickAnswers)
+            } else {
+                Icon(icon, null, tint = colors.accent, modifier = Modifier.size(26.dp))
+                Spacer(Modifier.height(2.dp))
+                if (statusText.isNotEmpty()) {
+                    Text(statusText, style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.accent,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        fontSize = 11.sp, textAlign = TextAlign.Center)
+                }
+                if (reasonText.isNotEmpty()) {
+                    Text(reasonText, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        fontSize = 10.sp, textAlign = TextAlign.Center)
+                }
+                if (matchedLine.isNotEmpty()) {
+                    Text(matchedLine, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        fontSize = 10.sp, textAlign = TextAlign.Center)
+                }
             }
         }
         OutlinedTextField(
@@ -1211,6 +1193,118 @@ private fun SearchRowWithIndicator(
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSearchAction() })
         )
+    }
+}
+
+/**
+ * FIX 5.8.9e-2-fix-3: строка ответа для одиночного запроса.
+ *
+ * Формат: «Наряд 7 · скв. NV1526» или «Наряд 7 · проба NV152601».
+ * Пишем развёрнуто — в одиночном индикаторе места хватает.
+ * Пусто, если ответа нет или он неоднозначный.
+ */
+private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
+    val value = matchInfo.matchedValue ?: return ""
+    val orderRaw = matchInfo.orderTitles.firstOrNull() ?: return ""
+    val orderNum = orderRaw
+        .substringAfterLast("/")
+        .trim()
+        .removePrefix("Наряд №")
+        .removePrefix("Наряд ")
+        .trim()
+    val prefix = when (matchInfo.matchedKind) {
+        MatchedKind.WELL -> "скв."
+        MatchedKind.SAMPLE -> "проба"
+        MatchedKind.NONE -> return ""
+    }
+    return if (orderNum.isBlank()) {
+        "$prefix $value"
+    } else {
+        "Наряд $orderNum · $prefix $value"
+    }
+}
+
+/**
+ * FIX 5.8.9e-2-fix-2: индикатор мультипоиска.
+ *
+ * На каждый запрос — своя строка. Показываем то, что искал пользователь:
+ *   🟢 №1  7 · 1524
+ *   🟢 №2  7 · NV152601
+ *   🟡 №3  Несколько
+ *   🔴 №4  Не найдено
+ *
+ * Здесь ширина маленькая — формат короткий: <наряд> · <значение>.
+ */
+@Composable
+private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        quickAnswers.take(5).forEach { qa ->
+            val st = when {
+                qa.orderTitle == null && !qa.isMultiple -> AnswerState.ERROR
+                qa.isMultiple -> AnswerState.ATTENTION
+                qa.isForeignArea -> AnswerState.ATTENTION
+                else -> AnswerState.OK
+            }
+            val colors = AnswerStateColors.of(st)
+            val icon = when (st) {
+                AnswerState.OK -> Icons.Filled.Lightbulb
+                AnswerState.ATTENTION -> Icons.Filled.Warning
+                AnswerState.ERROR -> Icons.Filled.Lightbulb
+                AnswerState.IDLE -> Icons.Filled.Lightbulb
+            }
+            val detail = when {
+                qa.orderTitle == null && !qa.isMultiple -> "Не найдено"
+                qa.isMultiple -> "Несколько"
+                qa.isForeignArea -> "Другой участок"
+                else -> buildAnswerLine(qa)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(
+                    icon, null,
+                    tint = colors.accent,
+                    modifier = Modifier.size(12.dp).padding(top = 2.dp)
+                )
+                Spacer(Modifier.width(3.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "№${qa.index}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.accent,
+                        fontSize = 10.sp,
+                        maxLines = 1
+                    )
+                    Text(
+                        detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 9.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * FIX 5.8.9e-2-fix-2: строка ответа для одного запроса мультипоиска.
+ * Короткий формат: «7 · 1524» (наряд · значение).
+ * Значение — то, что искал пользователь (скв. или проба).
+ */
+private fun buildAnswerLine(qa: QuickAnswer): String {
+    val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
+    val value = qa.answerValue
+    return when {
+        orderNum.isNotEmpty() && value != null -> "$orderNum · $value"
+        orderNum.isNotEmpty() -> orderNum
+        value != null -> value
+        else -> ""
     }
 }
 
@@ -1656,11 +1750,16 @@ private fun LegendDialog(onDismiss: () -> Unit) {
             ) {
                 Text("Индикатор ответа",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text("Слева от строки поиска. Три строки: значок, статус, причина.\n" +
+                Text("Слева от строки поиска. Показывает, что нашлось:\n" +
                         "• 🟢 OK — единственный ответ.\n" +
                         "• 🟡 Внимание — другой наряд / участок / несколько.\n" +
                         "• 🔴 Ошибка — не найдено.\n" +
-                        "• ⚪ Жду — пустой запрос.",
+                        "• ⚪ Жду — пустой запрос.\n\n" +
+                        "Одиночный запрос — развёрнуто:\n" +
+                        "«Наряд 7 · скв. NV1526» (нашли скважину)\n" +
+                        "«Наряд 7 · проба NV152601» (нашли пробу)\n\n" +
+                        "Мультипоиск — по строке на запрос, коротко:\n" +
+                        "№1 — «7 · NV1524»; №2 — «Несколько»; №3 — «Не найдено».",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))

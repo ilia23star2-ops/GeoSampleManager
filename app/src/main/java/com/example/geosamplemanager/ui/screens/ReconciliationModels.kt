@@ -57,11 +57,30 @@ enum class GroupKind {
     NEUTRAL
 }
 
+/**
+ * FIX 5.8.9e-2-fix-2: что именно совпало при поиске.
+ *   • WELL   — нашли скважину (совпал wellNumber).
+ *   • SAMPLE — нашли пробу (совпал sampleNumber или суффикс).
+ *   • NONE   — не определено.
+ *
+ * Нужно, чтобы индикатор показывал то, что искал пользователь,
+ * а не всегда пробу.
+ */
+enum class MatchedKind {
+    NONE,
+    WELL,
+    SAMPLE
+}
+
 data class MatchInfo(
     val reason: AnswerReason,
     val display: String = "",
     val areaTitles: List<String> = emptyList(),
-    val orderTitles: List<String> = emptyList()
+    val orderTitles: List<String> = emptyList(),
+    /** FIX 5.8.9e-2-fix-2: что совпало — скважина или проба. */
+    val matchedKind: MatchedKind = MatchedKind.NONE,
+    /** Номер совпавшей сущности (wellNumber или sampleNumber). */
+    val matchedValue: String? = null
 ) {
     val state: AnswerState get() = reason.state
     val isIdle: Boolean get() = reason == AnswerReason.IDLE_WAITING
@@ -102,10 +121,6 @@ data class SampleGroup(
 data class SampleRow(
     val id: String,
     val groupId: String,
-    /**
-     * Порядковый номер в наряде. Из SampleEntity.serialNumber.
-     * Не зависит от фильтров и текущей позиции в списке.
-     */
     val serialNumber: Int = 0,
     val wellNumber: String,
     val sampleNumber: String,
@@ -215,17 +230,6 @@ sealed class UndoAction {
         val after: List<WellCellSnapshot>
     ) : UndoAction()
 
-    /**
-     * Массовое изменение строк наряда — снимок до и после.
-     *
-     * Используется операциями из настроек наряда:
-     *   • применение холостых + ВК,
-     *   • сброс ВК,
-     *   • сброс веса холостых,
-     *   • сброс к глобальным настройкам.
-     *
-     * @property label — готовая подпись для кнопки «Отмена».
-     */
     data class BulkRowsChange(
         val groupId: String,
         val before: List<SampleRow>,
@@ -318,6 +322,45 @@ fun sortGroupsByRelevance(
     )
 }
 
+/**
+ * FIX 5.8.9e-2-fix-2: определить, что совпало при поиске.
+ *
+ * Приоритет: точное совпадение wellNumber → WELL. Точное совпадение
+ * sampleNumber → SAMPLE. Ничего не совпало (суффикс/fuzzy) → SAMPLE
+ * по умолчанию (показываем первую найденную пробу).
+ *
+ * @return matchedKind + оригинальное значение (wellNumber или sampleNumber).
+ */
+private fun detectMatch(
+    q: String,
+    matching: List<SampleGroup>
+): Pair<MatchedKind, String?> {
+    var wellMatch: String? = null
+    var sampleMatch: String? = null
+
+    matching.forEach { g ->
+        g.rows.forEach { row ->
+            val wellDigits = normalizeNumber(row.wellNumber)
+            val sampleDigits = normalizeNumber(row.sampleNumber)
+            if (wellMatch == null && wellDigits == q) {
+                wellMatch = row.wellNumber
+            }
+            if (sampleMatch == null && sampleDigits == q) {
+                sampleMatch = row.sampleNumber
+            }
+        }
+    }
+
+    return when {
+        wellMatch != null -> MatchedKind.WELL to wellMatch
+        sampleMatch != null -> MatchedKind.SAMPLE to sampleMatch
+        else -> {
+            val firstSample = matching.firstOrNull()?.rows?.firstOrNull()?.sampleNumber
+            MatchedKind.SAMPLE to firstSample
+        }
+    }
+}
+
 fun analyzeMatch(
     query: String, selectedArea: String?, selectedOrder: String?,
     allGroups: List<SampleGroup>
@@ -331,6 +374,8 @@ fun analyzeMatch(
         g.rows.any { row -> matchesQuery(row, q, filterMode) }
     }
     if (matching.isEmpty()) return MatchInfo(AnswerReason.NOT_FOUND)
+
+    val (kind, value) = detectMatch(q, matching)
 
     if (matching.size == 1) {
         val g = matching.first()
@@ -346,7 +391,9 @@ fun analyzeMatch(
             reason = reason,
             display = display,
             areaTitles = listOf(g.areaTitle),
-            orderTitles = listOf(g.orderTitle)
+            orderTitles = listOf(g.orderTitle),
+            matchedKind = kind,
+            matchedValue = value
         )
     }
 
@@ -364,7 +411,9 @@ fun analyzeMatch(
         reason = reason,
         display = display,
         areaTitles = areaTitles,
-        orderTitles = orderTitles
+        orderTitles = orderTitles,
+        matchedKind = kind,
+        matchedValue = value
     )
 }
 
@@ -424,9 +473,29 @@ data class QueryVariant(
     val totalCount: Int
 )
 
+/**
+ * FIX 5.8.9e-2-fix-2: строка индикатора для одного запроса мультипоиска.
+ *
+ * Изменения против 5.8.9e-2:
+ *   • Поле [sampleNumber] заменено на [answerValue] + [answerKind].
+ *   • Теперь в строке показываем то, что искали: скважину или пробу.
+ *
+ * @property index          — номер запроса (1..5).
+ * @property query          — исходный токен из поля поиска.
+ * @property orderTitle     — наряд, если ответ единственный.
+ * @property areaTitle      — участок, если ответ единственный.
+ * @property answerKind     — WELL / SAMPLE / NONE.
+ * @property answerValue    — оригинальный номер (wellNumber или sampleNumber).
+ * @property isMultiple     — найдено ≥2 нарядов с этим номером.
+ * @property isForeignArea  — единственный ответ — в другом участке.
+ */
 data class QuickAnswer(
     val index: Int,
     val query: String,
     val orderTitle: String?,
-    val isMultiple: Boolean
+    val areaTitle: String? = null,
+    val answerKind: MatchedKind = MatchedKind.NONE,
+    val answerValue: String? = null,
+    val isMultiple: Boolean,
+    val isForeignArea: Boolean = false
 )

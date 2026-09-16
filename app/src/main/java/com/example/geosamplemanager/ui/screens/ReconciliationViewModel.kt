@@ -22,6 +22,7 @@ import com.example.geosamplemanager.data.voice.VoiceSearchResult
 import com.example.geosamplemanager.data.voice.VoiceSession
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -76,6 +77,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         state.voiceOnboardingVisible = true
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
     }
@@ -86,6 +89,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             try {
                 val vs = voiceSettingsRepo.load()
                 voiceSettingsRepo.save(vs.copy(showOnboarding = false))
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {}
         }
     }
@@ -119,6 +124,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         state.allAreaNames = areaNames
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _message.value = "Ошибка загрузки: ${e.message}"
             }
@@ -145,6 +152,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } else {
                 loadedOrderIds.add(orderId)
             }
+        } catch (e: CancellationException) {
+            // Отмена поиска — не ошибка, пробрасываем.
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка загрузки наряда: ${e.message}"
         }
@@ -157,6 +167,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             val newIds = allIds.filter { it !in loadedOrderIds }
             val toLoad = newIds.take(MAX_SEARCH_ORDERS)
             toLoad.forEach { ensureOrderSamplesLoaded(it) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка поиска: ${e.message}"
         }
@@ -249,6 +261,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             }
 
             withContext(Dispatchers.Main) { state.setQueryGroups(queryGroups) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка множественного поиска: ${e.message}"
         }
@@ -358,10 +372,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * Search в активной сессии — если query парсится в число 1..30,
-     * это отметка пробы. Иначе — обычный поиск.
-     */
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
         val hasSession = voiceSession.currentOrderId != null &&
                 voiceSession.currentWellNumber != null
@@ -404,9 +414,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             when (result) {
                 VoiceSearchResult.NotFound -> {
-                    // FIX 5.8.9g-3: сбрасываем контекст сессии,
-                    // чтобы «первая» после неудачного поиска не отметила
-                    // пробу от предыдущей скважины.
                     voiceSession.clear()
 
                     val displayQuery = candidates.firstOrNull() ?: query
@@ -423,8 +430,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         else -> hit.sampleNumber != hit.wellNumber
                     }
 
-                    // FIX 5.8.9g-3: при смене скважины сбрасываем
-                    // lastMarked* и awaitingWeight — они относились к старой.
                     val oldWell = voiceSession.currentWellNumber
                     val oldOrder = voiceSession.currentOrderId
                     val newWell = hit.wellNumber
@@ -518,6 +523,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     VoiceExecResult.FoundMany(result.candidate, result.hits.size)
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "voiceSearch: упал", e)
             VoiceExecResult.Message("Ошибка поиска: ${e.message}")
@@ -743,6 +750,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "voiceSort: проверка «$clean» упала", e)
                 descriptions.add("${VoiceSpeaker.spellOut(clean)} — ошибка")
@@ -768,6 +777,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val found = rowById(rowId)?.found ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.setFound(id, found) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
@@ -777,6 +787,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val id = rowId.toLongOrNull() ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.setFound(id, value) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
@@ -790,7 +801,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     repo.setControlWeight(id, weight)
                     repo.setFound(id, true)
                 }
-            } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
 
@@ -799,6 +811,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val id = rowId.toLongOrNull() ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.setControlWeight(id, weight) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
@@ -812,7 +825,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     repo.setWeight(id, weight)
                     repo.setFound(id, true)
                 }
-            } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
 
@@ -821,6 +835,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val id = rowId.toLongOrNull() ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.setWeight(id, weight) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
@@ -830,6 +845,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val id = rowId.toLongOrNull() ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.setPostponed(id, value) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
@@ -841,6 +857,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             val flag = rowById(rowId)?.weightControl ?: return ok
             viewModelScope.launch {
                 try { withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) } }
+                catch (e: CancellationException) { throw e }
                 catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
             }
         }
@@ -868,6 +885,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             try {
                 withContext(Dispatchers.IO) { repo.deleteSampleWithRenumber(id, recalc) }
                 state.deleteRow(rowId, recalc)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _message.value = "Ошибка удаления: ${e.message}"
             }
@@ -925,6 +944,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     ): Pair<SampleNoteEntity?, List<SampleImageEntity>> {
         return try {
             withContext(Dispatchers.IO) { repo.getNoteWithPhotos(sampleId) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка загрузки заметки: ${e.message}"
             null to emptyList()
@@ -956,6 +977,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
             }
             true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка сохранения заметки: ${e.message}"
             false
@@ -977,6 +1000,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 refreshSampleFlagsInternal(sampleId)
             }
             true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка добавления фото: ${e.message}"
             false
@@ -998,6 +1023,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 refreshSampleFlagsInternal(sampleId)
             }
             true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка добавления фото: ${e.message}"
             false
@@ -1011,6 +1038,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 if (ok) refreshSampleFlagsInternal(sampleId)
                 ok
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             _message.value = "Ошибка удаления фото: ${e.message}"
             false
@@ -1028,6 +1057,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val group = state.groups.firstOrNull { it.id == groupId } ?: return
         viewModelScope.launch {
             try { withContext(Dispatchers.IO) { repo.saveRows(group.rows) } }
+            catch (e: CancellationException) { throw e }
             catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
@@ -1039,7 +1069,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 withContext(Dispatchers.IO) {
                     groups.forEach { repo.saveRows(it.rows) }
                 }
-            } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
 
@@ -1049,7 +1080,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 withContext(Dispatchers.IO) {
                     state.groups.forEach { repo.saveRows(it.rows) }
                 }
-            } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
 }

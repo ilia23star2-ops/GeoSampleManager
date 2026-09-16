@@ -99,13 +99,50 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return applyFilters(byQuery, activeFilters)
     }
 
+    /**
+     * FIX 5.8.9e-2-fix-2: определить, что нашли по запросу — скважину
+     * или пробу. Смотрим на строки без учёта активных UI-фильтров,
+     * чтобы фильтр не искажал определение.
+     */
+    private fun detectAnswerForQuery(qg: QueryGroup): Pair<MatchedKind, String?> {
+        if (qg.variants.isEmpty()) return MatchedKind.NONE to null
+        val groupsForQ = qg.variants.mapNotNull { v ->
+            _groups.firstOrNull { it.id == v.groupId }
+        }
+        val byQuery = filterByQuery(groupsForQ, qg.query, isFilterMode)
+        val rows = byQuery.flatMap { it.rows }
+        if (rows.isEmpty()) return MatchedKind.NONE to null
+
+        val q = normalizeNumber(qg.query)
+        var wellMatch: String? = null
+        var sampleMatch: String? = null
+        rows.forEach { row ->
+            val wellDigits = normalizeNumber(row.wellNumber)
+            val sampleDigits = normalizeNumber(row.sampleNumber)
+            if (wellMatch == null && wellDigits == q) wellMatch = row.wellNumber
+            if (sampleMatch == null && sampleDigits == q) sampleMatch = row.sampleNumber
+        }
+        return when {
+            wellMatch != null -> MatchedKind.WELL to wellMatch
+            sampleMatch != null -> MatchedKind.SAMPLE to sampleMatch
+            else -> MatchedKind.SAMPLE to rows.firstOrNull()?.sampleNumber
+        }
+    }
+
     val quickAnswers: List<QuickAnswer>
         get() = _queryGroups.mapIndexed { i, qg ->
+            val unique = qg.uniqueVariant
+            val (kind, value) = if (qg.isUnique) detectAnswerForQuery(qg)
+            else MatchedKind.NONE to null
             QuickAnswer(
                 index = i + 1,
                 query = qg.query,
-                orderTitle = qg.uniqueVariant?.orderTitle,
-                isMultiple = qg.variantCount > 1
+                orderTitle = unique?.orderTitle,
+                areaTitle = unique?.areaTitle,
+                answerKind = kind,
+                answerValue = value,
+                isMultiple = qg.variantCount > 1,
+                isForeignArea = qg.isForeignArea
             )
         }
 
@@ -224,24 +261,13 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     // Развёрнутость групп
     // ================================================================
 
-    /** Старое поведение — по умолчанию развёрнуто. Для совместимости. */
     fun isGroupExpanded(groupId: String): Boolean = _expandedGroups[groupId] ?: true
 
-    /**
-     * FIX 5.8.9e-1: эффективная развёрнутость с учётом контекста.
-     *
-     *   • Если пользователь явно свернул/развернул — берём его выбор.
-     *   • Иначе: при ATTENTION (несколько результатов) — свёрнуто,
-     *     в остальных случаях — развёрнуто.
-     */
     fun effectiveGroupExpanded(groupId: String, isAttention: Boolean): Boolean {
         _expandedGroups[groupId]?.let { return it }
         return !isAttention
     }
 
-    /**
-     * FIX 5.8.9e-1: переключение с учётом текущего эффективного состояния.
-     */
     fun toggleGroupExpanded(groupId: String, isAttention: Boolean) {
         val current = effectiveGroupExpanded(groupId, isAttention)
         _expandedGroups[groupId] = !current
