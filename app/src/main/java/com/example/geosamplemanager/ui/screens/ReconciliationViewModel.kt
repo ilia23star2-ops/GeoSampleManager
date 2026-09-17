@@ -11,14 +11,15 @@ import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
+import com.example.geosamplemanager.data.voice.UnifiedMatchKind
+import com.example.geosamplemanager.data.voice.UnifiedSearch
+import com.example.geosamplemanager.data.voice.UnifiedSearchResult
 import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceNumberParser
 import com.example.geosamplemanager.data.voice.VoicePrefixResolver
-import com.example.geosamplemanager.data.voice.VoiceSearch
 import com.example.geosamplemanager.data.voice.VoiceSearchRepository
-import com.example.geosamplemanager.data.voice.VoiceSearchResult
 import com.example.geosamplemanager.data.voice.VoiceSession
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
@@ -388,6 +389,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return voiceSearch(query)
     }
 
+    /**
+     * FIX 5.8.9h-2a: ГП использует UnifiedSearch — тот же алгоритм,
+     * что и UI. `filterMode = false`, потому что у ГП нет селекторов
+     * «участок/наряд» (см. VOICE.md).
+     */
     private suspend fun voiceSearch(query: String): VoiceExecResult {
         Log.i(TAG, "voiceSearch: query=«$query»")
         return try {
@@ -408,12 +414,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             Log.i(TAG, "voiceSearch: candidates=$candidates")
 
             val source = VoiceSearchRepository(getApplication())
-            val search = VoiceSearch(source)
-            val result = search.search(candidates)
+            val all = source.loadAll()
+            val result = UnifiedSearch.search(all, candidates, filterMode = false)
             Log.i(TAG, "voiceSearch: result=$result")
 
             when (result) {
-                VoiceSearchResult.NotFound -> {
+                UnifiedSearchResult.NotFound -> {
                     voiceSession.clear()
 
                     val displayQuery = candidates.firstOrNull() ?: query
@@ -422,12 +428,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                     VoiceExecResult.NotFound
                 }
-                is VoiceSearchResult.FoundOne -> {
-                    val hit = result.hit
-                    val isSample = when (result.level) {
-                        1, 4 -> true
-                        2, 3 -> false
-                        else -> hit.sampleNumber != hit.wellNumber
+                is UnifiedSearchResult.Found -> {
+                    val hit = result.hits.first()
+                    val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
+
+                    if (!result.isUnique) {
+                        // Несколько уникальных (orderId, wellNumber) → FoundMany.
+                        voiceSession.awaitingContinue = true
+                        voiceSession.isAutoMode = false
+                        withContext(Dispatchers.Main) {
+                            setQuery(result.matchedValue)
+                        }
+                        return VoiceExecResult.FoundMany(
+                            result.matchedValue,
+                            result.hits.size
+                        )
                     }
 
                     val oldWell = voiceSession.currentWellNumber
@@ -467,7 +482,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     var postponed = 0
 
                     if (isSample) {
-                        displayQuery = hit.sampleNumber
+                        displayQuery = result.matchedValue
                         ensureOrderSamplesLoaded(hit.orderId)
                         val group = state.groupById(hit.orderId.toString())
                         val sampleRow = group?.rows?.firstOrNull {
@@ -481,7 +496,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             postponed = if (sampleRow.postponed) 1 else 0
                         }
                     } else {
-                        displayQuery = hit.wellNumber
+                        displayQuery = result.matchedValue
                         ensureOrderSamplesLoaded(hit.orderId)
                         val group = state.groupById(hit.orderId.toString())
                         val wellRows = group?.rows?.filter { it.wellNumber == hit.wellNumber }
@@ -513,14 +528,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         otherAreaTitle = hit.areaTitle,
                         otherOrderNumber = hit.orderNumber
                     )
-                }
-                is VoiceSearchResult.FoundMany -> {
-                    voiceSession.awaitingContinue = true
-                    voiceSession.isAutoMode = false
-                    withContext(Dispatchers.Main) {
-                        setQuery(result.candidate)
-                    }
-                    VoiceExecResult.FoundMany(result.candidate, result.hits.size)
                 }
             }
         } catch (e: CancellationException) {
@@ -702,6 +709,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
+    /**
+     * FIX 5.8.9h-2a: voiceSort тоже переведён на UnifiedSearch.
+     * `all` загружается один раз — не дёргаем БД на каждый запрос.
+     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -710,7 +721,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         setQuery(joined)
 
         val source = VoiceSearchRepository(getApplication())
-        val search = VoiceSearch(source)
+        val all = source.loadAll()
 
         val descriptions = mutableListOf<String>()
         val ambiguousQueries = mutableListOf<String>()
@@ -733,20 +744,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 continue
             }
             try {
-                when (val r = search.search(candidates)) {
-                    is VoiceSearchResult.FoundOne -> {
-                        val hit = r.hit
-                        descriptions.add(
-                            "${VoiceSpeaker.spellOut(clean)}, наряд ${hit.orderNumber}"
-                        )
+                when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
+                    is UnifiedSearchResult.Found -> {
+                        val hit = r.hits.first()
+                        if (r.isUnique) {
+                            descriptions.add(
+                                "${VoiceSpeaker.spellOut(clean)}, наряд ${hit.orderNumber}"
+                            )
+                        } else {
+                            ambiguousQueries.add(clean)
+                            descriptions.add(
+                                "${VoiceSpeaker.spellOut(clean)} — найден в нескольких нарядах"
+                            )
+                        }
                     }
-                    is VoiceSearchResult.FoundMany -> {
-                        ambiguousQueries.add(clean)
-                        descriptions.add(
-                            "${VoiceSpeaker.spellOut(clean)} — найден в нескольких нарядах"
-                        )
-                    }
-                    VoiceSearchResult.NotFound -> {
+                    UnifiedSearchResult.NotFound -> {
                         descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
                     }
                 }
