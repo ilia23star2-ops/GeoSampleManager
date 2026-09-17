@@ -3,6 +3,10 @@ package com.example.geosamplemanager.ui.screens
 import androidx.compose.ui.graphics.Color
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
+import com.example.geosamplemanager.data.voice.UnifiedMatchKind
+import com.example.geosamplemanager.data.voice.UnifiedSearch
+import com.example.geosamplemanager.data.voice.UnifiedSearchResult
+import com.example.geosamplemanager.data.voice.VoiceSampleHit
 
 /**
  * Модели и вспомогательная логика экрана «Сверка и поиск».
@@ -58,27 +62,21 @@ enum class GroupKind {
 }
 
 /**
- * FIX 5.8.9e-2-fix-2: что именно совпало при поиске.
- *   • WELL   — нашли скважину (совпал wellNumber).
- *   • SAMPLE — нашли пробу (совпал sampleNumber или суффикс).
- *   • NONE   — не определено.
+ * FIX 5.8.9h-2b-i: тип совпадения переехал в data.voice как [UnifiedMatchKind].
+ * Локальный [MatchedKind] удалён — везде используется единый тип.
  *
- * Нужно, чтобы индикатор показывал то, что искал пользователь,
- * а не всегда пробу.
+ * Старое имя [MatchedKind] оставлено как typealias для совместимости,
+ * но новый код должен использовать [UnifiedMatchKind].
  */
-enum class MatchedKind {
-    NONE,
-    WELL,
-    SAMPLE
-}
+typealias MatchedKind = UnifiedMatchKind
 
 data class MatchInfo(
     val reason: AnswerReason,
     val display: String = "",
     val areaTitles: List<String> = emptyList(),
     val orderTitles: List<String> = emptyList(),
-    /** FIX 5.8.9e-2-fix-2: что совпало — скважина или проба. */
-    val matchedKind: MatchedKind = MatchedKind.NONE,
+    /** Что совпало — скважина или проба. */
+    val matchedKind: UnifiedMatchKind = UnifiedMatchKind.NONE,
     /** Номер совпавшей сущности (wellNumber или sampleNumber). */
     val matchedValue: String? = null
 ) {
@@ -254,14 +252,6 @@ fun filterByOrder(groups: List<SampleGroup>, orderTitle: String?): List<SampleGr
     return groups.filter { it.orderTitle == orderTitle }
 }
 
-private fun matchesQuery(row: SampleRow, q: String, filterMode: Boolean): Boolean {
-    val well = normalizeNumber(row.wellNumber)
-    val sample = normalizeNumber(row.sampleNumber)
-    if (well == q || sample == q) return true
-    if (filterMode && sample.startsWith(q)) return true
-    return false
-}
-
 fun filterByQuery(
     groups: List<SampleGroup>,
     query: String,
@@ -270,7 +260,11 @@ fun filterByQuery(
     val q = normalizeNumber(query)
     if (q.isBlank()) return groups
     return groups.mapNotNull { group ->
-        val filtered = group.rows.filter { row -> matchesQuery(row, q, filterMode) }
+        val filtered = group.rows.filter { row ->
+            val well = normalizeNumber(row.wellNumber)
+            val sample = normalizeNumber(row.sampleNumber)
+            well == q || sample == q || (filterMode && sample.startsWith(q))
+        }
         if (filtered.isEmpty()) null else group.copy(rows = filtered)
     }
 }
@@ -323,44 +317,34 @@ fun sortGroupsByRelevance(
 }
 
 /**
- * FIX 5.8.9e-2-fix-2: определить, что совпало при поиске.
- *
- * Приоритет: точное совпадение wellNumber → WELL. Точное совпадение
- * sampleNumber → SAMPLE. Ничего не совпало (суффикс/fuzzy) → SAMPLE
- * по умолчанию (показываем первую найденную пробу).
- *
- * @return matchedKind + оригинальное значение (wellNumber или sampleNumber).
+ * FIX 5.8.9h-2b-i: собираем [VoiceSampleHit] из группы UI — для
+ * передачи в [UnifiedSearch]. `orderId` берём из `group.id` (в UI
+ * это `orderId.toString()`).
  */
-private fun detectMatch(
-    q: String,
-    matching: List<SampleGroup>
-): Pair<MatchedKind, String?> {
-    var wellMatch: String? = null
-    var sampleMatch: String? = null
-
-    matching.forEach { g ->
-        g.rows.forEach { row ->
-            val wellDigits = normalizeNumber(row.wellNumber)
-            val sampleDigits = normalizeNumber(row.sampleNumber)
-            if (wellMatch == null && wellDigits == q) {
-                wellMatch = row.wellNumber
-            }
-            if (sampleMatch == null && sampleDigits == q) {
-                sampleMatch = row.sampleNumber
-            }
-        }
-    }
-
-    return when {
-        wellMatch != null -> MatchedKind.WELL to wellMatch
-        sampleMatch != null -> MatchedKind.SAMPLE to sampleMatch
-        else -> {
-            val firstSample = matching.firstOrNull()?.rows?.firstOrNull()?.sampleNumber
-            MatchedKind.SAMPLE to firstSample
-        }
+private fun toVoiceHits(group: SampleGroup): List<VoiceSampleHit> {
+    val orderNumber = group.orderTitle
+        .removePrefix("Наряд №")
+        .removePrefix("Наряд ")
+        .trim()
+    val orderIdLong = group.id.toLongOrNull() ?: return emptyList()
+    return group.rows.mapNotNull { row ->
+        val sid = row.id.toLongOrNull() ?: return@mapNotNull null
+        VoiceSampleHit(
+            sampleId = sid,
+            sampleNumber = row.sampleNumber,
+            wellNumber = row.wellNumber,
+            orderId = orderIdLong,
+            orderNumber = orderNumber,
+            areaTitle = group.areaTitle
+        )
     }
 }
 
+/**
+ * FIX 5.8.9h-2b-i: `analyzeMatch` использует [UnifiedSearch] — тот же
+ * алгоритм, что и ГП. Логика определения причины совпадения —
+ * прежняя, но данные приходят из [UnifiedSearchResult.Found].
+ */
 fun analyzeMatch(
     query: String, selectedArea: String?, selectedOrder: String?,
     allGroups: List<SampleGroup>
@@ -368,52 +352,52 @@ fun analyzeMatch(
     val q = normalizeNumber(query)
     if (q.isBlank()) return MatchInfo(AnswerReason.IDLE_WAITING)
 
+    val allHits = allGroups.flatMap { toVoiceHits(it) }
+    if (allHits.isEmpty()) return MatchInfo(AnswerReason.NOT_FOUND)
+
     val filterMode = selectedArea != null && selectedOrder != null
+    val result = UnifiedSearch.search(allHits, listOf(q), filterMode)
 
-    val matching = allGroups.filter { g ->
-        g.rows.any { row -> matchesQuery(row, q, filterMode) }
+    return when (result) {
+        UnifiedSearchResult.NotFound -> MatchInfo(AnswerReason.NOT_FOUND)
+        is UnifiedSearchResult.Found -> buildMatchInfo(result, selectedArea, selectedOrder)
     }
-    if (matching.isEmpty()) return MatchInfo(AnswerReason.NOT_FOUND)
+}
 
-    val (kind, value) = detectMatch(q, matching)
+private fun buildMatchInfo(
+    result: UnifiedSearchResult.Found,
+    selectedArea: String?,
+    selectedOrder: String?
+): MatchInfo {
+    val hits = result.hits
+    val orderFull = hits
+        .map { "${it.areaTitle} / Наряд №${it.orderNumber}" }
+        .distinct()
+    val areaTitles = hits.map { it.areaTitle }.distinct()
 
-    if (matching.size == 1) {
-        val g = matching.first()
-        val display = "${g.areaTitle} / ${g.orderTitle}"
-        val reason = when {
-            selectedArea != null && g.areaTitle != selectedArea ->
-                AnswerReason.FOUND_OTHER_AREA
-            selectedOrder != null && g.orderTitle != selectedOrder ->
-                AnswerReason.FOUND_OTHER_ORDER
-            else -> AnswerReason.OK_SINGLE
+    val reason: AnswerReason = when {
+        orderFull.size == 1 -> {
+            val area = hits.first().areaTitle
+            val orderNumber = hits.first().orderNumber
+            when {
+                selectedArea != null && area != selectedArea ->
+                    AnswerReason.FOUND_OTHER_AREA
+                selectedOrder != null && "Наряд №$orderNumber" != selectedOrder ->
+                    AnswerReason.FOUND_OTHER_ORDER
+                else -> AnswerReason.OK_SINGLE
+            }
         }
-        return MatchInfo(
-            reason = reason,
-            display = display,
-            areaTitles = listOf(g.areaTitle),
-            orderTitles = listOf(g.orderTitle),
-            matchedKind = kind,
-            matchedValue = value
-        )
-    }
-
-    val areaTitles = matching.map { it.areaTitle }.distinct()
-    val orderTitles = matching.map { "${it.areaTitle} / ${it.orderTitle}" }.distinct()
-    val display = orderTitles.joinToString(", ")
-
-    val reason = if (areaTitles.size > 1) {
-        AnswerReason.FOUND_MULTIPLE_AREA
-    } else {
-        AnswerReason.FOUND_MULTIPLE
+        areaTitles.size > 1 -> AnswerReason.FOUND_MULTIPLE_AREA
+        else -> AnswerReason.FOUND_MULTIPLE
     }
 
     return MatchInfo(
         reason = reason,
-        display = display,
+        display = orderFull.joinToString(", "),
         areaTitles = areaTitles,
-        orderTitles = orderTitles,
-        matchedKind = kind,
-        matchedValue = value
+        orderTitles = orderFull,
+        matchedKind = result.matchedKind,
+        matchedValue = result.matchedValue
     )
 }
 
@@ -473,28 +457,12 @@ data class QueryVariant(
     val totalCount: Int
 )
 
-/**
- * FIX 5.8.9e-2-fix-2: строка индикатора для одного запроса мультипоиска.
- *
- * Изменения против 5.8.9e-2:
- *   • Поле [sampleNumber] заменено на [answerValue] + [answerKind].
- *   • Теперь в строке показываем то, что искали: скважину или пробу.
- *
- * @property index          — номер запроса (1..5).
- * @property query          — исходный токен из поля поиска.
- * @property orderTitle     — наряд, если ответ единственный.
- * @property areaTitle      — участок, если ответ единственный.
- * @property answerKind     — WELL / SAMPLE / NONE.
- * @property answerValue    — оригинальный номер (wellNumber или sampleNumber).
- * @property isMultiple     — найдено ≥2 нарядов с этим номером.
- * @property isForeignArea  — единственный ответ — в другом участке.
- */
 data class QuickAnswer(
     val index: Int,
     val query: String,
     val orderTitle: String?,
     val areaTitle: String? = null,
-    val answerKind: MatchedKind = MatchedKind.NONE,
+    val answerKind: UnifiedMatchKind = UnifiedMatchKind.NONE,
     val answerValue: String? = null,
     val isMultiple: Boolean,
     val isForeignArea: Boolean = false

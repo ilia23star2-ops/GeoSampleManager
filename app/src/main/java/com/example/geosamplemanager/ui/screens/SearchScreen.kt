@@ -40,6 +40,7 @@ import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
+import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
@@ -83,7 +84,6 @@ fun SearchScreen(
     val context = LocalContext.current
 
     // FIX 5.8.9e-3: не даём экрану гаснуть, пока сессия ГП активна.
-    // Как только voiceStatus вернулся в Idle — снимаем флаг.
     val view = LocalView.current
     DisposableEffect(state.voiceStatus) {
         view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
@@ -1141,8 +1141,6 @@ private fun SearchRowWithIndicator(
 
     val reasonText = matchInfo.reason.detailLabel
 
-    // FIX 5.8.9e-2-fix-3: для одиночного запроса места больше —
-    // пишем «Наряд N · скв. X» / «Наряд N · проба Y» развёрнуто.
     val matchedLine: String = if (!isMulti) buildSingleAnswerLine(matchInfo) else ""
 
     val placeholder = if (hasSelection)
@@ -1206,11 +1204,8 @@ private fun SearchRowWithIndicator(
 }
 
 /**
- * FIX 5.8.9e-2-fix-3: строка ответа для одиночного запроса.
- *
- * Формат: «Наряд 7 · скв. NV1526» или «Наряд 7 · проба NV152601».
- * Пишем развёрнуто — в одиночном индикаторе места хватает.
- * Пусто, если ответа нет или он неоднозначный.
+ * FIX 5.8.9h-2b-i: тип совпадения — [UnifiedMatchKind] из data.voice.
+ * Формат строки не меняется.
  */
 private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
     val value = matchInfo.matchedValue ?: return ""
@@ -1222,9 +1217,9 @@ private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
         .removePrefix("Наряд ")
         .trim()
     val prefix = when (matchInfo.matchedKind) {
-        MatchedKind.WELL -> "скв."
-        MatchedKind.SAMPLE -> "проба"
-        MatchedKind.NONE -> return ""
+        UnifiedMatchKind.WELL -> "скв."
+        UnifiedMatchKind.SAMPLE -> "проба"
+        UnifiedMatchKind.NONE -> return ""
     }
     return if (orderNum.isBlank()) {
         "$prefix $value"
@@ -1233,17 +1228,6 @@ private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
     }
 }
 
-/**
- * FIX 5.8.9e-2-fix-2: индикатор мультипоиска.
- *
- * На каждый запрос — своя строка. Показываем то, что искал пользователь:
- *   🟢 №1  7 · 1524
- *   🟢 №2  7 · NV152601
- *   🟡 №3  Несколько
- *   🔴 №4  Не найдено
- *
- * Здесь ширина маленькая — формат короткий: <наряд> · <значение>.
- */
 @Composable
 private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -1301,11 +1285,6 @@ private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     }
 }
 
-/**
- * FIX 5.8.9e-2-fix-2: строка ответа для одного запроса мультипоиска.
- * Короткий формат: «7 · 1524» (наряд · значение).
- * Значение — то, что искал пользователь (скв. или проба).
- */
 private fun buildAnswerLine(qa: QuickAnswer): String {
     val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
     val value = qa.answerValue
