@@ -20,27 +20,33 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
+      # ============================================================
+      # 1. Указываем GitHub, какую версию Android SDK использовать.
+      #    Это исправляет ошибку "Setup Android SDK".
+      # ============================================================
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '16.0' # или 'latest', если не сработает
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       # ============================================================
-      # 1. Юнит-тесты (src/test/). Если падают — шаг красный, дальше
+      # 2. Юнит-тесты (src/test/). Если падают — шаг красный, дальше
       #    сборка не идёт.
       # ============================================================
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
       # ============================================================
-      # 2. Сборка debug APK.
+      # 3. Сборка debug APK.
       # ============================================================
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
       # ============================================================
-      # 3. Артефакты — доступны на странице запуска Actions.
+      # 4. Артефакты — доступны на странице запуска Actions.
       # ============================================================
       - name: Upload APK
         if: always()
