@@ -12,6 +12,8 @@ name: Build & Test
 #
 # FIX 5.8.9-infra-2d: ручной запуск вместо автоматического.
 # FIX 5.8.9-infra-2e: выкачка модели Vosk из релиза.
+# FIX 5.8.9-infra-2e-fix-1: mkdir -p app/src/main/assets,
+#   потому что папки нет в репозитории (модель не в Git).
 # ============================================================
 
 on:
@@ -57,8 +59,11 @@ jobs:
         run: ./gradlew testDebugUnitTest --stacktrace
 
       # ============================================================
-      # FIX 5.8.9-infra-2e: скачиваем модель Vosk из релиза models-v1
-      # и распаковываем в app/src/main/assets/.
+      # FIX 5.8.9-infra-2e-fix-1: скачиваем модель Vosk из релиза
+      # models-v1 и распаковываем в app/src/main/assets/.
+      #
+      # Папки assets в Git нет (модель не коммитится),
+      # поэтому сначала mkdir -p.
       #
       # Архив содержит папку vosk-model-small-ru-0.22/.
       # После распаковки путь: app/src/main/assets/vosk-model-small-ru-0.22/
@@ -68,6 +73,7 @@ jobs:
       - name: Download & Unpack Vosk model
         if: ${{ inputs.build_apk }}
         run: |
+          mkdir -p app/src/main/assets
           cd app/src/main/assets
           curl -L -o vosk-model.zip \
             "https://github.com/ilia23star2-ops/GeoSampleManager/releases/download/models-v1/vosk-model-small-ru-0.22.zip"
