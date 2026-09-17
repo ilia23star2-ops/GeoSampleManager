@@ -30,23 +30,32 @@ class VoiceSearchTest {
         assertEquals(1, r.level)
     }
 
+    /**
+     * FIX 5.8.9-infra-2a-fix-3: точное совпадение well_number, когда
+     * скважина одна в одном наряде — это FoundOne с isSample=false,
+     * а не FoundMany. Так работает VoiceSearch (L2: uniqueWells.size == 1).
+     */
     @Test
     fun exactWellNumber() = runBlocking {
         val r = search.search(listOf("NV1366"))
-        assertTrue(r is VoiceSearchResult.FoundMany)
-        r as VoiceSearchResult.FoundMany
-        assertEquals(2, r.hits.size)
+        assertTrue(r is VoiceSearchResult.FoundOne)
+        r as VoiceSearchResult.FoundOne
+        assertFalse(r.isSample)
         assertEquals(2, r.level)
     }
 
+    /**
+     * FIX 5.8.9-infra-2a-fix-3: нормализация нулей в VoiceSearch — это
+     * уровень 5 (L5), а не 3. Тест приведён к реальной реализации.
+     */
     @Test
-    fun normalizeZeroesLevel3() = runBlocking {
+    fun normalizeZeroesLevel5() = runBlocking {
         // В БД KPD1090031, кандидат с лишним нулём
         val r = search.search(listOf("KPD10900031"))
         assertTrue(r is VoiceSearchResult.FoundOne)
         r as VoiceSearchResult.FoundOne
         assertEquals(1L, r.hit.sampleId)
-        assertEquals(3, r.level)
+        assertEquals(5, r.level)
     }
 
     @Test
