@@ -16,14 +16,11 @@ sealed class VoiceCommand {
 
     /**
      * FIX 5.8.9g-1: отметить несколько проб подряд одной фразой.
-     * Пример: «пятая шестая седьмая» → [5, 6, 7].
-     * Порядок сохраняется — отмечаем как сказано.
      */
     data class MarkByNumbers(val ordinals: List<Int>) : VoiceCommand()
 
     /**
      * FIX 5.8.9g-1: отметить все пробы текущей скважины.
-     * Пример: «отметь все», «отметить все», «все».
      */
     data object MarkAll : VoiceCommand()
 
@@ -74,6 +71,15 @@ sealed class VoiceCommand {
 
     /** Сортировка: два и более номера подряд. */
     data class Sort(val queries: List<String>) : VoiceCommand()
+
+    /**
+     * FIX 5.8.9f-1a-fix-1: переключение режима голосом.
+     *
+     * Распознаётся из фраз:
+     *   «сортировка» / «режим сортировка» / «режим сортировки» → SORT.
+     *   «поиск» / «режим поиск» → SEARCH.
+     */
+    data class SetMode(val mode: VoiceSessionMode) : VoiceCommand()
 
     /** Распознать не удалось. */
     data object Unknown : VoiceCommand()

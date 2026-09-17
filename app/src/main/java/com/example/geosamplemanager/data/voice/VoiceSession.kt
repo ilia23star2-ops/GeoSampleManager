@@ -1,6 +1,21 @@
 package com.example.geosamplemanager.data.voice
 
 /**
+ * Режим голосовой сессии.
+ *
+ *   SEARCH — поиск со статистикой и отметками (по умолчанию).
+ *   SORT   — сортировка: только «X — наряд Y», без отметок.
+ *
+ * FIX 5.8.9f-1a-fix-1: имя изменено с VoiceMode на VoiceSessionMode —
+ * чтобы не конфликтовать с VoiceMode из VoiceSettings.kt
+ * (там режим пользователя: NOVICE / EXPERIENCED).
+ */
+enum class VoiceSessionMode {
+    SEARCH,
+    SORT
+}
+
+/**
  * Контекст голосовой сессии.
  */
 class VoiceSession {
@@ -16,15 +31,18 @@ class VoiceSession {
     var isPaused: Boolean = false
 
     /**
+     * Текущий режим. По умолчанию — SEARCH.
+     * Сбрасывается при clear() и advanceToNext().
+     */
+    var mode: VoiceSessionMode = VoiceSessionMode.SEARCH
+
+    /**
      * true — ГП только что спросил «Вес?» и ждёт ответа.
-     * Следующая фраза будет распарсена как вес, а не как поиск.
      */
     var awaitingWeight: Boolean = false
 
     /**
      * true — ГП только что ответил «Найден в нескольких нарядах».
-     * Следующая фраза обрабатывается только как «продолжить» / «стоп» / «пауза».
-     * Остальные команды игнорируются с подсказкой.
      */
     var awaitingContinue: Boolean = false
 
@@ -41,6 +59,7 @@ class VoiceSession {
         lastMarkedSampleNumber = null
         isAutoMode = false
         isPaused = false
+        mode = VoiceSessionMode.SEARCH
         awaitingWeight = false
         awaitingContinue = false
     }
@@ -51,6 +70,7 @@ class VoiceSession {
         lastMarkedRowId = null
         lastMarkedSampleNumber = null
         isAutoMode = false
+        mode = VoiceSessionMode.SEARCH
         awaitingWeight = false
         awaitingContinue = false
     }

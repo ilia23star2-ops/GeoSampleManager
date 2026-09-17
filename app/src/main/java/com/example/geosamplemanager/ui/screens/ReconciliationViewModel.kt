@@ -21,6 +21,7 @@ import com.example.geosamplemanager.data.voice.VoiceNumberParser
 import com.example.geosamplemanager.data.voice.VoicePrefixResolver
 import com.example.geosamplemanager.data.voice.VoiceSearchRepository
 import com.example.geosamplemanager.data.voice.VoiceSession
+import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.CancellationException
@@ -154,7 +155,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 loadedOrderIds.add(orderId)
             }
         } catch (e: CancellationException) {
-            // Отмена поиска — не ошибка, пробрасываем.
             throw e
         } catch (e: Exception) {
             _message.value = "Ошибка загрузки наряда: ${e.message}"
@@ -369,8 +369,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
             VoiceCommand.Help -> VoiceExecResult.Message("Открываю справку")
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
+            is VoiceCommand.SetMode -> voiceSetMode(cmd.mode)
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
+    }
+
+    /**
+     * FIX 5.8.9f-1a-fix-2: переключение режима сессии.
+     *
+     * Пока просто меняет `voiceSession.mode` и озвучивает через
+     * `Message`. Полное поведение SORT (без отметок, только
+     * «X — наряд Y») — в 5.8.9f-1b.
+     */
+    private fun voiceSetMode(mode: VoiceSessionMode): VoiceExecResult {
+        voiceSession.mode = mode
+        val label = when (mode) {
+            VoiceSessionMode.SORT -> "Сортировка"
+            VoiceSessionMode.SEARCH -> "Поиск"
+        }
+        return VoiceExecResult.Message(label)
     }
 
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
@@ -389,11 +406,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return voiceSearch(query)
     }
 
-    /**
-     * FIX 5.8.9h-2a: ГП использует UnifiedSearch — тот же алгоритм,
-     * что и UI. `filterMode = false`, потому что у ГП нет селекторов
-     * «участок/наряд» (см. VOICE.md).
-     */
     private suspend fun voiceSearch(query: String): VoiceExecResult {
         Log.i(TAG, "voiceSearch: query=«$query»")
         return try {
@@ -433,7 +445,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
 
                     if (!result.isUnique) {
-                        // Несколько уникальных (orderId, wellNumber) → FoundMany.
                         voiceSession.awaitingContinue = true
                         voiceSession.isAutoMode = false
                         withContext(Dispatchers.Main) {
@@ -709,10 +720,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * FIX 5.8.9h-2a: voiceSort тоже переведён на UnifiedSearch.
-     * `all` загружается один раз — не дёргаем БД на каждый запрос.
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false

@@ -35,6 +35,12 @@ class VoiceCommandParser(
 
             "снять последнюю", "последнюю снять" -> return VoiceCommand.ClearLast
             "снять отложенную", "снять отложенную пробу" -> return VoiceCommand.Unpostpone
+
+            // FIX 5.8.9f-1a-fix-1: переключение режима.
+            "сортировка", "режим сортировка", "режим сортировки" ->
+                return VoiceCommand.SetMode(VoiceSessionMode.SORT)
+            "поиск", "режим поиск" ->
+                return VoiceCommand.SetMode(VoiceSessionMode.SEARCH)
         }
 
         // ---- Вес ----
@@ -55,7 +61,6 @@ class VoiceCommandParser(
         }
 
         // ---- Отметить <ordinal> / <ordinal> <ordinal> ... ----
-        // FIX 5.8.9g-1: matchAll находит все порядковые подряд.
         val ordinals = VoiceOrdinals.matchAll(norm)
         when {
             ordinals.size == 1 -> return VoiceCommand.MarkOrdinal(ordinals[0])
@@ -63,10 +68,6 @@ class VoiceCommandParser(
         }
 
         // ---- Сортировка: "<X> и <Y>" ----
-        // FIX И-11: Vosk присылает словами, а не цифрами.
-        // FIX 5.8.9-infra-2a-fix-3: добавляем fallback — если часть
-        // пришла как чистые цифры (например, «1524 и 1525»), берём
-        // её как есть, не гоняя через словарный парсер.
         val sortParts = norm.split(Regex("\\s+и\\s+"))
         if (sortParts.size in 2..5) {
             val parsed = sortParts.map { part ->
@@ -84,10 +85,7 @@ class VoiceCommandParser(
     }
 
     /**
-     * Парсит свободный ответ на «Вес?»: пользователь говорит без слова
-     * «вес», просто «два с половиной» или «два пять».
-     *
-     * Возвращает вес в килограммах или null, если не разобрать.
+     * Парсит свободный ответ на «Вес?».
      */
     fun parseWeightAnswer(input: String): Double? {
         val norm = numberParser.normalize(input).trim()
