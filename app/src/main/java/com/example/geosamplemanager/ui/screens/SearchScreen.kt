@@ -1204,8 +1204,9 @@ private fun SearchRowWithIndicator(
 }
 
 /**
- * FIX 5.8.9h-2b-i: тип совпадения — [UnifiedMatchKind] из data.voice.
- * Формат строки не меняется.
+ * FIX 5.8.9h-2b-i-fix-2: явный [UnifiedMatchKind] вместо устаревшего
+ * MatchedKind. Это устраняет ошибку компилятора
+ * «Comparison of incompatible enums».
  */
 private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
     val value = matchInfo.matchedValue ?: return ""
@@ -1756,7 +1757,7 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text(
                     "• Ничего не выбрано — строгое совпадение.\n" +
                             "• Выбран только участок — строгое совпадение, участок = приоритет.\n" +
-                            "• Выбраны участок И наряд — строка ещё и фильтрует (по началу № пробы).",
+                            "• Выбраны участок И наряд — точное по всей базе + префикс в выбранном наряде.",
                     style = MaterialTheme.typography.bodySmall
                 )
 
