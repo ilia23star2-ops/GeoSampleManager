@@ -7,8 +7,11 @@ name: Build & Test
 # При запуске можно выбрать:
 #   • Run unit tests  — прогнать юнит-тесты (по умолчанию ДА).
 #   • Build Debug APK — собрать debug APK (по умолчанию НЕТ).
+#     При сборке APK модель Vosk скачивается из релиза models-v1
+#     и распаковывается в app/src/main/assets/.
 #
 # FIX 5.8.9-infra-2d: ручной запуск вместо автоматического.
+# FIX 5.8.9-infra-2e: выкачка модели Vosk из релиза.
 # ============================================================
 
 on:
@@ -52,6 +55,25 @@ jobs:
       - name: Run unit tests
         if: ${{ inputs.run_tests }}
         run: ./gradlew testDebugUnitTest --stacktrace
+
+      # ============================================================
+      # FIX 5.8.9-infra-2e: скачиваем модель Vosk из релиза models-v1
+      # и распаковываем в app/src/main/assets/.
+      #
+      # Архив содержит папку vosk-model-small-ru-0.22/.
+      # После распаковки путь: app/src/main/assets/vosk-model-small-ru-0.22/
+      #
+      # Шаг выполняется только при build_apk=true.
+      # ============================================================
+      - name: Download & Unpack Vosk model
+        if: ${{ inputs.build_apk }}
+        run: |
+          cd app/src/main/assets
+          curl -L -o vosk-model.zip \
+            "https://github.com/ilia23star2-ops/GeoSampleManager/releases/download/models-v1/vosk-model-small-ru-0.22.zip"
+          unzip -q vosk-model.zip
+          rm vosk-model.zip
+          ls -la
 
       # ============================================================
       # Сборка Debug APK — по чек-боксу «Build Debug APK».
