@@ -41,6 +41,20 @@ android {
     }
 
     /**
+     * FIX 5.8.9-infra-2a-fix-2: без этой опции JUnit-тесты, которые
+     * косвенно дергают Android-классы (Log, TextUtils и т.п.), падают
+     * с RuntimeException "Method X not mocked".
+     *
+     * С isReturnDefaultValues=true все такие методы возвращают
+     * значения по умолчанию (0, null, false), и тесты проходят.
+     */
+    testOptions {
+        unitTests {
+            returnDefaultValues = true
+        }
+    }
+
+    /**
      * Модель Vosk состоит из файлов с расширениями .mdl, .conf, .fst, .int.
      * aapt по умолчанию их сжимает, и Vosk не может прочитать.
      * Запрещаем сжатие для всех этих расширений.
