@@ -44,9 +44,6 @@ android {
      * FIX 5.8.9-infra-2a-fix-2: без этой опции JUnit-тесты, которые
      * косвенно дергают Android-классы (Log, TextUtils и т.п.), падают
      * с RuntimeException "Method X not mocked".
-     *
-     * С isReturnDefaultValues=true все такие методы возвращают
-     * значения по умолчанию (0, null, false), и тесты проходят.
      */
     testOptions {
         unitTests {
@@ -55,9 +52,8 @@ android {
     }
 
     /**
-     * Модель Vosk состоит из файлов с расширениями .mdl, .conf, .fst, .int.
-     * aapt по умолчанию их сжимает, и Vosk не может прочитать.
-     * Запрещаем сжатие для всех этих расширений.
+     * Модель Vosk — .mdl, .conf, .fst, .int.
+     * aapt не должен сжимать — иначе Vosk не читает.
      */
     aaptOptions {
         noCompress 'mdl'
@@ -83,7 +79,6 @@ dependencies {
     implementation 'androidx.activity:activity-compose:1.8.2'
     testImplementation 'junit:junit:4.13.2'
 
-    // Compose BOM
     implementation platform('androidx.compose:compose-bom:2024.02.00')
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.ui:ui-graphics'
@@ -91,20 +86,14 @@ dependencies {
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.compose.material:material-icons-extended'
 
-    // Navigation
     implementation 'androidx.navigation:navigation-compose:2.7.7'
-
-    // Lifecycle ViewModel
     implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0'
 
-    // Room
     implementation 'androidx.room:room-runtime:2.6.1'
     implementation 'androidx.room:room-ktx:2.6.1'
     ksp 'androidx.room:room-compiler:2.6.1'
 
-    // Gson — для настроек импорта
     implementation 'com.google.code.gson:gson:2.10.1'
 
-    // Vosk — офлайн-распознавание речи
     implementation 'com.alphacephei:vosk-android:0.3.47'
 }
