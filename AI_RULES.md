@@ -154,7 +154,7 @@ text
 
 Примеры:
 - `5.8.9h-2 — UnifiedSearch в UI и ГП`
-- `5.8.9-infra-2b — правила: три режима работы`
+- `5.8.9-infra-2d — CI вручную: тесты и/или APK`
 
 **Разные режимы — разный способ коммита:**
 
@@ -170,9 +170,9 @@ text
 text
 
 Пример для захода из трёх файлов:
-- `5.8.9-infra-2b/1 — AI_RULES.md`
-- `5.8.9-infra-2b/2 — README.md`
-- `5.8.9-infra-2b/3 — CONTEXT_BRIEF.md`
+- `5.8.9-infra-2d/1 — build.yml`
+- `5.8.9-infra-2d/2 — AI_RULES.md`
+- `5.8.9-infra-2d/3 — README.md`
 
 ---
 
@@ -283,8 +283,9 @@ Commit & Push в github.dev.
 PR
 Открыть PR в main.
 
-CI
-Вкладка Actions → запуск Build & Test → зелёный.
+Запуск CI (вручную)
+Actions → Build & Test → Run workflow →
+выбрать чек-боксы → Run workflow.
 
 Merge
 Кнопка Merge pull request, потом Delete branch.
@@ -307,8 +308,8 @@ text
 PR
 Compare & pull request → Create pull request.
 
-CI
-Вкладка Actions → запуск Build & Test → зелёный.
+Запуск CI (вручную)
+Actions → Build & Test → Run workflow.
 
 Merge
 Кнопка Merge pull request → Confirm merge → Delete branch.
@@ -376,6 +377,9 @@ text
 
 Для режима `github.com` — перечислить все коммиты по файлам.
 
+**Важно:** коммит в GitHub **не запускает** CI автоматически. CI
+запускается вручную (§20.9).
+
 ---
 
 ## 8. Принципы обсуждения
@@ -422,13 +426,13 @@ text
 ## 11. Шаблон ответа на заход кода
 Файлов: 3
 
-Как начать заход 5.8.9-infra-2b
-Ветка: docs/5.8.9-infra-2b-rules
+Как начать заход 5.8.9-infra-2d
+Ветка: feature/5.8.9-infra-2d-manual-ci
 От: main
-Тип: документация
-Коммит (AS / github.dev): 5.8.9-infra-2b — правила: три режима работы
-Коммиты (github.com): 5.8.9-infra-2b/1 — AI_RULES.md,
-5.8.9-infra-2b/2 — README.md, 5.8.9-infra-2b/3 — CONTEXT_BRIEF.md
+Тип: инфраструктура
+Коммит (AS / github.dev): 5.8.9-infra-2d — CI вручную: тесты и/или APK
+Коммиты (github.com): 5.8.9-infra-2d/1 — build.yml,
+5.8.9-infra-2d/2 — AI_RULES.md, 5.8.9-infra-2d/3 — README.md
 
 Если ты дома (Android Studio):
 
@@ -438,39 +442,39 @@ git checkout main
 
 git pull
 
-git checkout -b docs/5.8.9-infra-2b-rules
+git checkout -b feature/5.8.9-infra-2d-manual-ci
 
 Если ты на работе (github.dev):
 
 Открыть репозиторий → нажать ..
 
 Внизу слева кнопка main → Create new branch →
-ввести docs/5.8.9-infra-2b-rules.
+ввести feature/5.8.9-infra-2d-manual-ci.
 
 Если ты на работе (github.com):
 
 Репозиторий → main ▾ → поле ввода → Create branch.
 
-1/3. Заменить полностью — AI_RULES.md
+1/3. Заменить полностью — build.yml
 <Короткий комментарий>
 
 Заменить полностью
 
 text
-AI_RULES.md
-markdown
+.github/workflows/build.yml
+yaml
 <полный код>
 ...
 
-✅ Как проверить заход 5.8.9-infra-2b
+✅ Как проверить заход 5.8.9-infra-2d
 
 ...
 
-Заход 5.8.9-infra-2b закрыт. Файлы можно пушить:
+Заход 5.8.9-infra-2d закрыт. Файлы можно пушить:
 
 Репозиторий: https://github.com/ilia23star2-ops/GeoSampleManager
 
-Коммит: 5.8.9-infra-2b — правила: три режима работы
+Коммит: 5.8.9-infra-2d — CI вручную: тесты и/или APK
 
 text
 
@@ -512,6 +516,7 @@ text
 - [ ] Связанные документы обновлены.
 - [ ] `CONTEXT_BRIEF.md` обновлён.
 - [ ] Напоминание про репозиторий и строка коммита.
+- [ ] **Напомнить, что CI запускается вручную (§20.9).**
 - [ ] Если просил файлы — сгруппированы по папкам.
 - [ ] Если режим `github.com` — указано, как коммитить по файлам.
 
@@ -644,7 +649,7 @@ text
    (`Ctrl+Shift+F10` на тест-классе), эмулятор, реальное устройство,
    логи.
 6. **Коммит + пуш** — все файлы захода одним коммитом.
-7. **CI** — на GitHub, вкладка Actions.
+7. **CI** — на GitHub, вкладка Actions, **вручную** (§20.9).
 8. **PR + merge** — через браузер (github.com) или Android Studio.
 9. **Удалить ветку** после merge.
 
@@ -663,7 +668,7 @@ text
    захода.**
 6. **PR** — GitHub предложит баннер `Compare & pull request` или через
    вкладку Pull requests.
-7. **CI** — вкладка Actions.
+7. **CI** — вкладка Actions, **вручную** (§20.9).
 8. **Merge** — кнопка Merge pull request → Confirm merge.
 9. **Удалить ветку** — Delete branch.
 
@@ -684,7 +689,7 @@ text
     - Файл 2: ... → `<X.Y>/2 — ИмяФайла.kt`.
     - И так для каждого файла. **Коммит под каждым файлом.**
 4. **PR** — Compare & pull request → Create pull request.
-5. **CI** — вкладка Actions.
+5. **CI** — вкладка Actions, **вручную** (§20.9).
 6. **Merge** — Merge pull request → Confirm merge.
 7. **Удалить ветку** — Delete branch.
 
@@ -726,26 +731,63 @@ text
 
 После PR и merge — ветка удаляется.
 
-### 20.8. CI как вторая проверка
+### 20.8. CI — только вручную
 
-**Во всех режимах** (А, Б, В) после пуша запускается GitHub Actions:
-- **Setup Android SDK.**
-- **Run unit tests** (`./gradlew testDebugUnitTest`).
-- **Build Debug APK** (`./gradlew assembleDebug`).
-- Артефакты: `app-debug` (APK), `test-report` (HTML с результатами
-  тестов).
+**Автоматического запуска по push / PR НЕТ.** CI запускается **только
+по команде пользователя** — через вкладку Actions.
 
-**Что делать при красном CI:**
-1. Открыть вкладку Actions.
-2. Нажать на упавший запуск.
-3. Найти шаг с красным крестом.
-4. Скопировать полный текст ошибки → в чат.
-5. ИИ разбирает и даёт правку.
+**Зачем:** не тратить время на полную сборку APK, если нужны только
+тесты или вообще ничего. Контроль над ресурсами.
 
-**Merge блокируется**, пока CI красный.
+**Что делает workflow:**
+- **Run unit tests** — прогоняет `./gradlew testDebugUnitTest`.
+- **Build Debug APK** — собирает `assembleDebug`, выгружает артефакт.
+
+**Что когда выбирать:**
+
+| Ситуация | run_tests | build_apk |
+|---|---|---|
+| Быстрая проверка кода (только тесты) | ✅ | ⬜ |
+| Полная сборка APK | ✅ | ✅ |
+| Только APK (тесты уже прогонялись) | ⬜ | ✅ |
+
+**Артефакты** (доступны на странице запуска):
+- `app-debug` — APK (только если `build_apk`).
+- `test-report` — HTML-отчёт (только если `run_tests`).
 
 **Vosk-модель** не коммитится в Git. В CI она выкачивается из
-релиза GitHub (`models-v1`) отдельным шагом в `build.yml`.
+релиза GitHub (`models-v1`) отдельным шагом в `build.yml` (заход 2e).
+
+### 20.9. Как запустить CI вручную
+
+**Пошагово, из браузера:**
+
+1. Открой `https://github.com/ilia23star2-ops/GeoSampleManager`.
+2. Вкладка **Actions**.
+3. В левой колонке выбери **Build & Test**.
+4. Справа сверху — кнопка **Run workflow** (серая, с треугольником).
+5. Откроется панель:
+    - **Use workflow from** — выбери ветку (`main` или feature).
+    - **Run unit tests** — ✅ по умолчанию.
+    - **Build Debug APK** — ⬜ по умолчанию.
+6. Поставь нужные чек-боксы.
+7. Нажми зелёную **Run workflow**.
+8. Через 2–3 секунды появится запуск в списке. Жми на него — смотри
+   шаги.
+9. По окончании — **артефакты** (APK, отчёт по тестам) внизу страницы
+   запуска.
+
+**Если из `github.dev`:** открой `github.com` в новой вкладке — там те
+же шаги.
+
+**Что делать при красном CI:**
+1. Открыть упавший запуск.
+2. Нажать на шаг с красным крестом.
+3. Скопировать полный текст ошибки → в чат.
+4. ИИ разбирает и даёт правку.
+
+**Merge блокируется вручную** (по договорённости): если CI не гонялся
+или красный — не мержим.
 
 ---
 
@@ -757,8 +799,7 @@ text
 | github.dev | `X.Y — краткое описание` | 1 |
 | github.com | `X.Y/<N> — ИмяФайла` | по числу файлов |
 
-**Напоминание о коммите** — в конце ответа (см. §7.3). Для `github.com`
-— перечислить все коммиты по файлам.
+**CI не запускается от коммита.** Запуск — вручную через Actions.
 
 ---
 
