@@ -64,11 +64,15 @@ class VoiceCommandParser(
 
         // ---- Сортировка: "<X> и <Y>" ----
         // FIX И-11: Vosk присылает словами, а не цифрами.
-        // Проверяем, что каждая часть парсится в число, а не «есть ли цифры».
+        // FIX 5.8.9-infra-2a-fix-3: добавляем fallback — если часть
+        // пришла как чистые цифры (например, «1524 и 1525»), берём
+        // её как есть, не гоняя через словарный парсер.
         val sortParts = norm.split(Regex("\\s+и\\s+"))
         if (sortParts.size in 2..5) {
             val parsed = sortParts.map { part ->
-                numberParser.parse(part).primary?.takeIf { it.isNotBlank() }
+                val trimmed = part.trim()
+                numberParser.parse(trimmed).primary?.takeIf { it.isNotBlank() }
+                    ?: trimmed.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
             }
             if (parsed.all { it != null }) {
                 return VoiceCommand.Sort(parsed.filterNotNull())
