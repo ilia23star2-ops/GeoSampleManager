@@ -1,11 +1,29 @@
 name: Build & Test
 
+# ============================================================
+# CI запускается ВРУЧНУЮ: вкладка Actions → Build & Test →
+# кнопка «Run workflow». Автозапуск по push / PR отключён.
+#
+# При запуске можно выбрать:
+#   • Run unit tests  — прогнать юнит-тесты (по умолчанию ДА).
+#   • Build Debug APK — собрать debug APK (по умолчанию НЕТ).
+#
+# FIX 5.8.9-infra-2d: ручной запуск вместо автоматического.
+# ============================================================
+
 on:
-  push:
-    branches: [ "**" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Запустить юнит-тесты'
+        type: boolean
+        default: true
+        required: false
+      build_apk:
+        description: 'Собрать Debug APK'
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   build:
@@ -28,21 +46,32 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # ============================================================
+      # Юнит-тесты — по чек-боксу «Run unit tests».
+      # ============================================================
       - name: Run unit tests
+        if: ${{ inputs.run_tests }}
         run: ./gradlew testDebugUnitTest --stacktrace
 
+      # ============================================================
+      # Сборка Debug APK — по чек-боксу «Build Debug APK».
+      # ============================================================
       - name: Build Debug APK
+        if: ${{ inputs.build_apk }}
         run: ./gradlew assembleDebug --stacktrace
 
+      # ============================================================
+      # Артефакты — только если соответствующий шаг выполнялся.
+      # ============================================================
       - name: Upload APK
-        if: always()
+        if: ${{ inputs.build_apk }}
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload test report
-        if: always()
+        if: ${{ inputs.run_tests }}
         uses: actions/upload-artifact@v4
         with:
           name: test-report
