@@ -21,33 +21,23 @@ jobs:
           java-version: '17'
 
       # ============================================================
-      # 1. Указываем GitHub, какую версию Android SDK использовать.
-      #    Это исправляет ошибку "Setup Android SDK".
+      # Устанавливаем platform-tools, НЕ запрашивая удалённый
+      # пакет 'tools' (иначе sdkmanager падает).
       # ============================================================
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
         with:
-          cmdline-tools-version: '16.0' # или 'latest', если не сработает
+          packages: 'platform-tools'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      # ============================================================
-      # 2. Юнит-тесты (src/test/). Если падают — шаг красный, дальше
-      #    сборка не идёт.
-      # ============================================================
       - name: Run unit tests
         run: ./gradlew testDebugUnitTest --stacktrace
 
-      # ============================================================
-      # 3. Сборка debug APK.
-      # ============================================================
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      # ============================================================
-      # 4. Артефакты — доступны на странице запуска Actions.
-      # ============================================================
       - name: Upload APK
         if: always()
         uses: actions/upload-artifact@v4
