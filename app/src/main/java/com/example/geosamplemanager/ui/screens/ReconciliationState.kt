@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.VoiceStatus
 
 @Stable
@@ -88,30 +89,22 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     val allQueryGroupsExpanded: Boolean
         get() = _queryGroups.isNotEmpty() && _queryGroups.all { isQueryGroupExpanded(it.id) }
 
-    private val isFilterMode: Boolean
-        get() = selectedArea != null && selectedOrder != null
-
     fun filteredGroupsForQuery(qg: QueryGroup): List<SampleGroup> {
         val groupsForQ = qg.variants.mapNotNull { v ->
             _groups.firstOrNull { it.id == v.groupId }
         }
-        val byQuery = filterByQuery(groupsForQ, qg.query, isFilterMode)
+        val byQuery = filterByQuery(groupsForQ, qg.query, selectedArea, selectedOrder)
         return applyFilters(byQuery, activeFilters)
     }
 
-    /**
-     * FIX 5.8.9e-2-fix-2: определить, что нашли по запросу — скважину
-     * или пробу. Смотрим на строки без учёта активных UI-фильтров,
-     * чтобы фильтр не искажал определение.
-     */
-    private fun detectAnswerForQuery(qg: QueryGroup): Pair<MatchedKind, String?> {
-        if (qg.variants.isEmpty()) return MatchedKind.NONE to null
+    private fun detectAnswerForQuery(qg: QueryGroup): Pair<UnifiedMatchKind, String?> {
+        if (qg.variants.isEmpty()) return UnifiedMatchKind.NONE to null
         val groupsForQ = qg.variants.mapNotNull { v ->
             _groups.firstOrNull { it.id == v.groupId }
         }
-        val byQuery = filterByQuery(groupsForQ, qg.query, isFilterMode)
+        val byQuery = filterByQuery(groupsForQ, qg.query, selectedArea, selectedOrder)
         val rows = byQuery.flatMap { it.rows }
-        if (rows.isEmpty()) return MatchedKind.NONE to null
+        if (rows.isEmpty()) return UnifiedMatchKind.NONE to null
 
         val q = normalizeNumber(qg.query)
         var wellMatch: String? = null
@@ -123,9 +116,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             if (sampleMatch == null && sampleDigits == q) sampleMatch = row.sampleNumber
         }
         return when {
-            wellMatch != null -> MatchedKind.WELL to wellMatch
-            sampleMatch != null -> MatchedKind.SAMPLE to sampleMatch
-            else -> MatchedKind.SAMPLE to rows.firstOrNull()?.sampleNumber
+            wellMatch != null -> UnifiedMatchKind.WELL to wellMatch
+            sampleMatch != null -> UnifiedMatchKind.SAMPLE to sampleMatch
+            else -> UnifiedMatchKind.SAMPLE to rows.firstOrNull()?.sampleNumber
         }
     }
 
@@ -133,7 +126,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         get() = _queryGroups.mapIndexed { i, qg ->
             val unique = qg.uniqueVariant
             val (kind, value) = if (qg.isUnique) detectAnswerForQuery(qg)
-            else MatchedKind.NONE to null
+            else UnifiedMatchKind.NONE to null
             QuickAnswer(
                 index = i + 1,
                 query = qg.query,
@@ -173,7 +166,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 query.isBlank() -> emptyList()
                 else -> groups
             }
-            val byQuery = filterByQuery(base, query, isFilterMode)
+            val byQuery = filterByQuery(base, query, selectedArea, selectedOrder)
             val byStatus = applyFilters(byQuery, activeFilters)
             return sortGroupsByRelevance(byStatus, selectedArea, selectedOrder)
         }
