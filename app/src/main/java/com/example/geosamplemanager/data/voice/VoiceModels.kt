@@ -36,16 +36,8 @@ sealed class VoiceExecResult {
         val needsWeight: Boolean
     ) : VoiceExecResult()
 
-    /**
-     * FIX 5.8.9g-2: отметили несколько проб одной фразой.
-     * `sampleNumbers` — какие отметились (в порядке произнесения).
-     */
     data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
 
-    /**
-     * FIX 5.8.9g-2: отметили все пробы текущей скважины.
-     * `count` — сколько было отмечено.
-     */
     data class MarkedAll(val count: Int) : VoiceExecResult()
 
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
