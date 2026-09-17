@@ -24,7 +24,13 @@ sealed class VoiceExecResult {
         val postponed: Int = 0,
         val attentionReason: AnswerReason? = null,
         val otherAreaTitle: String? = null,
-        val otherOrderNumber: String? = null
+        val otherOrderNumber: String? = null,
+        /**
+         * FIX 5.8.9f-2a-fix-6: true — ответ в режиме сортировки.
+         * VoiceDialog не выводит статистику (всего проб / отмечено /
+         * холостых / ВК / отложено) — только скважину и наряд.
+         */
+        val isSortMode: Boolean = false
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()
@@ -43,12 +49,6 @@ sealed class VoiceExecResult {
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
     data class Message(val text: String) : VoiceExecResult()
-
-    /**
-     * FIX 5.8.9f-1b: переключение режима сессии.
-     *
-     * В VoiceDialog это играет soundOk + TTS «Сортировка» / «Поиск».
-     */
     data class ModeChanged(val mode: VoiceSessionMode) : VoiceExecResult()
 
     data object Next : VoiceExecResult()

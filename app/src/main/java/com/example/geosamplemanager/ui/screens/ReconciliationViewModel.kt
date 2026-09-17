@@ -302,9 +302,26 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         Log.i(
             TAG,
             "voiceExecute: $cmd " +
-                    "(awaitingWeight=${voiceSession.awaitingWeight}, " +
+                    "(mode=${voiceSession.mode}, " +
+                    "paused=${voiceSession.isPaused}, " +
+                    "awaitingWeight=${voiceSession.awaitingWeight}, " +
                     "awaitingContinue=${voiceSession.awaitingContinue})"
         )
+
+        if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
+
+        if (voiceSession.isPaused) {
+            return when (cmd) {
+                VoiceCommand.Resume -> {
+                    voiceSession.isPaused = false
+                    VoiceExecResult.Message("Продолжаю")
+                }
+                VoiceCommand.Pause -> VoiceExecResult.Message("Пауза")
+                else -> VoiceExecResult.Message(
+                    "Пауза. Скажите «продолжить» или «стоп»."
+                )
+            }
+        }
 
         if (voiceSession.awaitingContinue) {
             return when (cmd) {
@@ -312,12 +329,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.awaitingContinue = false
                     VoiceExecResult.Message("Продолжаю")
                 }
-                VoiceCommand.Stop -> {
-                    voiceSession.awaitingContinue = false
-                    VoiceExecResult.Stopped
-                }
                 VoiceCommand.Pause -> {
                     voiceSession.awaitingContinue = false
+                    voiceSession.isPaused = true
                     VoiceExecResult.Message("Пауза")
                 }
                 is VoiceCommand.Search -> {
@@ -343,20 +357,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 return VoiceExecResult.Message("Не понял вес. Повторите.")
             }
-            if (cmd is VoiceCommand.Undo || cmd is VoiceCommand.Stop) {
+            if (cmd is VoiceCommand.Undo) {
                 voiceSession.awaitingWeight = false
             }
         }
 
         return when (cmd) {
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
-            is VoiceCommand.MarkOrdinal -> voiceMarkOrdinal(cmd.ordinal)
-            is VoiceCommand.MarkByNumbers -> voiceMarkByNumbers(cmd.ordinals)
-            VoiceCommand.MarkAll -> voiceMarkAll()
+            is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
+            is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
+            VoiceCommand.MarkAll -> markGuard { voiceMarkAll() }
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
-            is VoiceCommand.ClearOrdinal -> voiceClearOrdinal(cmd.ordinal)
-            VoiceCommand.ClearLast -> voiceClearLast()
-            VoiceCommand.ClearAll -> voiceClearAll()
+            is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
+            VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
+            VoiceCommand.ClearAll -> markGuard { voiceClearAll() }
             VoiceCommand.Unpostpone -> voiceUnpostpone()
             VoiceCommand.Next -> voiceNext()
             VoiceCommand.Undo -> { undo(); VoiceExecResult.Undone }
@@ -374,27 +388,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.8.9f-1a-fix-2: переключение режима сессии.
-     *
-     * Пока просто меняет `voiceSession.mode` и озвучивает через
-     * `Message`. Полное поведение SORT (без отметок, только
-     * «X — наряд Y») — в 5.8.9f-1b.
-     */
-    private fun voiceSetMode(mode: VoiceSessionMode): VoiceExecResult {
-        voiceSession.mode = mode
-        val label = when (mode) {
-            VoiceSessionMode.SORT -> "Сортировка"
-            VoiceSessionMode.SEARCH -> "Поиск"
+    private inline fun markGuard(action: () -> VoiceExecResult): VoiceExecResult {
+        if (voiceSession.mode == VoiceSessionMode.SORT) {
+            return VoiceExecResult.Message("Режим сортировки — отметки недоступны.")
         }
-        return VoiceExecResult.Message(label)
+        return action()
     }
 
+    private fun voiceSetMode(mode: VoiceSessionMode): VoiceExecResult {
+        voiceSession.mode = mode
+        return VoiceExecResult.ModeChanged(mode)
+    }
+
+    /**
+     * FIX 5.8.9f-2a-fix-6: в SORT — та же логика, что и в SEARCH.
+     * Отличие только в VoiceDialog (без статистики) и markGuard
+     * (отметки запрещены).
+     */
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
         val hasSession = voiceSession.currentOrderId != null &&
                 voiceSession.currentWellNumber != null
 
-        if (hasSession) {
+        if (hasSession && voiceSession.mode == VoiceSessionMode.SEARCH) {
             val parsed = voiceParser.parse(query)
             val num = parsed.primary?.toIntOrNull()
             if (num != null && num in 1..30) {
@@ -482,7 +497,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         else -> null
                     }
 
-                    voiceSession.isAutoMode = attentionReason == null
+                    voiceSession.isAutoMode = attentionReason == null &&
+                            voiceSession.mode == VoiceSessionMode.SEARCH
                     voiceSession.awaitingWeight = false
 
                     val displayQuery: String
@@ -720,6 +736,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
+    /**
+     * Мультисортировка «1524 и 1525» — несколько номеров за раз.
+     * Тут остаётся Message со списком. Одиночный запрос идёт через
+     * voiceSearch.
+     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -754,15 +775,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
                     is UnifiedSearchResult.Found -> {
                         val hit = r.hits.first()
+                        val subject = when (r.matchedKind) {
+                            UnifiedMatchKind.WELL -> "Скважина ${hit.wellNumber}"
+                            UnifiedMatchKind.SAMPLE -> "Проба ${hit.sampleNumber}"
+                            UnifiedMatchKind.NONE -> hit.wellNumber
+                        }
                         if (r.isUnique) {
-                            descriptions.add(
-                                "${VoiceSpeaker.spellOut(clean)}, наряд ${hit.orderNumber}"
-                            )
+                            descriptions.add("$subject, ${"Наряд №${hit.orderNumber}"}")
                         } else {
                             ambiguousQueries.add(clean)
-                            descriptions.add(
-                                "${VoiceSpeaker.spellOut(clean)} — найден в нескольких нарядах"
-                            )
+                            descriptions.add("$subject — найден в нескольких нарядах")
                         }
                     }
                     UnifiedSearchResult.NotFound -> {

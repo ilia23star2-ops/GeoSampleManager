@@ -39,9 +39,11 @@ import androidx.core.content.ContextCompat
 import com.example.geosamplemanager.data.util.VoiceController
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceCallback
+import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceFeedback
+import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.delay
@@ -112,9 +114,16 @@ fun VoiceDialog(
                     try {
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
-                        resultText = describeResult(result)
+                        resultText = describeResult(result, viewModel)
                         status = "Готово"
                         viewModel.setVoiceStatus(statusFromResult(result))
+
+                        if (cmd is VoiceCommand.Stop) {
+                            Log.e(LOG_TAG, "STOP: закрываю диалог")
+                            onDismiss()
+                            return@launch
+                        }
+
                         handleFeedback(result, fb, controller, viewModel)
                     } catch (e: Exception) {
                         Log.e(LOG_TAG, "voiceExecute УПАЛ", e)
@@ -207,8 +216,10 @@ fun VoiceDialog(
 
                 Text(
                     "Команды: «первая», «снять первую», «вес два пять», " +
-                            "«следующая», «стоп», «помощь». Номера: «1524», " +
-                            "«KPD1090031». Сортировка: «1524 и 1525».",
+                            "«следующая», «стоп», «пауза», «продолжить», " +
+                            "«помощь». Номера: «1524», «KPD1090031». " +
+                            "Сортировка: «1524 и 1525». " +
+                            "Режим: «сортировка» / «поиск».",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -233,12 +244,17 @@ fun VoiceDialog(
     )
 }
 
+/**
+ * FIX 5.8.9f-2a-fix-6: если режим SORT — короткая фраза без статистики.
+ */
 private fun handleFeedback(
     result: VoiceExecResult,
     fb: VoiceFeedback,
     controller: VoiceController?,
     viewModel: ReconciliationViewModel
 ) {
+    val isSort = viewModel.voiceSession.mode == VoiceSessionMode.SORT
+
     when (result) {
         is VoiceExecResult.FoundOne -> {
             if (result.attentionReason != null) {
@@ -248,7 +264,8 @@ private fun handleFeedback(
                 val phrase = buildAttentionFoundOnePhrase(result)
                 controller?.speak(phrase)
             } else {
-                val phrase = buildFoundOnePhrase(result)
+                val phrase = if (isSort) buildFoundOneShortPhrase(result)
+                else buildFoundOnePhrase(result)
                 controller?.speak(phrase)
             }
         }
@@ -298,6 +315,15 @@ private fun handleFeedback(
             controller?.speak("Не нашёл.")
         }
 
+        is VoiceExecResult.ModeChanged -> {
+            fb.soundOk()
+            val label = when (result.mode) {
+                VoiceSessionMode.SORT -> "Сортировка."
+                VoiceSessionMode.SEARCH -> "Поиск."
+            }
+            controller?.speak(label)
+        }
+
         is VoiceExecResult.Message -> {
             if (viewModel.voiceSession.awaitingContinue) {
                 fb.soundAttention()
@@ -309,6 +335,8 @@ private fun handleFeedback(
             fb.soundOk()
             controller?.speak("Слушаю следующую скважину.")
         }
+
+        VoiceExecResult.Stopped -> {}
 
         else -> {}
     }
@@ -337,6 +365,9 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     return sb.toString()
 }
 
+/**
+ * Полная фраза (SEARCH): со статистикой.
+ */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = VoiceSpeaker.spellOut(r.query)
     val total = VoiceSpeaker.spellNumber(r.totalSamples)
@@ -368,6 +399,18 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     return sb.toString()
 }
 
+/**
+ * Короткая фраза (SORT): без статистики.
+ */
+private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
+    val spokenNumber = VoiceSpeaker.spellOut(r.query)
+    return if (r.isSample) {
+        "Проба $spokenNumber. ${r.orderTitle}."
+    } else {
+        "Скважина $spokenNumber. ${r.orderTitle}."
+    }
+}
+
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
     is VoiceExecResult.FoundOne -> {
         if (result.attentionReason != null) {
@@ -384,68 +427,94 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
         VoiceStatus.Marked("Все отмечены: ${result.count}")
     is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
     is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
+    is VoiceExecResult.ModeChanged -> VoiceStatus.Found(
+        when (result.mode) {
+            VoiceSessionMode.SORT -> "Режим: сортировка"
+            VoiceSessionMode.SEARCH -> "Режим: поиск"
+        }
+    )
     is VoiceExecResult.Message -> VoiceStatus.Found(result.text)
     VoiceExecResult.Next -> VoiceStatus.Idle
     VoiceExecResult.NotFound -> VoiceStatus.Error("Не нашёл")
+    VoiceExecResult.Stopped -> VoiceStatus.Idle
     else -> VoiceStatus.Idle
 }
 
-private fun describeResult(result: VoiceExecResult): String = when (result) {
-    is VoiceExecResult.FoundOne -> {
-        if (result.attentionReason != null) {
-            val sb = StringBuilder()
-            sb.append("Скважина ${result.query}. ")
-            when (result.attentionReason) {
-                AnswerReason.FOUND_OTHER_AREA -> {
-                    val area = result.otherAreaTitle ?: "другой"
-                    val ord = result.otherOrderNumber ?: ""
-                    sb.append("⚠ Другой участок — $area")
-                    if (ord.isNotEmpty()) sb.append(", наряд $ord")
-                    sb.append(". Выберите на экране.")
+/**
+ * FIX 5.8.9f-2a-fix-6: карточка «Результат» — в SORT без статистики.
+ */
+private fun describeResult(
+    result: VoiceExecResult,
+    viewModel: ReconciliationViewModel
+): String {
+    val isSort = viewModel.voiceSession.mode == VoiceSessionMode.SORT
+    return when (result) {
+        is VoiceExecResult.FoundOne -> {
+            if (result.attentionReason != null) {
+                val sb = StringBuilder()
+                sb.append("Скважина ${result.query}. ")
+                when (result.attentionReason) {
+                    AnswerReason.FOUND_OTHER_AREA -> {
+                        val area = result.otherAreaTitle ?: "другой"
+                        val ord = result.otherOrderNumber ?: ""
+                        sb.append("⚠ Другой участок — $area")
+                        if (ord.isNotEmpty()) sb.append(", наряд $ord")
+                        sb.append(". Выберите на экране.")
+                    }
+                    AnswerReason.FOUND_OTHER_ORDER -> {
+                        val ord = result.otherOrderNumber ?: "другой"
+                        sb.append("⚠ Другой наряд — $ord. Выберите на экране.")
+                    }
+                    else -> {}
                 }
-                AnswerReason.FOUND_OTHER_ORDER -> {
-                    val ord = result.otherOrderNumber ?: "другой"
-                    sb.append("⚠ Другой наряд — $ord. Выберите на экране.")
+                sb.toString()
+            } else if (isSort) {
+                if (result.isSample) {
+                    "Проба ${result.query} → ${result.orderTitle}."
+                } else {
+                    "Скважина ${result.query} → ${result.orderTitle}."
                 }
-                else -> {}
-            }
-            sb.toString()
-        } else if (result.isSample) {
-            val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
-            "Проба ${result.query} → ${result.orderTitle}. $label"
-        } else {
-            buildString {
-                append("Скважина ${result.query} → ${result.orderTitle}. ")
-                append("Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}")
-                val extras = mutableListOf<String>()
-                if (result.blanks > 0) extras.add("холостых ${result.blanks}")
-                if (result.weightControls > 0) extras.add("ВК ${result.weightControls}")
-                if (result.postponed > 0) extras.add("отложено ${result.postponed}")
-                if (extras.isNotEmpty()) append(". ").append(extras.joinToString(", "))
+            } else if (result.isSample) {
+                val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
+                "Проба ${result.query} → ${result.orderTitle}. $label"
+            } else {
+                buildString {
+                    append("Скважина ${result.query} → ${result.orderTitle}. ")
+                    append("Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}")
+                    val extras = mutableListOf<String>()
+                    if (result.blanks > 0) extras.add("холостых ${result.blanks}")
+                    if (result.weightControls > 0) extras.add("ВК ${result.weightControls}")
+                    if (result.postponed > 0) extras.add("отложено ${result.postponed}")
+                    if (extras.isNotEmpty()) append(". ").append(extras.joinToString(", "))
+                }
             }
         }
-    }
-    is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
-    is VoiceExecResult.Marked -> {
-        val extra = when {
-            result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
-            result.needsWeight -> " — холостая, вес?"
-            result.isWeightControl -> " — весовой контроль"
-            else -> ""
+        is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
+        is VoiceExecResult.Marked -> {
+            val extra = when {
+                result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
+                result.needsWeight -> " — холостая, вес?"
+                result.isWeightControl -> " — весовой контроль"
+                else -> ""
+            }
+            "Отмечена проба №${result.ordinal}: ${result.sampleNumber}$extra"
         }
-        "Отмечена проба №${result.ordinal}: ${result.sampleNumber}$extra"
+        is VoiceExecResult.MarkedMultiple -> {
+            "Отмечено проб: ${result.sampleNumbers.size} " +
+                    "(${result.sampleNumbers.joinToString(", ")})"
+        }
+        is VoiceExecResult.MarkedAll -> "Отмечено всех проб: ${result.count}"
+        is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг (${result.sampleNumber})"
+        is VoiceExecResult.Unmarked -> "Снято: ${result.sampleNumber}"
+        is VoiceExecResult.ModeChanged -> when (result.mode) {
+            VoiceSessionMode.SORT -> "Режим: Сортировка"
+            VoiceSessionMode.SEARCH -> "Режим: Поиск"
+        }
+        is VoiceExecResult.Message -> result.text
+        VoiceExecResult.Next -> "Следующая скважина"
+        VoiceExecResult.Undone -> "Отменено"
+        VoiceExecResult.Redone -> "Повторено"
+        VoiceExecResult.Stopped -> "Стоп"
+        VoiceExecResult.NotFound -> "Не найдено"
     }
-    is VoiceExecResult.MarkedMultiple -> {
-        "Отмечено проб: ${result.sampleNumbers.size} " +
-                "(${result.sampleNumbers.joinToString(", ")})"
-    }
-    is VoiceExecResult.MarkedAll -> "Отмечено всех проб: ${result.count}"
-    is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг (${result.sampleNumber})"
-    is VoiceExecResult.Unmarked -> "Снято: ${result.sampleNumber}"
-    is VoiceExecResult.Message -> result.text
-    VoiceExecResult.Next -> "Следующая скважина"
-    VoiceExecResult.Undone -> "Отменено"
-    VoiceExecResult.Redone -> "Повторено"
-    VoiceExecResult.Stopped -> "Стоп"
-    VoiceExecResult.NotFound -> "Не найдено"
 }
