@@ -20,12 +20,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # ============================================================
-      # Установка Android SDK. Без параметров — берём версии
-      # по умолчанию из action. Пакеты дотянет Gradle.
-      # ============================================================
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
