@@ -20,10 +20,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # ============================================================
-      # Устанавливаем platform-tools, НЕ запрашивая удалённый
-      # пакет 'tools' (иначе sdkmanager падает).
-      # ============================================================
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
