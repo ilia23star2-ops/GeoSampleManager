@@ -43,6 +43,14 @@ sealed class VoiceExecResult {
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
     data class Message(val text: String) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.9f-1b: переключение режима сессии.
+     *
+     * В VoiceDialog это играет soundOk + TTS «Сортировка» / «Поиск».
+     */
+    data class ModeChanged(val mode: VoiceSessionMode) : VoiceExecResult()
+
     data object Next : VoiceExecResult()
     data object Undone : VoiceExecResult()
     data object Redone : VoiceExecResult()
