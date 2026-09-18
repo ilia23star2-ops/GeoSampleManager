@@ -1208,8 +1208,8 @@ private fun SearchRowWithIndicator(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp))
                     }
-                    // FIX 5.8.9f-2b: чип режима SEARCH/SORT.
-                    // Тап переключает режим голосовой сессии.
+                    // FIX 5.8.9f-2b: чип режима голосовой сессии.
+                    // FIX 5.8.9f-2b-fix-1: подписи на русском («ПОИСК» / «СОРТ»).
                     VoiceModeChip(mode = voiceMode, onClick = onVoiceModeToggle)
                 }
             },
@@ -1222,9 +1222,10 @@ private fun SearchRowWithIndicator(
 
 /**
  * FIX 5.8.9f-2b: чип режима голосовой сессии.
+ * FIX 5.8.9f-2b-fix-1: подписи переведены на русский язык.
  *
- *   SEARCH — нейтральный синий (primaryContainer).
- *   SORT   — оранжевый/жёлтый (tertiaryContainer), «внимание, отметки недоступны».
+ *   ПОИСК — нейтральный синий (primaryContainer).
+ *   СОРТ  — оранжевый/жёлтый (tertiaryContainer), «внимание, отметки недоступны».
  *
  * Тап — переключение режима. См. SearchScreen.kt, вызов SearchRowWithIndicator.
  */
@@ -1249,7 +1250,7 @@ private fun VoiceModeChip(
         contentAlignment = Alignment.Center
     ) {
         Text(
-            text = if (isSort) "SORT" else "SEARCH",
+            text = if (isSort) "СОРТ" else "ПОИСК",
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             fontSize = 10.sp,
@@ -1875,8 +1876,8 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("Чип режима голосовой сессии",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 Text("Чип справа от кнопки 🎤. Показывает текущий режим ГП:\n" +
-                        "• 🔵 SEARCH — поиск со статистикой и отметками (по умолчанию).\n" +
-                        "• 🟠 SORT — сортировка: без статистики, без отметок.\n\n" +
+                        "• 🔵 ПОИСК — со статистикой и отметками (по умолчанию).\n" +
+                        "• 🟠 СОРТ — сортировка: без статистики, без отметок.\n\n" +
                         "Тап по чипу переключает режим. Голосом: «поиск» / «сортировка».",
                     style = MaterialTheme.typography.bodySmall)
             }
