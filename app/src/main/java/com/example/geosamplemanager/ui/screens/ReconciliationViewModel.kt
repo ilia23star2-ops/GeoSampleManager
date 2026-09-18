@@ -383,7 +383,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
             VoiceCommand.Help -> VoiceExecResult.Message("Открываю справку")
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
-            is VoiceCommand.SetMode -> voiceSetMode(cmd.mode)
+            is VoiceCommand.SetMode -> setVoiceMode(cmd.mode)
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
     }
@@ -395,7 +395,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return action()
     }
 
-    private fun voiceSetMode(mode: VoiceSessionMode): VoiceExecResult {
+    /**
+     * FIX 5.8.9f-2b: публичный — вызывается из UI-чипа режима
+     * (тап по чипу у кнопки 🎤 переключает SEARCH ↔ SORT).
+     */
+    fun setVoiceMode(mode: VoiceSessionMode): VoiceExecResult {
         voiceSession.mode = mode
         return VoiceExecResult.ModeChanged(mode)
     }
