@@ -487,8 +487,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentOrderTitle = "Наряд №${hit.orderNumber}"
                     voiceSession.currentAreaTitle = hit.areaTitle
                     voiceSession.currentWellNumber = newWell
-                    // FIX 5.8.9d-2a: сброс контекста пробы. Установим ниже,
-                    // если поиск нашёл именно пробу (isSample == true).
+                    // FIX 5.8.9d-2a: сброс контекста пробы.
                     voiceSession.currentSampleNumber = null
                     voiceSession.currentSampleOrdinal = null
 
@@ -522,7 +521,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             it.sampleNumber == hit.sampleNumber
                         }
                         if (sampleRow != null) {
-                            // FIX 5.8.9d-2a: сохраняем пробу в сессии для «отметь».
                             voiceSession.currentSampleNumber = sampleRow.sampleNumber
                             voiceSession.currentSampleOrdinal = sampleRow.numberInWell
                             totalSamples = 1
@@ -607,10 +605,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
-     *
-     * Сценарий: пользователь сказал «15 26 01» → нашли пробу,
-     * сохранён currentSampleNumber. Затем говорит «отметь» →
-     * отмечаем ту самую пробу, без повторного поиска.
      */
     private fun voiceMarkCurrent(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -785,8 +779,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * Мультисортировка «1524 и 1525» — несколько номеров за раз.
-     * Тут остаётся Message со списком. Одиночный запрос идёт через
-     * voiceSearch.
+     *
+     * FIX 5.8.9d-2a-fix-1: номера скважин/проб и номера нарядов
+     * оборачиваем в spellOut/spellNumber. Иначе TTS читает «NV1526»
+     * как «одна тысяча пятьсот двадцать шесть» вместо
+     * «эн вэ пятнадцать двадцать шесть».
      */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
@@ -823,12 +820,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     is UnifiedSearchResult.Found -> {
                         val hit = r.hits.first()
                         val subject = when (r.matchedKind) {
-                            UnifiedMatchKind.WELL -> "Скважина ${hit.wellNumber}"
-                            UnifiedMatchKind.SAMPLE -> "Проба ${hit.sampleNumber}"
-                            UnifiedMatchKind.NONE -> hit.wellNumber
+                            UnifiedMatchKind.WELL ->
+                                "Скважина ${VoiceSpeaker.spellOut(hit.wellNumber)}"
+                            UnifiedMatchKind.SAMPLE ->
+                                "Проба ${VoiceSpeaker.spellOut(hit.sampleNumber)}"
+                            UnifiedMatchKind.NONE ->
+                                VoiceSpeaker.spellOut(hit.wellNumber)
                         }
+                        val orderSpoken = VoiceSpeaker.spellNumber(
+                            hit.orderNumber.toIntOrNull() ?: 0
+                        )
                         if (r.isUnique) {
-                            descriptions.add("$subject, ${"Наряд №${hit.orderNumber}"}")
+                            descriptions.add("$subject, Наряд №$orderSpoken")
                         } else {
                             ambiguousQueries.add(clean)
                             descriptions.add("$subject — найден в нескольких нарядах")
