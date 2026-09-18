@@ -9,10 +9,6 @@ import androidx.compose.runtime.setValue
  *
  *   SEARCH — поиск со статистикой и отметками (по умолчанию).
  *   SORT   — сортировка: только «X — наряд Y», без отметок.
- *
- * FIX 5.8.9f-1a-fix-1: имя изменено с VoiceMode на VoiceSessionMode —
- * чтобы не конфликтовать с VoiceMode из VoiceSettings.kt
- * (там режим пользователя: NOVICE / EXPERIENCED).
  */
 enum class VoiceSessionMode {
     SEARCH,
@@ -25,6 +21,10 @@ enum class VoiceSessionMode {
  * FIX 5.8.9f-2b: поле `mode` переведено на Compose mutableStateOf.
  * Теперь чип SEARCH/SORT рядом с кнопкой 🎤 автоматически
  * перерисовывается при переключении режима — и голосом, и тапом.
+ *
+ * FIX 5.8.9d-2a: добавлены currentSampleNumber / currentSampleOrdinal —
+ * контекст «какая проба сейчас на экране». Нужен для команды «отметь»
+ * (MarkCurrent) без порядкового номера.
  */
 class VoiceSession {
 
@@ -33,6 +33,19 @@ class VoiceSession {
     var currentAreaTitle: String? = null
     var currentQuery: String? = null
     var currentWellNumber: String? = null
+
+    /**
+     * Номер пробы (sample_number), найденной последним поиском.
+     * null — последний поиск нашёл скважину, а не пробу.
+     */
+    var currentSampleNumber: String? = null
+
+    /**
+     * Порядковый номер пробы внутри скважины (numberInWell).
+     * Используется для ответа «Третья отмечена» в 5.8.9d-2b.
+     */
+    var currentSampleOrdinal: Int? = null
+
     var lastMarkedRowId: String? = null
     var lastMarkedSampleNumber: String? = null
     var isAutoMode: Boolean = false
@@ -65,6 +78,8 @@ class VoiceSession {
         currentAreaTitle = null
         currentQuery = null
         currentWellNumber = null
+        currentSampleNumber = null
+        currentSampleOrdinal = null
         lastMarkedRowId = null
         lastMarkedSampleNumber = null
         isAutoMode = false
@@ -77,6 +92,8 @@ class VoiceSession {
     fun advanceToNext() {
         currentQuery = null
         currentWellNumber = null
+        currentSampleNumber = null
+        currentSampleOrdinal = null
         lastMarkedRowId = null
         lastMarkedSampleNumber = null
         isAutoMode = false
