@@ -21,6 +21,10 @@ enum class VoiceSessionMode {
 
 /**
  * Контекст голосовой сессии.
+ *
+ * FIX 5.8.9f-2b: поле `mode` переведено на Compose mutableStateOf.
+ * Теперь чип SEARCH/SORT рядом с кнопкой 🎤 автоматически
+ * перерисовывается при переключении режима — и голосом, и тапом.
  */
 class VoiceSession {
 
@@ -38,9 +42,7 @@ class VoiceSession {
      * Текущий режим. По умолчанию — SEARCH.
      * Сбрасывается при clear() и advanceToNext().
      *
-     * FIX 5.8.9f-2b: поле теперь Compose-наблюдаемое
-     * (mutableStateOf), чтобы чип режима у кнопки 🎤
-     * перерисовывался при переключении SEARCH ↔ SORT.
+     * Compose State — чтобы UI читал значение реактивно.
      */
     var mode: VoiceSessionMode by mutableStateOf(VoiceSessionMode.SEARCH)
 
