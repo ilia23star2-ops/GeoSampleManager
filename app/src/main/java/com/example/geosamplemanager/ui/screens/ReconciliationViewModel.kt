@@ -367,6 +367,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
             VoiceCommand.MarkAll -> markGuard { voiceMarkAll() }
+            // FIX 5.8.9d-2a: отметить найденную пробу — без номера.
+            VoiceCommand.MarkCurrent -> markGuard { voiceMarkCurrent() }
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
             VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
@@ -383,7 +385,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
             VoiceCommand.Help -> VoiceExecResult.Message("Открываю справку")
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
-            is VoiceCommand.SetMode -> setVoiceMode(cmd.mode)
+            is VoiceCommand.SetMode -> voiceSetMode(cmd.mode)
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
     }
@@ -395,11 +397,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return action()
     }
 
-    /**
-     * FIX 5.8.9f-2b: публичный — вызывается из UI-чипа режима
-     * (тап по чипу у кнопки 🎤 переключает SEARCH ↔ SORT).
-     */
-    fun setVoiceMode(mode: VoiceSessionMode): VoiceExecResult {
+    private fun voiceSetMode(mode: VoiceSessionMode): VoiceExecResult {
         voiceSession.mode = mode
         return VoiceExecResult.ModeChanged(mode)
     }
@@ -489,6 +487,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentOrderTitle = "Наряд №${hit.orderNumber}"
                     voiceSession.currentAreaTitle = hit.areaTitle
                     voiceSession.currentWellNumber = newWell
+                    // FIX 5.8.9d-2a: сброс контекста пробы. Установим ниже,
+                    // если поиск нашёл именно пробу (isSample == true).
+                    voiceSession.currentSampleNumber = null
+                    voiceSession.currentSampleOrdinal = null
 
                     val selectedArea = state.selectedArea
                     val selectedOrder = state.selectedOrder
@@ -520,6 +522,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             it.sampleNumber == hit.sampleNumber
                         }
                         if (sampleRow != null) {
+                            // FIX 5.8.9d-2a: сохраняем пробу в сессии для «отметь».
+                            voiceSession.currentSampleNumber = sampleRow.sampleNumber
+                            voiceSession.currentSampleOrdinal = sampleRow.numberInWell
                             totalSamples = 1
                             foundSamples = if (sampleRow.found) 1 else 0
                             blanks = if (sampleRow.isBlank) 1 else 0
@@ -595,6 +600,44 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Marked(
             sampleNumber = row.sampleNumber,
             ordinal = ordinal,
+            isWeightControl = row.weightControl,
+            needsWeight = needsWeight
+        )
+    }
+
+    /**
+     * FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
+     *
+     * Сценарий: пользователь сказал «15 26 01» → нашли пробу,
+     * сохранён currentSampleNumber. Затем говорит «отметь» →
+     * отмечаем ту самую пробу, без повторного поиска.
+     */
+    private fun voiceMarkCurrent(): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите пробу")
+        val sampleNumber = voiceSession.currentSampleNumber
+            ?: return VoiceExecResult.Message("Сначала найдите пробу")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+        val row = group.rows.firstOrNull { it.sampleNumber == sampleNumber }
+            ?: return VoiceExecResult.Message("Проба не найдена в наряде")
+
+        if (row.found) {
+            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+            return VoiceExecResult.Message("Проба $spoken уже отмечена")
+        }
+
+        setFound(row.id, true)
+        voiceSession.lastMarkedRowId = row.id
+        voiceSession.lastMarkedSampleNumber = row.sampleNumber
+
+        val needsWeight = (row.isBlank && row.weight == null) ||
+                (row.weightControl && row.controlWeight == null)
+        if (needsWeight) voiceSession.awaitingWeight = true
+
+        return VoiceExecResult.Marked(
+            sampleNumber = row.sampleNumber,
+            ordinal = row.numberInWell,
             isWeightControl = row.weightControl,
             needsWeight = needsWeight
         )

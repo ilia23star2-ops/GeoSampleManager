@@ -24,6 +24,17 @@ sealed class VoiceCommand {
      */
     data object MarkAll : VoiceCommand()
 
+    /**
+     * FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
+     *
+     * Используется, когда после поиска конкретной пробы «15 26 01»
+     * пользователь говорит «отметь» / «отметь её» / «эту».
+     *
+     * В отличие от [MarkOrdinal], номер пробы не называется —
+     * берётся из сессии (что нашли, то и отмечаем).
+     */
+    data object MarkCurrent : VoiceCommand()
+
     /** Установить вес. */
     data class SetWeight(val value: Double) : VoiceCommand()
 
