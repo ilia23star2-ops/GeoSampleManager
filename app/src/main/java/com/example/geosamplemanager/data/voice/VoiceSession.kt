@@ -1,5 +1,9 @@
 package com.example.geosamplemanager.data.voice
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+
 /**
  * Режим голосовой сессии.
  *
@@ -33,8 +37,12 @@ class VoiceSession {
     /**
      * Текущий режим. По умолчанию — SEARCH.
      * Сбрасывается при clear() и advanceToNext().
+     *
+     * FIX 5.8.9f-2b: поле теперь Compose-наблюдаемое
+     * (mutableStateOf), чтобы чип режима у кнопки 🎤
+     * перерисовывался при переключении SEARCH ↔ SORT.
      */
-    var mode: VoiceSessionMode = VoiceSessionMode.SEARCH
+    var mode: VoiceSessionMode by mutableStateOf(VoiceSessionMode.SEARCH)
 
     /**
      * true — ГП только что спросил «Вес?» и ждёт ответа.
