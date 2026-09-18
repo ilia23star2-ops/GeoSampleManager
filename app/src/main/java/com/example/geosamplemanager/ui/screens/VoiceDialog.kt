@@ -43,6 +43,7 @@ import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceFeedback
+import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
@@ -215,10 +216,10 @@ fun VoiceDialog(
                 }
 
                 Text(
-                    "Команды: «первая», «снять первую», «вес два пять», " +
-                            "«следующая», «стоп», «пауза», «продолжить», " +
-                            "«помощь». Номера: «1524», «KPD1090031». " +
-                            "Сортировка: «1524 и 1525». " +
+                    "Команды: «первая», «отметь», «снять первую», " +
+                            "«вес два пять», «следующая», «стоп», «пауза», " +
+                            "«продолжить», «помощь». Номера: «1524», " +
+                            "«KPD1090031». Сортировка: «1524 и 1525». " +
                             "Режим: «сортировка» / «поиск».",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -246,6 +247,10 @@ fun VoiceDialog(
 
 /**
  * FIX 5.8.9f-2a-fix-6: если режим SORT — короткая фраза без статистики.
+ * FIX 5.8.9d-2b: подтверждение отметки — коротко, порядковым числом.
+ *   Было: «Проба 15 26 01 отмечена».
+ *   Стало: «Первая отмечена».
+ *   Для холостой/ВК: «Первая — холостая. Вес?».
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -272,16 +277,18 @@ private fun handleFeedback(
 
         is VoiceExecResult.Marked -> {
             fb.soundOk()
-            val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
+            // FIX 5.8.9d-2b: порядковое слово вместо номера пробы.
+            val ordWord = VoiceOrdinals.word(result.ordinal)
+            val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
-                    "Проба $spoken — весовой контроль. Вес?"
+                    "$subject — весовой контроль. Вес?"
                 result.needsWeight ->
-                    "Проба $spoken — холостая. Вес?"
+                    "$subject — холостая. Вес?"
                 result.isWeightControl ->
-                    "Проба $spoken — весовой контроль, отмечена."
+                    "$subject — весовой контроль, отмечена."
                 else ->
-                    "Проба $spoken отмечена."
+                    "$subject отмечена."
             }
             controller?.speak(phrase)
         }
@@ -290,7 +297,7 @@ private fun handleFeedback(
             fb.soundOk()
             val n = result.sampleNumbers.size
             val spoken = VoiceSpeaker.spellNumber(n)
-            controller?.speak("Отмечено $spoken проб.")
+            controller?.speak("Отмечено $spoken пробы.")
         }
 
         is VoiceExecResult.MarkedAll -> {
@@ -301,8 +308,8 @@ private fun handleFeedback(
 
         is VoiceExecResult.WeightSet -> {
             fb.soundOk()
-            val spoken = VoiceSpeaker.spellOut(result.sampleNumber)
-            controller?.speak("Вес ${result.weight} килограмма. Проба $spoken.")
+            // FIX 5.8.9d-2b: без номера пробы — короткая финальная фраза.
+            controller?.speak("Вес ${result.weight}. Проба отмечена.")
         }
 
         is VoiceExecResult.FoundMany -> {
@@ -442,6 +449,7 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
 
 /**
  * FIX 5.8.9f-2a-fix-6: карточка «Результат» — в SORT без статистики.
+ * FIX 5.8.9d-2b: для Marked — короткая форма, порядковым числом.
  */
 private fun describeResult(
     result: VoiceExecResult,
@@ -491,20 +499,24 @@ private fun describeResult(
         }
         is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
         is VoiceExecResult.Marked -> {
+            // FIX 5.8.9d-2b: порядковое слово в карточке.
+            val ordWord = VoiceOrdinals.word(result.ordinal)
+            val subject = ordWord?.replaceFirstChar { it.uppercase() }
+                ?: "Проба ${result.sampleNumber}"
             val extra = when {
                 result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
                 result.needsWeight -> " — холостая, вес?"
                 result.isWeightControl -> " — весовой контроль"
                 else -> ""
             }
-            "Отмечена проба №${result.ordinal}: ${result.sampleNumber}$extra"
+            "$subject отмечена: ${result.sampleNumber}$extra"
         }
         is VoiceExecResult.MarkedMultiple -> {
             "Отмечено проб: ${result.sampleNumbers.size} " +
                     "(${result.sampleNumbers.joinToString(", ")})"
         }
         is VoiceExecResult.MarkedAll -> "Отмечено всех проб: ${result.count}"
-        is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг (${result.sampleNumber})"
+        is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг. Проба отмечена."
         is VoiceExecResult.Unmarked -> "Снято: ${result.sampleNumber}"
         is VoiceExecResult.ModeChanged -> when (result.mode) {
             VoiceSessionMode.SORT -> "Режим: Сортировка"
