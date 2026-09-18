@@ -41,6 +41,7 @@ import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
+import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
@@ -329,7 +330,17 @@ fun SearchScreen(
                             hasSelection = state.hasSelection,
                             onSearchAction = { keyboard?.hide() },
                             onClear = { viewModel.setQuery("") },
-                            onVoiceClick = { requestMic() }
+                            onVoiceClick = { requestMic() },
+                            voiceMode = viewModel.voiceSession.mode,
+                            onVoiceModeToggle = {
+                                // FIX 5.8.9f-2b: тап по чипу переключает режим.
+                                // Поле mode — Compose State, UI перерисуется сам.
+                                viewModel.voiceSession.mode =
+                                    if (viewModel.voiceSession.mode == VoiceSessionMode.SEARCH)
+                                        VoiceSessionMode.SORT
+                                    else
+                                        VoiceSessionMode.SEARCH
+                            }
                         )
                     }
                 }
@@ -1121,7 +1132,8 @@ private fun SearchRowWithIndicator(
     query: String, onQueryChange: (String) -> Unit,
     matchInfo: MatchInfo, quickAnswers: List<QuickAnswer>,
     isMulti: Boolean, hasSelection: Boolean,
-    onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit
+    onSearchAction: () -> Unit, onClear: () -> Unit, onVoiceClick: () -> Unit,
+    voiceMode: VoiceSessionMode, onVoiceModeToggle: () -> Unit
 ) {
     val singleState = matchInfo.state
     val colors = AnswerStateColors.of(singleState)
@@ -1186,19 +1198,62 @@ private fun SearchRowWithIndicator(
             trailingIcon = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (query.isNotEmpty()) {
-                        IconButton(onClick = onClear) {
-                            Icon(Icons.Filled.Close, "Очистить")
+                        IconButton(onClick = onClear, modifier = Modifier.size(36.dp)) {
+                            Icon(Icons.Filled.Close, "Очистить",
+                                modifier = Modifier.size(20.dp))
                         }
                     }
-                    IconButton(onClick = onVoiceClick) {
+                    IconButton(onClick = onVoiceClick, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Filled.Mic, "Голос",
-                            tint = MaterialTheme.colorScheme.primary)
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp))
                     }
+                    // FIX 5.8.9f-2b: чип режима SEARCH/SORT.
+                    // Тап переключает режим голосовой сессии.
+                    VoiceModeChip(mode = voiceMode, onClick = onVoiceModeToggle)
                 }
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSearchAction() })
+        )
+    }
+}
+
+/**
+ * FIX 5.8.9f-2b: чип режима голосовой сессии.
+ *
+ *   SEARCH — нейтральный синий (primaryContainer).
+ *   SORT   — оранжевый/жёлтый (tertiaryContainer), «внимание, отметки недоступны».
+ *
+ * Тап — переключение режима. См. SearchScreen.kt, вызов SearchRowWithIndicator.
+ */
+@Composable
+private fun VoiceModeChip(
+    mode: VoiceSessionMode,
+    onClick: () -> Unit
+) {
+    val isSort = mode == VoiceSessionMode.SORT
+    val container = if (isSort) MaterialTheme.colorScheme.tertiaryContainer
+                    else MaterialTheme.colorScheme.primaryContainer
+    val content = if (isSort) MaterialTheme.colorScheme.onTertiaryContainer
+                  else MaterialTheme.colorScheme.onPrimaryContainer
+    Box(
+        modifier = Modifier
+            .padding(start = 4.dp)
+            .height(24.dp)
+            .clip(RoundedCornerShape(50))
+            .background(container)
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = if (isSort) "SORT" else "SEARCH",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+            color = content
         )
     }
 }
@@ -1814,6 +1869,15 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("При нескольких запросах справа в строке фильтров — " +
                         "переключатель. Свёрнутое состояние показывает только заголовки " +
                         "запросов, развёрнутое — ещё и заголовки нарядов с пробами.",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Чип режима голосовой сессии",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("Чип справа от кнопки 🎤. Показывает текущий режим ГП:\n" +
+                        "• 🔵 SEARCH — поиск со статистикой и отметками (по умолчанию).\n" +
+                        "• 🟠 SORT — сортировка: без статистики, без отметок.\n\n" +
+                        "Тап по чипу переключает режим. Голосом: «поиск» / «сортировка».",
                     style = MaterialTheme.typography.bodySmall)
             }
         },
