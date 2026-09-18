@@ -136,7 +136,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun ensureOrderSamplesLoaded(orderId: Long) {
         if (orderId in loadedOrderIds) return
-        val info = orderInfoById[orderId] ?: return
+        orderInfoById[orderId] ?: return
         try {
             val group = withContext(Dispatchers.IO) {
                 val samples = repo.getSamplesForOrderList(orderId)
