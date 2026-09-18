@@ -367,7 +367,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
             VoiceCommand.MarkAll -> markGuard { voiceMarkAll() }
-            // FIX 5.8.9d-2a: отметить найденную пробу — без номера.
             VoiceCommand.MarkCurrent -> markGuard { voiceMarkCurrent() }
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
@@ -402,11 +401,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.ModeChanged(mode)
     }
 
-    /**
-     * FIX 5.8.9f-2a-fix-6: в SORT — та же логика, что и в SEARCH.
-     * Отличие только в VoiceDialog (без статистики) и markGuard
-     * (отметки запрещены).
-     */
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
         val hasSession = voiceSession.currentOrderId != null &&
                 voiceSession.currentWellNumber != null
@@ -487,7 +481,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentOrderTitle = "Наряд №${hit.orderNumber}"
                     voiceSession.currentAreaTitle = hit.areaTitle
                     voiceSession.currentWellNumber = newWell
-                    // FIX 5.8.9d-2a: сброс контекста пробы.
                     voiceSession.currentSampleNumber = null
                     voiceSession.currentSampleOrdinal = null
 
@@ -603,9 +596,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
-     */
     private fun voiceMarkCurrent(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите пробу")
@@ -688,12 +678,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.MarkedAll(rows.size)
     }
 
+    /**
+     * FIX 5.8.9d-2a-fix-2: вес идёт в правильное поле.
+     *
+     *   Проба с weightControl = true → setControlWeightAndFound
+     *     (пишет в controlWeight, не стирает основной weight).
+     *   Холостая / обычная → setWeight
+     *     (пишет в weight — как и раньше).
+     *
+     * До фикса голосовой вес всегда шёл в weight, из-за чего
+     * основной вес ВК-пробы перезаписывался.
+     */
     private fun voiceSetWeight(value: Double): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
             ?: return VoiceExecResult.Message("Нет активной пробы")
         val row = state.rowById(rowId)
             ?: return VoiceExecResult.Message("Проба потеряна")
-        setWeight(rowId, value)
+
+        if (row.weightControl) {
+            setControlWeightAndFound(rowId, value)
+        } else {
+            setWeight(rowId, value)
+        }
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
@@ -777,14 +783,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * Мультисортировка «1524 и 1525» — несколько номеров за раз.
-     *
-     * FIX 5.8.9d-2a-fix-1: номера скважин/проб и номера нарядов
-     * оборачиваем в spellOut/spellNumber. Иначе TTS читает «NV1526»
-     * как «одна тысяча пятьсот двадцать шесть» вместо
-     * «эн вэ пятнадцать двадцать шесть».
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
