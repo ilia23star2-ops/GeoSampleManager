@@ -334,9 +334,9 @@ private fun toVoiceHits(group: SampleGroup): List<VoiceSampleHit> {
         .removePrefix("Наряд №")
         .removePrefix("Наряд ")
         .trim()
-    val orderIdLong = group.id.toLongOrNull() ?: return emptyList()
-    return group.rows.mapNotNull { row ->
-        val sid = row.id.toLongOrNull() ?: return@mapNotNull null
+    val orderIdLong = group.id.toLongOrNull() ?: group.id.hashCode().toLong()
+    return group.rows.map { row ->
+        val sid = row.id.toLongOrNull() ?: row.id.hashCode().toLong()
         VoiceSampleHit(
             sampleId = sid,
             sampleNumber = row.sampleNumber,
