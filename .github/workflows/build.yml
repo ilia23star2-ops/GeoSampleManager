@@ -14,6 +14,9 @@ name: Build & Test
 # FIX 5.8.9-infra-2e: выкачка модели Vosk из релиза.
 # FIX 5.8.9-infra-2e-fix-1: mkdir -p app/src/main/assets,
 #   потому что папки нет в репозитории (модель не в Git).
+# FIX 5.8.9f-2c: mv vosk-model-small-ru-0.22 → vosk-model-small-ru.
+#   VoiceModelPreparer.ASSET_DIR = "vosk-model-small-ru",
+#   а архив распаковывается в папку с суффиксом -0.22.
 # ============================================================
 
 on:
@@ -66,7 +69,9 @@ jobs:
       # поэтому сначала mkdir -p.
       #
       # Архив содержит папку vosk-model-small-ru-0.22/.
-      # После распаковки путь: app/src/main/assets/vosk-model-small-ru-0.22/
+      # FIX 5.8.9f-2c: переименовываем её в vosk-model-small-ru,
+      # потому что VoiceModelPreparer.ASSET_DIR = "vosk-model-small-ru".
+      # После распаковки путь: app/src/main/assets/vosk-model-small-ru/
       #
       # Шаг выполняется только при build_apk=true.
       # ============================================================
@@ -78,6 +83,7 @@ jobs:
           curl -L -o vosk-model.zip \
             "https://github.com/ilia23star2-ops/GeoSampleManager/releases/download/models-v1/vosk-model-small-ru-0.22.zip"
           unzip -q vosk-model.zip
+          mv vosk-model-small-ru-0.22 vosk-model-small-ru
           rm vosk-model.zip
           ls -la
 
