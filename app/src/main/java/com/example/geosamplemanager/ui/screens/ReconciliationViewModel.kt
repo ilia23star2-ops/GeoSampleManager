@@ -56,12 +56,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
-    fun clearMessage() { _message.value = null }
+
+    fun clearMessage() {
+        _message.value = null
+    }
 
     private val loadedOrderIds = mutableSetOf<Long>()
     private var orderInfoById: Map<Long, OrderInfo> = emptyMap()
     private var orderInfoByTitle: Map<String, OrderInfo> = emptyMap()
-
     private var searchJob: Job? = null
 
     companion object {
@@ -69,7 +71,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         private const val SEARCH_DEBOUNCE_MS = 500L
         private const val MAX_SEARCH_ORDERS = 20
         private const val MAX_QUERY_TOKENS = 5
-
         private const val MAX_LEFT_LIST = 10
     }
 
@@ -89,7 +90,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -101,7 +103,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSettingsRepo.save(vs.copy(showOnboarding = false))
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -145,15 +148,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     suspend fun ensureOrderSamplesLoaded(orderId: Long) {
         if (orderId in loadedOrderIds) return
         orderInfoById[orderId] ?: return
+
         try {
             val group = withContext(Dispatchers.IO) {
                 val samples = repo.getSamplesForOrderList(orderId)
                 if (samples.isEmpty()) return@withContext null
+
                 val order = repo.getAllOrders().firstOrNull { it.id == orderId }
                     ?: return@withContext null
+
                 val area = repo.getAreas().firstOrNull { it.id == order.areaId }
                 buildSampleGroup(order, area, samples)
             }
+
             if (group != null) {
                 withContext(Dispatchers.Main) {
                     state.addGroup(group)
@@ -173,6 +180,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         try {
             val allIds = withContext(Dispatchers.IO) { repo.findOrderIdsByQuery(query) }
             if (allIds.isEmpty()) return
+
             val newIds = allIds.filter { it !in loadedOrderIds }
             val toLoad = newIds.take(MAX_SEARCH_ORDERS)
             toLoad.forEach { ensureOrderSamplesLoaded(it) }
@@ -201,6 +209,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun refreshMultiQueryIfNeeded() {
         if (!state.isMultiQuery) return
         val tokens = state.queryTokens
+
         searchJob?.cancel()
         searchJob = viewModelScope.launch { buildMultiQueryGroups(tokens) }
     }
@@ -208,17 +217,22 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun setQuery(query: String) {
         state.query = query
         searchJob?.cancel()
+
         if (query.isBlank()) {
             state.queryTokens = emptyList()
             state.clearQueryGroups()
             return
         }
+
         searchJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS)
+
             val tokens = query.trim().split(Regex("\\s+"))
                 .filter { it.isNotBlank() }
                 .take(MAX_QUERY_TOKENS)
+
             state.queryTokens = tokens
+
             when (tokens.size) {
                 0 -> state.clearQueryGroups()
                 1 -> {
@@ -239,12 +253,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 val (prefix, orderIds) = withContext(Dispatchers.IO) {
                     resolveTokenToOrderIds(token, settings)
                 }
+
                 orderIds.forEach { ensureOrderSamplesLoaded(it) }
 
                 val variants = orderIds.mapNotNull { orderId ->
                     val info = orderInfoById[orderId] ?: return@mapNotNull null
                     val group = state.groupById(orderId.toString()) ?: return@mapNotNull null
                     val found = group.rows.count { it.found }
+
                     QueryVariant(
                         areaTitle = info.areaTitle,
                         orderTitle = info.orderTitle,
@@ -269,7 +285,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 )
             }
 
-            withContext(Dispatchers.Main) { state.setQueryGroups(queryGroups) }
+            withContext(Dispatchers.Main) {
+                state.setQueryGroups(queryGroups)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -284,16 +302,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val prefix = extractLatinPrefix(token)
         val number = if (prefix != null) token.removePrefix(prefix).trim() else token
         val query = number.ifEmpty { token }
+
         val allIds = repo.findOrderIdsByQuery(query)
         if (prefix == null) return null to allIds
 
         val matchingAreas = settings.areaPrefixes
             .filterValues { prefixes -> prefixes.any { it.equals(prefix, ignoreCase = true) } }
             .keys
+
         val filtered = allIds.filter { orderId ->
             val info = orderInfoById[orderId] ?: return@filter false
             info.areaTitle in matchingAreas
         }
+
         return prefix to filtered
     }
 
@@ -318,13 +339,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
 
+        // FIX 5.8.9d-3c2b1-fix-2:
+        // Команды выбора обрабатываем до паузы и awaitingContinue,
+        // чтобы ГП мог ответить «снять / отложить / пропустить».
+        when (cmd) {
+            VoiceCommand.ChoiceRemove -> return voiceChoiceRemove()
+            VoiceCommand.ChoicePostpone -> return voiceChoicePostpone()
+            VoiceCommand.ChoiceSkip -> return voiceChoiceSkip()
+            else -> Unit
+        }
+
         if (voiceSession.isPaused) {
             return when (cmd) {
                 VoiceCommand.Resume -> {
                     voiceSession.isPaused = false
                     VoiceExecResult.Message("Продолжаю")
                 }
+
                 VoiceCommand.Pause -> VoiceExecResult.Message("Пауза")
+
                 else -> VoiceExecResult.Message(
                     "Пауза. Скажите «продолжить» или «стоп»."
                 )
@@ -337,19 +370,23 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.awaitingContinue = false
                     VoiceExecResult.Message("Продолжаю")
                 }
+
                 VoiceCommand.Pause -> {
                     voiceSession.awaitingContinue = false
                     voiceSession.isPaused = true
                     VoiceExecResult.Message("Пауза")
                 }
+
                 is VoiceCommand.Search -> {
                     voiceSession.awaitingContinue = false
                     voiceSearch(cmd.query)
                 }
+
                 is VoiceCommand.Sort -> {
                     voiceSession.awaitingContinue = false
                     voiceSort(cmd.queries)
                 }
+
                 else -> VoiceExecResult.Message(
                     "Скажите «продолжить» или «стоп»."
                 )
@@ -365,11 +402,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         voiceSession.awaitingWeight = false
                         return voiceSetWeight(v.value)
                     }
+
                     is WeightValidation.Invalid -> {
                         return VoiceExecResult.Message("Не понял вес. Повторите.")
                     }
                 }
             }
+
             if (cmd is VoiceCommand.Undo) {
                 voiceSession.awaitingWeight = false
             }
@@ -377,27 +416,57 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         return when (cmd) {
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
+
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
             VoiceCommand.MarkAll -> markGuard { voiceMarkAll() }
             VoiceCommand.MarkCurrent -> markGuard { voiceMarkCurrent() }
+
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
+
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
             VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
             VoiceCommand.ClearAll -> markGuard { voiceClearAll() }
+
             VoiceCommand.Unpostpone -> voiceUnpostpone()
+
+            // FIX 5.8.9d-3c2b1-fix-2: исчерпывающая обработка новых команд.
+            VoiceCommand.ChoiceRemove -> voiceChoiceRemove()
+            VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
+            VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
+
             VoiceCommand.Next -> voiceNext()
-            VoiceCommand.Undo -> { undo(); VoiceExecResult.Undone }
-            VoiceCommand.Redo -> { redo(); VoiceExecResult.Redone }
+
+            VoiceCommand.Undo -> {
+                undo()
+                VoiceExecResult.Undone
+            }
+
+            VoiceCommand.Redo -> {
+                redo()
+                VoiceExecResult.Redone
+            }
+
             VoiceCommand.Stop -> VoiceExecResult.Stopped
-            VoiceCommand.Pause -> { voiceSession.isPaused = true; VoiceExecResult.Message("Пауза") }
-            VoiceCommand.Resume -> { voiceSession.isPaused = false; VoiceExecResult.Message("Продолжаю") }
+
+            VoiceCommand.Pause -> {
+                voiceSession.isPaused = true
+                VoiceExecResult.Message("Пауза")
+            }
+
+            VoiceCommand.Resume -> {
+                voiceSession.isPaused = false
+                VoiceExecResult.Message("Продолжаю")
+            }
+
             VoiceCommand.HowManyLeft -> voiceHowManyLeft()
             VoiceCommand.ShowPostponed -> voiceShowFilter(ResultFilter.POSTPONED, "Отложенные")
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
             VoiceCommand.Help -> VoiceExecResult.Message("Открываю справку")
+
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
             is VoiceCommand.SetMode -> voiceSetMode(cmd.mode)
+
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
     }
@@ -432,13 +501,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private suspend fun voiceSearch(query: String): VoiceExecResult {
         Log.i(TAG, "voiceSearch: query=«$query»")
+
         return try {
             val settings = withContext(Dispatchers.IO) { settingsRepo.load() }
             val voiceSettings = withContext(Dispatchers.IO) { voiceSettingsRepo.load() }
+
             val allPrefixes = settings.areaPrefixes.values.flatten().toSet()
             val prefixResolver = VoicePrefixResolver(
-                allPrefixes, voiceSettings.customPrefixPronunciations
+                allPrefixes,
+                voiceSettings.customPrefixPronunciations
             )
+
             val extraction = prefixResolver.extract(query)
             val numberText = extraction.remainder.ifEmpty { query }
 
@@ -447,11 +520,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 val clean = c.replace("|", "")
                 if (extraction.prefix != null) extraction.prefix + clean else clean
             }
+
             Log.i(TAG, "voiceSearch: candidates=$candidates")
 
             val source = VoiceSearchRepository(getApplication())
             val all = source.loadAll()
             val result = UnifiedSearch.search(all, candidates, filterMode = false)
+
             Log.i(TAG, "voiceSearch: result=$result")
 
             when (result) {
@@ -462,8 +537,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     withContext(Dispatchers.Main) {
                         setQuery(displayQuery)
                     }
+
                     VoiceExecResult.NotFound
                 }
+
                 is UnifiedSearchResult.Found -> {
                     val hit = result.hits.first()
                     val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
@@ -471,9 +548,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     if (!result.isUnique) {
                         voiceSession.awaitingContinue = true
                         voiceSession.isAutoMode = false
+
                         withContext(Dispatchers.Main) {
                             setQuery(result.matchedValue)
                         }
+
                         return VoiceExecResult.FoundMany(
                             result.matchedValue,
                             result.hits.size
@@ -484,6 +563,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     val oldOrder = voiceSession.currentOrderId
                     val newWell = hit.wellNumber
                     val newOrder = hit.orderId
+
                     if (oldOrder != null && (oldOrder != newOrder || oldWell != newWell)) {
                         voiceSession.lastMarkedRowId = null
                         voiceSession.lastMarkedSampleNumber = null
@@ -499,17 +579,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
                     val selectedArea = state.selectedArea
                     val selectedOrder = state.selectedOrder
+
                     val attentionReason: AnswerReason? = when {
                         selectedArea != null && hit.areaTitle != selectedArea ->
                             AnswerReason.FOUND_OTHER_AREA
+
                         selectedOrder != null &&
                                 "Наряд №${hit.orderNumber}" != selectedOrder ->
                             AnswerReason.FOUND_OTHER_ORDER
+
                         else -> null
                     }
 
                     voiceSession.isAutoMode = attentionReason == null &&
                             voiceSession.mode == VoiceSessionMode.SEARCH
+
                     voiceSession.awaitingWeight = false
 
                     val displayQuery: String
@@ -522,13 +606,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     if (isSample) {
                         displayQuery = result.matchedValue
                         ensureOrderSamplesLoaded(hit.orderId)
+
                         val group = state.groupById(hit.orderId.toString())
                         val sampleRow = group?.rows?.firstOrNull {
                             it.sampleNumber == hit.sampleNumber
                         }
+
                         if (sampleRow != null) {
                             voiceSession.currentSampleNumber = sampleRow.sampleNumber
                             voiceSession.currentSampleOrdinal = sampleRow.numberInWell
+
                             totalSamples = 1
                             foundSamples = if (sampleRow.found) 1 else 0
                             blanks = if (sampleRow.isBlank) 1 else 0
@@ -538,9 +625,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     } else {
                         displayQuery = result.matchedValue
                         ensureOrderSamplesLoaded(hit.orderId)
+
                         val group = state.groupById(hit.orderId.toString())
                         val wellRows = group?.rows?.filter { it.wellNumber == hit.wellNumber }
                             ?: emptyList()
+
                         totalSamples = wellRows.size
                         foundSamples = wellRows.count { it.found }
                         blanks = wellRows.count { it.isBlank }
@@ -581,10 +670,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
+
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
@@ -595,10 +687,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun voiceMarkCurrent(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите пробу")
+
         val sampleNumber = voiceSession.currentSampleNumber
             ?: return VoiceExecResult.Message("Сначала найдите пробу")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
+
         val row = group.rows.firstOrNull { it.sampleNumber == sampleNumber }
             ?: return VoiceExecResult.Message("Проба не найдена в наряде")
 
@@ -614,6 +709,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 setFound(row.id, true)
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
+
                 VoiceExecResult.Marked(
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
@@ -626,6 +722,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 setBlankWeightAndMarkFound(row.id, decision.weight)
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
+
                 VoiceExecResult.Marked(
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
@@ -638,6 +735,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
                 voiceSession.awaitingWeight = true
+
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
 
@@ -645,6 +743,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
                 voiceSession.awaitingWeight = true
+
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
 
@@ -652,6 +751,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
                 voiceSession.awaitingContinue = true
+
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
 
@@ -659,6 +759,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
                 voiceSession.awaitingContinue = true
+
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
 
@@ -671,8 +772,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun voiceMarkByNumbers(ordinals: List<Int>): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
@@ -684,10 +787,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             val row = group.rows.firstOrNull {
                 it.wellNumber == wellNumber && it.numberInWell == ord
             } ?: continue
+
             if (row.found) continue
 
             setFound(row.id, true)
             markedNumbers.add(row.sampleNumber)
+
             lastId = row.id
             lastNumber = row.sampleNumber
         }
@@ -698,30 +803,38 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (markedNumbers.isEmpty()) {
             return VoiceExecResult.Message("Пробы не найдены или уже отмечены")
         }
+
         return VoiceExecResult.MarkedMultiple(markedNumbers)
     }
 
     private fun voiceMarkAll(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
+
         val rows = group.rows.filter { it.wellNumber == wellNumber && !it.found }
         if (rows.isEmpty()) {
             return VoiceExecResult.Message("Все пробы уже отмечены")
         }
+
         rows.forEach { setFound(it.id, true) }
+
         val last = rows.last()
         voiceSession.lastMarkedRowId = last.id
         voiceSession.lastMarkedSampleNumber = last.sampleNumber
+
         return VoiceExecResult.MarkedAll(rows.size)
     }
 
     private fun voiceSetWeight(value: Double): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
             ?: return VoiceExecResult.Message("Нет активной пробы")
+
         val row = state.rowById(rowId)
             ?: return VoiceExecResult.Message("Проба потеряна")
 
@@ -730,23 +843,29 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         } else {
             setWeight(rowId, value)
         }
+
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
     private fun voiceClearOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
+
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+
         if (!row.found) {
             val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
             return VoiceExecResult.Message("Проба $spoken не отмечена")
         }
+
         setFound(row.id, false)
         return VoiceExecResult.Unmarked(row.sampleNumber)
     }
@@ -754,70 +873,180 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun voiceClearLast(): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
             ?: return VoiceExecResult.Message("Нет активной пробы")
+
         val row = state.rowById(rowId)
             ?: return VoiceExecResult.Message("Проба потеряна")
+
         if (!row.found) return VoiceExecResult.Message("Проба не отмечена")
+
         setFound(rowId, false)
+
         voiceSession.lastMarkedRowId = null
         voiceSession.lastMarkedSampleNumber = null
+
         return VoiceExecResult.Unmarked(row.sampleNumber)
     }
 
     private fun voiceClearAll(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
+
         val rows = group.rows.filter { it.wellNumber == wellNumber }
         var count = 0
+
         rows.forEach { row ->
-            if (row.found) { setFound(row.id, false); count++ }
+            if (row.found) {
+                setFound(row.id, false)
+                count++
+            }
         }
+
         return VoiceExecResult.Message("Снято отметок: $count")
     }
 
     private fun voiceUnpostpone(): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
             ?: return VoiceExecResult.Message("Нет активной пробы")
+
         val row = state.rowById(rowId)
             ?: return VoiceExecResult.Message("Проба потеряна")
+
         if (!row.postponed) return VoiceExecResult.Message("Проба не отложена")
+
         setPostponed(rowId, false)
         return VoiceExecResult.Message("Отложенность снята")
     }
 
+    // FIX 5.8.9d-3c2b1-fix-2: базовая обработка выбора для проблемных проб.
+    private fun voiceChoiceRemove(): VoiceExecResult {
+        if (!voiceSession.awaitingContinue) {
+            return VoiceExecResult.Message("Нет ожидаемого выбора")
+        }
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        return when {
+            row.found -> {
+                setFound(row.id, false)
+                finishPendingChoice()
+                VoiceExecResult.Unmarked(row.sampleNumber)
+            }
+
+            row.postponed -> {
+                setPostponed(row.id, false)
+                finishPendingChoice()
+                VoiceExecResult.Message("Отложенность снята")
+            }
+
+            else -> {
+                finishPendingChoice()
+                VoiceExecResult.Message("Проба не отмечена")
+            }
+        }
+    }
+
+    private fun voiceChoicePostpone(): VoiceExecResult {
+        if (!voiceSession.awaitingContinue) {
+            return VoiceExecResult.Message("Нет ожидаемого выбора")
+        }
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        if (row.postponed) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба уже отложена")
+        }
+
+        if (row.found) {
+            setFound(row.id, false)
+        }
+
+        setPostponed(row.id, true)
+        finishPendingChoice()
+
+        return VoiceExecResult.Message("Отложена.")
+    }
+
+    private fun voiceChoiceSkip(): VoiceExecResult {
+        if (!voiceSession.awaitingContinue) {
+            return VoiceExecResult.Message("Нет ожидаемого выбора")
+        }
+
+        finishPendingChoice()
+        return VoiceExecResult.Message("Пропущено.")
+    }
+
+    private fun finishPendingChoice() {
+        voiceSession.awaitingContinue = false
+        voiceSession.awaitingWeight = false
+        voiceSession.lastMarkedRowId = null
+        voiceSession.lastMarkedSampleNumber = null
+    }
+
     private fun voiceNext(): VoiceExecResult {
         voiceSession.advanceToNext()
+
         state.query = ""
         state.selectedArea = null
         state.selectedOrder = null
+
         return VoiceExecResult.Next
     }
 
     private fun voiceHowManyLeft(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val wellNumber = voiceSession.currentWellNumber
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
         val rows = group.rows
             .filter { it.wellNumber == wellNumber }
             .sortedBy { it.numberInWell }
-        val leftRows = rows.filter { !it.found }
 
+        val leftRows = rows.filter { !it.found }
         if (leftRows.isEmpty()) {
             return VoiceExecResult.Message("Все пробы отмечены.")
         }
 
         val ordinals = leftRows.mapNotNull { VoiceOrdinals.word(it.numberInWell) }
         val shown = ordinals.take(MAX_LEFT_LIST)
+
         val tail = if (ordinals.size > MAX_LEFT_LIST) {
             " и ещё ${ordinals.size - MAX_LEFT_LIST}"
-        } else ""
+        } else {
+            ""
+        }
+
         val list = shown.joinToString(", ") + tail
 
         return if (leftRows.size == 1) {
@@ -856,27 +1085,34 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     .map { it.replace("|", "") }
                     .filter { it.isNotBlank() }
             }
+
             Log.i(TAG, "voiceSort: q=«$clean» candidates=$candidates")
 
             if (candidates.isEmpty()) {
                 descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
                 continue
             }
+
             try {
                 when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
                     is UnifiedSearchResult.Found -> {
                         val hit = r.hits.first()
+
                         val subject = when (r.matchedKind) {
                             UnifiedMatchKind.WELL ->
                                 "Скважина ${VoiceSpeaker.spellOut(hit.wellNumber)}"
+
                             UnifiedMatchKind.SAMPLE ->
                                 "Проба ${VoiceSpeaker.spellOut(hit.sampleNumber)}"
+
                             UnifiedMatchKind.NONE ->
                                 VoiceSpeaker.spellOut(hit.wellNumber)
                         }
+
                         val orderSpoken = VoiceSpeaker.spellNumber(
                             hit.orderNumber.toIntOrNull() ?: 0
                         )
+
                         if (r.isUnique) {
                             descriptions.add("$subject, Наряд №$orderSpoken")
                         } else {
@@ -884,6 +1120,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             descriptions.add("$subject — найден в нескольких нарядах")
                         }
                     }
+
                     UnifiedSearchResult.NotFound -> {
                         descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
                     }
@@ -897,13 +1134,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         val hasAmbiguous = ambiguousQueries.isNotEmpty()
+
         val text = if (hasAmbiguous) {
             voiceSession.awaitingContinue = true
             descriptions.joinToString(". ") + ". Выберите на экране."
         } else {
             descriptions.joinToString(". ") + "."
         }
+
         Log.i(TAG, "voiceSort: text=«$text», awaitingContinue=$hasAmbiguous")
+
         return VoiceExecResult.Message(text)
     }
 
@@ -911,80 +1151,120 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun toggleFound(rowId: String) {
         state.toggleFound(rowId)
+
         val id = rowId.toLongOrNull() ?: return
         val found = rowById(rowId)?.found ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setFound(id, found) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.setFound(id, found) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setFound(rowId: String, value: Boolean) {
         state.setFound(rowId, value)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setFound(id, value) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.setFound(id, value) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setControlWeightAndFound(rowId: String, weight: Double) {
         state.setControlWeightAndFound(rowId, weight)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setControlWeight(id, weight)
                     repo.setFound(id, true)
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setControlWeight(rowId: String, weight: Double) {
         state.setControlWeight(rowId, weight)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setControlWeight(id, weight) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.setControlWeight(id, weight) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setBlankWeightAndMarkFound(rowId: String, weight: Double) {
         state.setBlankWeightAndMarkFound(rowId, weight)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setWeight(id, weight)
                     repo.setFound(id, true)
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setWeight(rowId: String, weight: Double) {
         state.setWeight(rowId, weight)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setWeight(id, weight) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.setWeight(id, weight) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
     fun setPostponed(rowId: String, value: Boolean) {
         state.setPostponed(rowId, value)
+
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setPostponed(id, value) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.setPostponed(id, value) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+            }
         }
     }
 
@@ -993,10 +1273,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (ok) {
             val id = rowId.toLongOrNull() ?: return ok
             val flag = rowById(rowId)?.weightControl ?: return ok
+
             viewModelScope.launch {
-                try { withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) } }
-                catch (e: CancellationException) { throw e }
-                catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
+                try {
+                    withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _message.value = "Ошибка: ${e.message}"
+                }
             }
         }
         return ok
@@ -1019,9 +1304,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun deleteRow(rowId: String, recalc: Boolean) {
         val id = rowId.toLongOrNull() ?: return
+
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { repo.deleteSampleWithRenumber(id, recalc) }
+                withContext(Dispatchers.IO) {
+                    repo.deleteSampleWithRenumber(id, recalc)
+                }
                 state.deleteRow(rowId, recalc)
             } catch (e: CancellationException) {
                 throw e
@@ -1094,6 +1382,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return try {
             withContext(Dispatchers.IO) {
                 val trimmed = text.trim()
+
                 if (trimmed.isEmpty()) {
                     repo.deleteNote(sampleId)
                 } else {
@@ -1106,14 +1395,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     )
                     repo.upsertNote(note)
                 }
+
                 repo.syncHasNoteAndPhoto(sampleId)
+
                 val s = repo.getSampleById(sampleId)
                 if (s != null) {
                     withContext(Dispatchers.Main) {
-                        state.updateRowFlags(sampleId.toString(), s.hasNote, s.hasPhoto)
+                        state.updateRowFlags(
+                            sampleId.toString(),
+                            s.hasNote,
+                            s.hasPhoto
+                        )
                     }
                 }
             }
+
             true
         } catch (e: CancellationException) {
             throw e
@@ -1126,17 +1422,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     suspend fun addPhoto(sampleId: Long, sourceUri: Uri): Boolean {
         return try {
             val ctx = getApplication<Application>()
+
             val path = withContext(Dispatchers.IO) {
                 PhotoStorage.compressAndSave(ctx, sourceUri)
             }
+
             if (path == null) {
                 _message.value = "Не удалось обработать фото"
                 return false
             }
+
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
             }
+
             true
         } catch (e: CancellationException) {
             throw e
@@ -1149,17 +1449,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     suspend fun addPhotoFromFile(sampleId: Long, tempFile: File): Boolean {
         return try {
             val ctx = getApplication<Application>()
+
             val path = withContext(Dispatchers.IO) {
                 PhotoStorage.compressAndSaveFromFile(ctx, tempFile)
             }
+
             if (path == null) {
                 _message.value = "Не удалось обработать фото"
                 return false
             }
+
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
             }
+
             true
         } catch (e: CancellationException) {
             throw e
@@ -1186,29 +1490,43 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private suspend fun refreshSampleFlagsInternal(sampleId: Long) {
         val s = repo.getSampleById(sampleId) ?: return
+
         withContext(Dispatchers.Main) {
-            state.updateRowFlags(sampleId.toString(), s.hasNote, s.hasPhoto)
+            state.updateRowFlags(
+                sampleId.toString(),
+                s.hasNote,
+                s.hasPhoto
+            )
         }
     }
 
     private fun persistGroup(groupId: String) {
         val group = state.groups.firstOrNull { it.id == groupId } ?: return
+
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.saveRows(group.rows) } }
-            catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
+            try {
+                withContext(Dispatchers.IO) { repo.saveRows(group.rows) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка сохранения: ${e.message}"
+            }
         }
     }
 
     private fun persistOrder(orderTitle: String) {
         val groups = state.groups.filter { it.orderTitle == orderTitle }
+
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     groups.forEach { repo.saveRows(it.rows) }
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка сохранения: ${e.message}"
+            }
         }
     }
 
@@ -1218,8 +1536,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 withContext(Dispatchers.IO) {
                     state.groups.forEach { repo.saveRows(it.rows) }
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка сохранения: ${e.message}"
+            }
         }
     }
 }
