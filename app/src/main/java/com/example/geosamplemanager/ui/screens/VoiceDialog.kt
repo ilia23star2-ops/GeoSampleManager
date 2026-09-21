@@ -49,6 +49,7 @@ import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val LOG_TAG = "VoiceDialog"
 
@@ -283,6 +284,7 @@ fun VoiceDialog(
  * FIX 5.8.9f-2a-fix-6: если режим SORT — короткая фраза без статистики.
  * FIX 5.8.9d-2b: подтверждение отметки — коротко, порядковым числом.
  * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
+ * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -335,20 +337,19 @@ private fun handleFeedback(
 
         is VoiceExecResult.MarkedMultiple -> {
             fb.soundOk()
-            val n = result.sampleNumbers.size
-            val spoken = VoiceSpeaker.spellNumber(n)
-            controller?.speak("Отмечено $spoken пробы.")
+            controller?.speak(markedSamplesPhrase(result.sampleNumbers.size))
         }
 
         is VoiceExecResult.MarkedAll -> {
             fb.soundOk()
-            val spoken = VoiceSpeaker.spellNumber(result.count)
-            controller?.speak("Отмечено $spoken проб. Все пробы скважины.")
+            val base = markedSamplesPhrase(result.count)
+            controller?.speak("$base Все пробы скважины.")
         }
 
         is VoiceExecResult.WeightSet -> {
             fb.soundOk()
-            controller?.speak("Вес ${result.weight}. Проба отмечена.")
+            val spokenWeight = VoiceSpeaker.spokenWeight(result.weight)
+            controller?.speak("Вес $spokenWeight. Проба отмечена.")
         }
 
         is VoiceExecResult.FoundMany -> {
@@ -418,11 +419,14 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 
 /**
  * Полная фраза (SEARCH): со статистикой.
+ *
+ * FIX 5.8.9i-3:
+ * - «Всего одна проба», «Всего две пробы», «Всего пять проб»;
+ * - «Отмечена одна», «Отмечено две пробы», «Отмечено пять проб»;
+ * - вес и количества звучат по-русски.
  */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = VoiceSpeaker.spellOut(r.query)
-    val total = VoiceSpeaker.spellNumber(r.totalSamples)
-    val found = VoiceSpeaker.spellNumber(r.foundSamples)
     val sb = StringBuilder()
 
     if (r.isSample) {
@@ -431,28 +435,56 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
         sb.append(stateText).append(".")
     } else {
         sb.append("Скважина $spokenNumber. ${r.orderTitle}. ")
-        sb.append("Проб $total, отмечено $found.")
+
+        val totalPhrase = if (r.totalSamples == 1) {
+            "Всего одна проба."
+        } else {
+            "Всего ${VoiceSpeaker.samples(r.totalSamples)}."
+        }
+
+        val foundPhrase = when (r.foundSamples) {
+            0 -> "Отмечено ни одной."
+            1 -> "Отмечена одна."
+            else -> "Отмечено ${VoiceSpeaker.samples(r.foundSamples)}."
+        }
+
+        sb.append(totalPhrase).append(" ").append(foundPhrase)
     }
 
     val extras = mutableListOf<String>()
 
     if (r.blanks > 0) {
-        extras.add("холостых ${VoiceSpeaker.spellNumber(r.blanks)}")
+        val blanksPhrase = if (r.blanks == 1) {
+            "Холостая одна."
+        } else {
+            "Холостых ${spokenCount(r.blanks, feminine = true)}."
+        }
+        extras.add(blanksPhrase)
     }
 
     if (r.weightControls > 0) {
-        extras.add("весовой контроль ${VoiceSpeaker.spellNumber(r.weightControls)}")
+        val vkPhrase = if (r.weightControls == 1) {
+            "Весовой контроль один."
+        } else {
+            "Весового контроля ${spokenCount(r.weightControls, feminine = false)}."
+        }
+        extras.add(vkPhrase)
     }
 
     if (r.postponed > 0) {
-        extras.add("отложено ${VoiceSpeaker.spellNumber(r.postponed)}")
+        val postponedPhrase = if (r.postponed == 1) {
+            "Отложена одна."
+        } else {
+            "Отложено ${spokenCount(r.postponed, feminine = true)}."
+        }
+        extras.add(postponedPhrase)
     }
 
     if (extras.isNotEmpty()) {
-        sb.append(". ").append(extras.joinToString(", ")).append(".")
+        sb.append(" ").append(extras.joinToString(" "))
     }
 
-    return sb.toString()
+    return sb.toString().replace(Regex(" +"), " ").trim()
 }
 
 /**
@@ -485,7 +517,7 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
     is VoiceExecResult.MarkedAll ->
         VoiceStatus.Marked("Все отмечены: ${result.count}")
 
-    is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
+    is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${formatWeightUi(result.weight)}")
     is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
 
     is VoiceExecResult.ModeChanged -> VoiceStatus.Found(
@@ -505,6 +537,7 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
 /**
  * FIX 5.8.9f-2a-fix-6: карточка «Результат» — в SORT без статистики.
  * FIX 5.8.9d-2b: для Marked — короткая форма, порядковым числом.
+ * FIX 5.8.9i-3: вес в UI — с запятой и без лишнего .0.
  */
 private fun describeResult(
     result: VoiceExecResult,
@@ -589,7 +622,7 @@ private fun describeResult(
             "Отмечено всех проб: ${result.count}"
 
         is VoiceExecResult.WeightSet ->
-            "Вес: ${result.weight} кг. Проба отмечена."
+            "Вес: ${formatWeightUi(result.weight)} кг. Проба отмечена."
 
         is VoiceExecResult.Unmarked ->
             "Снято: ${result.sampleNumber}"
@@ -605,5 +638,23 @@ private fun describeResult(
         VoiceExecResult.Redone -> "Повторено"
         VoiceExecResult.Stopped -> "Стоп"
         VoiceExecResult.NotFound -> "Не найдено"
+    }
+}
+
+private fun markedSamplesPhrase(n: Int): String = when (n) {
+    0 -> "Отмечено ни одной пробы."
+    1 -> "Отмечена одна проба."
+    else -> "Отмечено ${VoiceSpeaker.samples(n)}."
+}
+
+private fun spokenCount(n: Int, feminine: Boolean = false): String =
+    VoiceSpeaker.numberWords(n, feminine)
+
+private fun formatWeightUi(value: Double): String {
+    val rounded = (value * 100.0).roundToInt() / 100.0
+    return if (rounded % 1.0 == 0.0) {
+        rounded.toInt().toString()
+    } else {
+        rounded.toString().replace('.', ',')
     }
 }
