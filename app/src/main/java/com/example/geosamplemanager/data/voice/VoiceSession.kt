@@ -16,6 +16,29 @@ enum class VoiceSessionMode {
 }
 
 /**
+ * FIX 5.8.9d-3c2b1: тип ожидаемого выбора для проблемной пробы.
+ *
+ * ALREADY_FOUND — проба уже отмечена.
+ * POSTPONED     — проба отложена.
+ */
+enum class PendingMarkChoiceType {
+    ALREADY_FOUND,
+    POSTPONED
+}
+
+/**
+ * FIX 5.8.9d-3c2b1: контекст ожидаемого выбора.
+ *
+ * Храним ordinal и sampleNumber, чтобы рендерер и ViewModel могли
+ * построить одинаковый ответ для UI и ГП.
+ */
+data class PendingMarkChoice(
+    val type: PendingMarkChoiceType,
+    val ordinal: Int,
+    val sampleNumber: String
+)
+
+/**
  * Контекст голосовой сессии.
  *
  * FIX 5.8.9f-2b: поле `mode` переведено на Compose mutableStateOf.
@@ -25,6 +48,9 @@ enum class VoiceSessionMode {
  * FIX 5.8.9d-2a: добавлены currentSampleNumber / currentSampleOrdinal —
  * контекст «какая проба сейчас на экране». Нужен для команды «отметь»
  * (MarkCurrent) без порядкового номера.
+ *
+ * FIX 5.8.9d-3c2b1: добавлено состояние pendingMarkChoice для ситуаций,
+ * когда ГП должен спросить: «снять / отложить / пропустить?».
  */
 class VoiceSession {
 
@@ -69,8 +95,64 @@ class VoiceSession {
      */
     var awaitingContinue: Boolean = false
 
+    /**
+     * FIX 5.8.9d-3c2b1:
+     * true — ГП ждёт выбор действия для уже отмеченной / отложенной пробы.
+     *
+     * Compose State — чтобы UI/диалог мог реактивно показать подсказку.
+     */
+    var pendingMarkChoice: PendingMarkChoice? by mutableStateOf<PendingMarkChoice?>(null)
+
+    /**
+     * FIX 5.8.9d-3c2b1:
+     * Было ли сессионное ожидание выбора запущено поверх ручной паузы.
+     * Нужно, чтобы после выбора корректно восстановить isPaused.
+     */
+    private var pausedBeforePending: Boolean = false
+
     val hasContext: Boolean
         get() = currentOrderId != null && currentQuery != null
+
+    /**
+     * FIX 5.8.9d-3c2b1:
+     * Запустить ожидание выбора и автоматически поставить сессию на паузу.
+     *
+     * Пауза нужна, чтобы ГП не продолжал слушать фоновые команды,
+     * пока пользователь не ответил на уточняющий вопрос.
+     */
+    fun startPendingMarkChoice(
+        type: PendingMarkChoiceType,
+        ordinal: Int,
+        sampleNumber: String
+    ) {
+        if (pendingMarkChoice == null) {
+            pausedBeforePending = isPaused
+        }
+
+        pendingMarkChoice = PendingMarkChoice(
+            type = type,
+            ordinal = ordinal,
+            sampleNumber = sampleNumber
+        )
+
+        awaitingWeight = false
+        awaitingContinue = false
+        isPaused = true
+    }
+
+    /**
+     * FIX 5.8.9d-3c2b1:
+     * Очистить ожидание выбора и восстановить прежний флаг паузы.
+     */
+    fun clearPendingMarkChoice() {
+        if (pendingMarkChoice == null) {
+            return
+        }
+
+        pendingMarkChoice = null
+        isPaused = pausedBeforePending
+        pausedBeforePending = false
+    }
 
     fun clear() {
         currentOrderTitle = null
@@ -87,6 +169,8 @@ class VoiceSession {
         mode = VoiceSessionMode.SEARCH
         awaitingWeight = false
         awaitingContinue = false
+        pendingMarkChoice = null
+        pausedBeforePending = false
     }
 
     fun advanceToNext() {
@@ -100,5 +184,8 @@ class VoiceSession {
         mode = VoiceSessionMode.SEARCH
         awaitingWeight = false
         awaitingContinue = false
+        pendingMarkChoice = null
+        pausedBeforePending = false
+        isPaused = false
     }
 }
