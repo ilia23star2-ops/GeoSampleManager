@@ -1,74 +1,175 @@
 package com.example.geosamplemanager.data.voice
 
+import kotlin.math.roundToInt
+
 /**
- * Произношение номеров для TTS.
+ * Произношение номеров, весов и счётных фраз для TTS.
  *
- * Основная идея: длинные номера вслух диктуют **парами цифр** — так же,
- * как Vosk их слышит («15 24» → «пятнадцать двадцать четыре»).
- *
- *  • spellOut — для номеров с буквами (KPD1090031 → «ка пэ дэ 10 90 03 1»).
- *  • spellNumber — для чисел: короткие читаются как число, длинные — по парам.
+ * Основная идея:
+ * - длинные номера диктуются парами цифр: «15 24 01»;
+ * - веса произносятся по-человечески: «два и шесть», «два с половиной»;
+ * - счётные фразы используют русские склонения: «1 проба», «2 пробы», «5 проб».
  */
 object VoiceSpeaker {
 
     private val letterNames: Map<Char, String> = mapOf(
-        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
-        'F' to "эф", 'G' to "жэ", 'H' to "аш", 'I' to "и", 'J' to "йот",
-        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
-        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
-        'U' to "у", 'V' to "вэ", 'W' to "дубль-вэ", 'X' to "икс",
-        'Y' to "игрек", 'Z' to "зэт"
+        'A' to "а",
+        'B' to "бэ",
+        'C' to "цэ",
+        'D' to "дэ",
+        'E' to "е",
+        'F' to "эф",
+        'G' to "жэ",
+        'H' to "аш",
+        'I' to "и",
+        'J' to "йот",
+        'K' to "ка",
+        'L' to "эль",
+        'M' to "эм",
+        'N' to "эн",
+        'O' to "о",
+        'P' to "пэ",
+        'Q' to "ку",
+        'R' to "эр",
+        'S' to "эс",
+        'T' to "тэ",
+        'U' to "у",
+        'V' to "вэ",
+        'W' to "дубль-вэ",
+        'X' to "икс",
+        'Y' to "игрек",
+        'Z' to "зэт"
     )
 
     private val digitNames: Map<Char, String> = mapOf(
-        '0' to "ноль", '1' to "один", '2' to "два", '3' to "три",
-        '4' to "четыре", '5' to "пять", '6' to "шесть", '7' to "семь",
-        '8' to "восемь", '9' to "девять"
+        '0' to "ноль",
+        '1' to "один",
+        '2' to "два",
+        '3' to "три",
+        '4' to "четыре",
+        '5' to "пять",
+        '6' to "шесть",
+        '7' to "семь",
+        '8' to "восемь",
+        '9' to "девять"
+    )
+
+    private val unitsMasculine = arrayOf(
+        "ноль",
+        "один",
+        "два",
+        "три",
+        "четыре",
+        "пять",
+        "шесть",
+        "семь",
+        "восемь",
+        "девять"
+    )
+
+    private val unitsFeminine = arrayOf(
+        "ноль",
+        "одна",
+        "две",
+        "три",
+        "четыре",
+        "пять",
+        "шесть",
+        "семь",
+        "восемь",
+        "девять"
+    )
+
+    private val teens = arrayOf(
+        "десять",
+        "одиннадцать",
+        "двенадцать",
+        "тринадцать",
+        "четырнадцать",
+        "пятнадцать",
+        "шестнадцать",
+        "семнадцать",
+        "восемнадцать",
+        "девятнадцать"
+    )
+
+    private val tens = arrayOf(
+        "",
+        "",
+        "двадцать",
+        "тридцать",
+        "сорок",
+        "пятьдесят",
+        "шестьдесят",
+        "семьдесят",
+        "восемьдесят",
+        "девяносто"
+    )
+
+    private val hundreds = arrayOf(
+        "",
+        "сто",
+        "двести",
+        "триста",
+        "четыреста",
+        "пятьсот",
+        "шестьсот",
+        "семьсот",
+        "восемьсот",
+        "девятьсот"
     )
 
     /**
      * Произнести номер: буквы — по буквам, цифры — парами через пробел.
      *
-     * «NV1524» → «эн вэ 15 24» → TTS: «эн вэ пятнадцать двадцать четыре»
+     * «NV1524» → «эн вэ 15 24»
      * «KPD1090031» → «ка пэ дэ 10 90 03 1»
      * «1524» → «15 24»
      */
     fun spellOut(text: String): String {
         if (text.isBlank()) return text
+
         val sb = StringBuilder()
         var i = 0
+
         while (i < text.length) {
             val c = text[i]
+
             if (c.isDigit()) {
-                // Собираем все цифры подряд и разбиваем на пары.
                 var j = i
                 while (j < text.length && text[j].isDigit()) j++
+
                 val digits = text.substring(i, j)
                 sb.append(breakIntoPairs(digits))
+
                 if (j < text.length) sb.append(' ')
                 i = j
             } else {
                 val upper = c.uppercaseChar()
+
                 when {
                     upper in letterNames -> {
-                        sb.append(letterNames[upper])
+                        sb.append(letterNames.getValue(upper))
                         sb.append(' ')
                     }
+
                     c == '-' || c == ' ' -> sb.append(' ')
+
                     else -> {
                         sb.append(c)
                         sb.append(' ')
                     }
                 }
+
                 i++
             }
         }
+
         return sb.toString().trim().replace(Regex(" +"), " ")
     }
 
     /**
      * Разбить строку цифр на пары слева направо, разделяя пробелом.
-     * Если последняя группа содержит одну цифру — оставить её как есть.
      *
      * «1524» → «15 24»
      * «152401» → «15 24 01»
@@ -77,23 +178,26 @@ object VoiceSpeaker {
      */
     private fun breakIntoPairs(digits: String): String {
         if (digits.length <= 2) return digits
+
         val sb = StringBuilder()
         var i = 0
+
         while (i < digits.length) {
             val end = minOf(i + 2, digits.length)
             sb.append(digits.substring(i, end))
             i = end
+
             if (i < digits.length) sb.append(' ')
         }
+
         return sb.toString()
     }
 
     /**
      * Произнести число.
      *
-     * Короткие числа (< 10000) возвращаются как есть — TTS читает
-     * их словами («10» → «десять», «2265» → «две тысячи двести шестьдесят
-     * пять»). Длинные — по парам, как spellOut.
+     * Короткие числа возвращаются как есть — TTS читает их словами.
+     * Длинные — по парам, как [spellOut].
      */
     fun spellNumber(value: Int): String {
         return if (value in 0..9999) {
@@ -104,14 +208,17 @@ object VoiceSpeaker {
     }
 
     /**
-     * Произнести по одной цифре (старый способ).
-     * Используется как запасной вариант, если пары почему-то не подходят.
+     * Произнести по одной цифре.
+     * Запасной вариант, если пары не подходят.
      */
     fun spellByDigits(text: String): String {
         if (text.isBlank()) return text
+
         val parts = mutableListOf<String>()
+
         for (c in text) {
             val upper = c.uppercaseChar()
+
             when {
                 c.isDigit() -> digitNames[c]?.let { parts.add(it) }
                 upper in letterNames -> letterNames[upper]?.let { parts.add(it) }
@@ -119,6 +226,176 @@ object VoiceSpeaker {
                 else -> parts.add(c.toString())
             }
         }
+
         return parts.joinToString(" ")
+    }
+
+    /**
+     * Русское склонение существительного.
+     *
+     * 1 проба, 2 пробы, 5 проб.
+     */
+    fun plural(
+        n: Int,
+        one: String,
+        few: String,
+        many: String
+    ): String {
+        val abs = if (n < 0) -n else n
+        val mod10 = abs % 10
+        val mod100 = abs % 100
+
+        return when {
+            mod10 == 1 && mod100 != 11 -> one
+            mod10 in 2..4 && mod100 !in 12..14 -> few
+            else -> many
+        }
+    }
+
+    /**
+     * Счётная фраза с правильным склонением.
+     *
+     * Примеры:
+     * - samples(1) → «одна проба»
+     * - samples(2) → «две пробы»
+     * - samples(5) → «пять проб»
+     * - orders(1) → «один наряд»
+     */
+    fun countWithNoun(
+        n: Int,
+        one: String,
+        few: String,
+        many: String,
+        feminine: Boolean = false
+    ): String {
+        val abs = if (n < 0) -n else n
+        val form = plural(abs, one, few, many)
+        val lastDigit = abs % 10
+        val lastTwo = abs % 100
+        val useFeminine = feminine && lastDigit == 1 && lastTwo != 11
+
+        val words = numberWords(abs, useFeminine)
+        return "$words $form"
+    }
+
+    fun samples(n: Int): String =
+        countWithNoun(n, "проба", "пробы", "проб", feminine = true)
+
+    fun wells(n: Int): String =
+        countWithNoun(n, "скважина", "скважины", "скважин", feminine = true)
+
+    fun orders(n: Int): String =
+        countWithNoun(n, "наряд", "наряда", "нарядов", feminine = false)
+
+    fun records(n: Int): String =
+        countWithNoun(n, "запись", "записи", "записей", feminine = true)
+
+    fun errors(n: Int): String =
+        countWithNoun(n, "ошибка", "ошибки", "ошибок", feminine = true)
+
+    /**
+     * Число словами для небольших значений.
+     *
+     * Для значений >= 1000 возвращает цифровую строку — TTS сам прочитает.
+     */
+    fun numberWords(
+        value: Int,
+        feminineLast: Boolean = false
+    ): String {
+        if (value < 0) {
+            return "минус " + numberWords(-value, feminineLast)
+        }
+
+        if (value == 0) return "ноль"
+        if (value >= 1000) return value.toString()
+
+        val parts = mutableListOf<String>()
+
+        val h = value / 100
+        val rem = value % 100
+
+        if (h > 0) {
+            parts += hundreds[h]
+        }
+
+        if (rem > 0) {
+            when {
+                rem < 10 -> {
+                    parts += if (feminineLast) unitsFeminine[rem] else unitsMasculine[rem]
+                }
+
+                rem < 20 -> {
+                    parts += teens[rem - 10]
+                }
+
+                else -> {
+                    val t = rem / 10
+                    val u = rem % 10
+
+                    parts += tens[t]
+
+                    if (u > 0) {
+                        parts += if (feminineLast) unitsFeminine[u] else unitsMasculine[u]
+                    }
+                }
+            }
+        }
+
+        return parts.joinToString(" ")
+    }
+
+    /**
+     * Произнести вес по-человечески.
+     *
+     * Примеры:
+     * - 2.0 → «два»
+     * - 2.6 → «два и шесть»
+     * - 2.60 → «два и шесть»
+     * - 2.06 → «два и ноль шесть»
+     * - 2.5 → «два с половиной»
+     * - 1.5 → «полтора»
+     * - 2.25 → «два с четвертью»
+     * - 2.68 → «два и шестьдесят восемь»
+     * - 0.6 → «ноль и шесть»
+     * - 0.06 → «ноль и ноль шесть»
+     *
+     * Округление до сотых выполняется молча.
+     */
+    fun spokenWeight(value: Double): String {
+        if (!value.isFinite()) return "не понял вес"
+
+        val cents = (value * 100.0).roundToInt()
+
+        if (cents <= 0) return "ноль"
+
+        val intPart = cents / 100
+        val frac = cents % 100
+
+        if (frac == 0) {
+            return numberWords(intPart)
+        }
+
+        if (intPart == 1 && frac == 50) {
+            return "полтора"
+        }
+
+        if (frac == 50) {
+            return "${numberWords(intPart)} с половиной"
+        }
+
+        if (frac == 25) {
+            return "${numberWords(intPart)} с четвертью"
+        }
+
+        if (frac % 10 == 0) {
+            val tenths = frac / 10
+            return "${numberWords(intPart)} и ${unitsMasculine[tenths]}"
+        }
+
+        if (frac < 10) {
+            return "${numberWords(intPart)} и ноль ${unitsMasculine[frac]}"
+        }
+
+        return "${numberWords(intPart)} и ${numberWords(frac)}"
     }
 }
