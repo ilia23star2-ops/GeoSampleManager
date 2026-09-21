@@ -16,6 +16,7 @@ import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.MarkDecisionVoiceRenderer
+import com.example.geosamplemanager.data.voice.PendingMarkChoiceType
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.UnifiedSearch
 import com.example.geosamplemanager.data.voice.UnifiedSearchResult
@@ -378,10 +379,31 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     "(mode=${voiceSession.mode}, " +
                     "paused=${voiceSession.isPaused}, " +
                     "awaitingWeight=${voiceSession.awaitingWeight}, " +
-                    "awaitingContinue=${voiceSession.awaitingContinue})"
+                    "awaitingContinue=${voiceSession.awaitingContinue}, " +
+                    "pendingChoice=${voiceSession.pendingMarkChoice != null})"
         )
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
+
+        // FIX 5.8.9d-3c2b2 / 5.8.6-3-fix-1:
+        // Команды выбора обрабатываем до паузы и других состояний.
+        when (cmd) {
+            VoiceCommand.ChoiceRemove -> return voiceChoiceRemove()
+            VoiceCommand.ChoicePostpone -> return voiceChoicePostpone()
+            VoiceCommand.ChoiceSkip -> return voiceChoiceSkip()
+            else -> Unit
+        }
+
+        // Если ГП ждёт выбор «отложить», команда «отметить» означает
+        // «снять отложенность и отметить».
+        if (cmd is VoiceCommand.MarkCurrent && voiceSession.pendingMarkChoice != null) {
+            return voiceChoiceMarkCurrent()
+        }
+
+        // Любые другие команды во время выбора — переспрос.
+        if (voiceSession.pendingMarkChoice != null) {
+            return handlePendingChoiceFallback(cmd)
+        }
 
         if (voiceSession.isPaused) {
             return when (cmd) {
@@ -455,7 +477,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (cmd is VoiceCommand.Undo) {
                 voiceSession.awaitingWeight = false
+                return VoiceExecResult.Undone
             }
+
+            return VoiceExecResult.Message("Сначала скажите вес или «отмена».")
         }
 
         return when (cmd) {
@@ -473,6 +498,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ClearAll -> markGuard { voiceClearAll() }
 
             VoiceCommand.Unpostpone -> voiceUnpostpone()
+
+            // FIX 5.8.6-3-fix-1:
+            // Исчерпывающая обработка команд выбора.
+            VoiceCommand.ChoiceRemove -> voiceChoiceRemove()
+            VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
+            VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
 
             VoiceCommand.Next -> voiceNext()
 
@@ -803,7 +834,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is MarkDecision.AlreadyFound -> {
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
-                voiceSession.awaitingContinue = true
+
+                // FIX 5.8.9d-3c2b2:
+                // Уже отмеченная проба — отдельное состояние выбора.
+                voiceSession.startPendingMarkChoice(
+                    type = PendingMarkChoiceType.ALREADY_FOUND,
+                    ordinal = decision.ordinal,
+                    sampleNumber = decision.sampleNumber
+                )
 
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
@@ -811,7 +849,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is MarkDecision.Postponed -> {
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
-                voiceSession.awaitingContinue = true
+
+                // FIX 5.8.9d-3c2b2:
+                // Отложенная проба — отдельное состояние выбора.
+                voiceSession.startPendingMarkChoice(
+                    type = PendingMarkChoiceType.POSTPONED,
+                    ordinal = decision.ordinal,
+                    sampleNumber = decision.sampleNumber
+                )
 
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
@@ -975,6 +1020,157 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         setPostponed(rowId, false)
         return VoiceExecResult.Message("Отложенность снята")
+    }
+
+    // FIX 5.8.9d-3c2b2 / 5.8.6-3-fix-1: обработка выбора для проблемной пробы.
+    private fun voiceChoiceRemove(): VoiceExecResult {
+        val pending = voiceSession.pendingMarkChoice
+            ?: return VoiceExecResult.Message("Нет ожидаемого выбора")
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        return when (pending.type) {
+            PendingMarkChoiceType.ALREADY_FOUND -> {
+                if (!row.found) {
+                    finishPendingChoice()
+                    return VoiceExecResult.Message("Проба не отмечена")
+                }
+
+                setFound(row.id, false)
+                finishPendingChoice()
+                VoiceExecResult.Unmarked(row.sampleNumber)
+            }
+
+            PendingMarkChoiceType.POSTPONED -> {
+                if (!row.postponed) {
+                    finishPendingChoice()
+                    return VoiceExecResult.Message("Проба не отложена")
+                }
+
+                setPostponed(row.id, false)
+                finishPendingChoice()
+                VoiceExecResult.Message("Отложенность снята")
+            }
+        }
+    }
+
+    private fun voiceChoicePostpone(): VoiceExecResult {
+        val pending = voiceSession.pendingMarkChoice
+            ?: return VoiceExecResult.Message("Нет ожидаемого выбора")
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        return when (pending.type) {
+            PendingMarkChoiceType.ALREADY_FOUND -> {
+                if (row.found) {
+                    setFound(row.id, false)
+                }
+
+                setPostponed(row.id, true)
+                finishPendingChoice()
+                VoiceExecResult.Message("Отложена.")
+            }
+
+            PendingMarkChoiceType.POSTPONED -> {
+                if (row.postponed) {
+                    finishPendingChoice()
+                    return VoiceExecResult.Message("Проба уже отложена")
+                }
+
+                setPostponed(row.id, true)
+                finishPendingChoice()
+                VoiceExecResult.Message("Отложена.")
+            }
+        }
+    }
+
+    private fun voiceChoiceSkip(): VoiceExecResult {
+        if (voiceSession.pendingMarkChoice == null) {
+            return VoiceExecResult.Message("Нет ожидаемого выбора")
+        }
+
+        finishPendingChoice()
+        return VoiceExecResult.Message("Пропущено.")
+    }
+
+    private fun voiceChoiceMarkCurrent(): VoiceExecResult {
+        val pending = voiceSession.pendingMarkChoice
+            ?: return VoiceExecResult.Message("Нет ожидаемого выбора")
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        return when (pending.type) {
+            PendingMarkChoiceType.POSTPONED -> {
+                if (row.found) {
+                    finishPendingChoice()
+                    return VoiceExecResult.Message("Уже отмечена.")
+                }
+
+                setPostponed(row.id, false)
+
+                val updatedRow = state.rowById(row.id) ?: row
+
+                voiceSession.clearPendingMarkChoice()
+                voiceSession.awaitingWeight = false
+                voiceSession.awaitingContinue = false
+
+                applyMarkDecision(updatedRow)
+            }
+
+            PendingMarkChoiceType.ALREADY_FOUND -> {
+                finishPendingChoice()
+                VoiceExecResult.Message("Уже отмечена.")
+            }
+        }
+    }
+
+    private fun handlePendingChoiceFallback(cmd: VoiceCommand): VoiceExecResult {
+        // FIX 5.8.9d-3c2b2:
+        // Отмена во время выбора — безопасный пропуск.
+        if (cmd is VoiceCommand.Undo) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Пропущено.")
+        }
+
+        return VoiceExecResult.Message("Скажите: снять, отложить или пропустить.")
+    }
+
+    private fun finishPendingChoice() {
+        voiceSession.clearPendingMarkChoice()
+        voiceSession.awaitingWeight = false
+        voiceSession.awaitingContinue = false
+        voiceSession.lastMarkedRowId = null
+        voiceSession.lastMarkedSampleNumber = null
     }
 
     private fun voiceNext(): VoiceExecResult {
