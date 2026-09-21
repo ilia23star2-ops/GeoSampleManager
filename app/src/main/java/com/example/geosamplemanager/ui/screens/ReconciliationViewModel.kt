@@ -9,7 +9,9 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
+import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
+import com.example.geosamplemanager.data.reconciliation.validateWeight
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
@@ -68,10 +70,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         private const val MAX_SEARCH_ORDERS = 20
         private const val MAX_QUERY_TOKENS = 5
 
-        /**
-         * FIX 5.8.9d-2c: максимум порядковых для перечисления
-         * в ответе «сколько осталось». Дальше — «и ещё N».
-         */
         private const val MAX_LEFT_LIST = 10
     }
 
@@ -360,12 +358,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         if (voiceSession.awaitingWeight) {
             if (cmd is VoiceCommand.Search) {
-                val weight = commandParser.parseWeightAnswer(cmd.query)
-                if (weight != null && weight > 0) {
-                    voiceSession.awaitingWeight = false
-                    return voiceSetWeight(weight)
+                // FIX 5.8.9d-3c2a: валидация через общее ядро.
+                val parsed = commandParser.parseWeightAnswer(cmd.query)
+                when (val v = validateWeight(parsed)) {
+                    is WeightValidation.Ok -> {
+                        voiceSession.awaitingWeight = false
+                        return voiceSetWeight(v.value)
+                    }
+                    is WeightValidation.Invalid -> {
+                        return VoiceExecResult.Message("Не понял вес. Повторите.")
+                    }
                 }
-                return VoiceExecResult.Message("Не понял вес. Повторите.")
             }
             if (cmd is VoiceCommand.Undo) {
                 voiceSession.awaitingWeight = false
@@ -575,13 +578,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.8.9d-3c1: единый анализ через [analyzeMark].
-     *
-     * Было: ручные проверки «found / isBlank / weightControl» прямо в
-     * методе. Стало: [analyzeMark] даёт решение, [applyMarkDecision]
-     * выполняет действие. Логика совпадает с UI (SearchScreen.onToggleFound).
-     */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -596,10 +592,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return applyMarkDecision(row)
     }
 
-    /**
-     * FIX 5.8.9d-3c1: отметить пробу, найденную последним поиском,
-     * через тот же [analyzeMark].
-     */
     private fun voiceMarkCurrent(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите пробу")
@@ -613,23 +605,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return applyMarkDecision(row)
     }
 
-    /**
-     * FIX 5.8.9d-3c1: общее ядро обработки решения для ГП.
-     *
-     * Вызывается из voiceMarkOrdinal / voiceMarkCurrent после того,
-     * как row найдена. Анализ — через [analyzeMark], реакция — здесь.
-     *
-     * Реакция для UI и ГП различается только формой (диалог vs TTS),
-     * но решения — одинаковые. Соответствие:
-     *
-     *   CanMark             → setFound + Marked
-     *   MarkWithWeight      → setBlankWeightAndMarkFound + Marked
-     *   NeedsControlWeight  → awaitingWeight + Message
-     *   NeedsBlankWeight    → awaitingWeight + Message
-     *   AlreadyFound        → awaitingContinue + Message (действия — 3c2)
-     *   Postponed           → awaitingContinue + Message (действия — 3c2)
-     *   ImportError         → Message
-     */
     private fun applyMarkDecision(row: SampleRow): VoiceExecResult {
         val decision = analyzeMark(toMarkContext(state, row))
         Log.i(TAG, "applyMarkDecision: row=${row.sampleNumber} decision=$decision")
@@ -676,8 +651,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is MarkDecision.AlreadyFound -> {
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
-                // 3c2: обработка «снять / отложить / пропустить» + автопауза.
-                // Пока просто сообщаем — VoiceDialog сыграет soundAttention.
                 voiceSession.awaitingContinue = true
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
@@ -685,7 +658,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is MarkDecision.Postponed -> {
                 voiceSession.lastMarkedRowId = row.id
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
-                // 3c2: обработка «отметить / снять» + автопауза.
                 voiceSession.awaitingContinue = true
                 VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
             }
@@ -747,9 +719,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.MarkedAll(rows.size)
     }
 
-    /**
-     * FIX 5.8.9d-2a-fix-2: вес идёт в правильное поле.
-     */
     private fun voiceSetWeight(value: Double): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
             ?: return VoiceExecResult.Message("Нет активной пробы")
