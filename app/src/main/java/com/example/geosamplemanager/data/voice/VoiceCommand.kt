@@ -87,10 +87,28 @@ sealed class VoiceCommand {
      * FIX 5.8.9f-1a-fix-1: переключение режима голосом.
      *
      * Распознаётся из фраз:
-     *   «сортировка» / «режим сортировка» / «режим сортировки» → SORT.
-     *   «поиск» / «режим поиск» → SEARCH.
+     * «сортировка» / «режим сортировка» / «режим сортировки» → SORT.
+     * «поиск» / «режим поиск» → SEARCH.
      */
     data class SetMode(val mode: VoiceSessionMode) : VoiceCommand()
+
+    /**
+     * FIX 5.8.9d-3c2b1: выбор действия для уже отмеченной / отложенной пробы.
+     *
+     * Используется только когда VoiceSession.pendingMarkChoice != null.
+     *
+     * Примеры:
+     * «снять»    → ChoiceRemove
+     * «отложить» → ChoicePostpone
+     * «пропустить» → ChoiceSkip
+     */
+    data object ChoiceRemove : VoiceCommand()
+
+    /** FIX 5.8.9d-3c2b1: отложить текущую пробу из состояния выбора. */
+    data object ChoicePostpone : VoiceCommand()
+
+    /** FIX 5.8.9d-3c2b1: пропустить текущую пробу из состояния выбора. */
+    data object ChoiceSkip : VoiceCommand()
 
     /** Распознать не удалось. */
     data object Unknown : VoiceCommand()
