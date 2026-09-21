@@ -25,6 +25,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -51,6 +52,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val LOG_TAG = "VoiceDialog"
+private const val PENDING_CHOICE_TIMEOUT_MS = 5000L
 
 @Composable
 fun VoiceDialog(
@@ -72,7 +74,8 @@ fun VoiceDialog(
         Log.e(LOG_TAG, "DisposableEffect: НАЧАЛО")
 
         val hasPermission = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.RECORD_AUDIO
+            context,
+            Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasPermission) {
@@ -99,8 +102,10 @@ fun VoiceDialog(
 
             override fun onResult(text: String) {
                 Log.e(LOG_TAG, "CALLBACK onResult: text=«$text»")
+
                 finalText = text
                 partialText = ""
+
                 if (text.isBlank()) {
                     status = "Не расслышал"
                     viewModel.setVoiceStatus(VoiceStatus.Error("Не расслышал"))
@@ -108,13 +113,20 @@ fun VoiceDialog(
                 }
 
                 viewModel.setVoiceStatus(VoiceStatus.Heard(text))
-                val cmd = commandParser.parse(text)
-                Log.e(LOG_TAG, "parsed command = $cmd")
+
+                // FIX 5.8.9d-3c2b2:
+                // Если ГП ждёт выбор, парсер должен распознавать
+                // «снять», «отложить», «пропустить».
+                val isPendingChoice = viewModel.voiceSession.pendingMarkChoice != null
+                val cmd = commandParser.parse(text, isPendingChoice)
+
+                Log.e(LOG_TAG, "parsed command = $cmd, pendingChoice=$isPendingChoice")
 
                 scope.launch {
                     try {
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
+
                         resultText = describeResult(result, viewModel)
                         status = "Готово"
                         viewModel.setVoiceStatus(statusFromResult(result))
@@ -156,6 +168,38 @@ fun VoiceDialog(
         }
     }
 
+    // FIX 5.8.9d-3c2b2:
+    // Таймаут ожидания выбора. Если пользователь молчит 5 секунд —
+    // автоматически пропускаем проблемную пробу.
+    val pendingChoiceState = viewModel.voiceSession.pendingMarkChoice
+    LaunchedEffect(pendingChoiceState) {
+        if (pendingChoiceState != null) {
+            delay(PENDING_CHOICE_TIMEOUT_MS)
+
+            if (viewModel.voiceSession.pendingMarkChoice == pendingChoiceState) {
+                val fb = feedback
+                val ctrl = controller
+
+                try {
+                    val result = viewModel.voiceExecute(VoiceCommand.ChoiceSkip)
+                    resultText = describeResult(result, viewModel)
+                    status = "Готово"
+                    viewModel.setVoiceStatus(statusFromResult(result))
+
+                    if (fb != null) {
+                        handleFeedback(result, fb, ctrl, viewModel)
+                    }
+                } catch (e: Exception) {
+                    Log.e(LOG_TAG, "pending choice timeout УПАЛ", e)
+                    resultText = "Ошибка: ${e.message}"
+                    status = "Ошибка"
+                    viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
+                    fb?.soundError()
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Голосовой ввод") },
@@ -168,28 +212,38 @@ fun VoiceDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.Mic, null,
-                        tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        Icons.Filled.Mic,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
                     Spacer(Modifier.width(8.dp))
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                 }
 
                 if (partialText.isNotEmpty()) {
-                    Text("Слышу: $partialText",
+                    Text(
+                        "Слышу: $partialText",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
                 if (finalText.isNotEmpty()) {
                     Card {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.VolumeUp, null,
-                                    tint = MaterialTheme.colorScheme.primary)
+                                Icon(
+                                    Icons.Filled.VolumeUp,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                                 Spacer(Modifier.width(6.dp))
-                                Text("Распознано:",
+                                Text(
+                                    "Распознано:",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             Spacer(Modifier.width(4.dp))
                             Text(finalText, style = MaterialTheme.typography.titleMedium)
@@ -201,16 +255,24 @@ fun VoiceDialog(
                     Card {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.PlayArrow, null,
-                                    tint = MaterialTheme.colorScheme.primary)
+                                Icon(
+                                    Icons.Filled.PlayArrow,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                                 Spacer(Modifier.width(6.dp))
-                                Text("Результат:",
+                                Text(
+                                    "Результат:",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                             Spacer(Modifier.width(4.dp))
-                            Text(resultText, style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium)
+                            Text(
+                                resultText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }
@@ -218,8 +280,10 @@ fun VoiceDialog(
                 Text(
                     "Команды: «первая», «отметь», «снять первую», " +
                             "«вес два пять», «следующая», «стоп», «пауза», " +
-                            "«продолжить», «помощь». Номера: «1524», " +
-                            "«KPD1090031». Сортировка: «1524 и 1525». " +
+                            "«продолжить», «помощь». " +
+                            "При выборе: «снять», «отложить», «пропустить». " +
+                            "Номера: «1524», «KPD1090031». " +
+                            "Сортировка: «1524 и 1525». " +
                             "Режим: «сортировка» / «поиск».",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -237,10 +301,14 @@ fun VoiceDialog(
                         ctrl.startListening()
                     }
                 }
-            }) { Text("Ещё раз") }
+            }) {
+                Text("Ещё раз")
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
+            }
         }
     )
 }
@@ -248,9 +316,7 @@ fun VoiceDialog(
 /**
  * FIX 5.8.9f-2a-fix-6: если режим SORT — короткая фраза без статистики.
  * FIX 5.8.9d-2b: подтверждение отметки — коротко, порядковым числом.
- *   Было: «Проба 15 26 01 отмечена».
- *   Стало: «Первая отмечена».
- *   Для холостой/ВК: «Первая — холостая. Вес?».
+ * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -269,27 +335,35 @@ private fun handleFeedback(
                 val phrase = buildAttentionFoundOnePhrase(result)
                 controller?.speak(phrase)
             } else {
-                val phrase = if (isSort) buildFoundOneShortPhrase(result)
-                else buildFoundOnePhrase(result)
+                val phrase = if (isSort) {
+                    buildFoundOneShortPhrase(result)
+                } else {
+                    buildFoundOnePhrase(result)
+                }
                 controller?.speak(phrase)
             }
         }
 
         is VoiceExecResult.Marked -> {
             fb.soundOk()
-            // FIX 5.8.9d-2b: порядковое слово вместо номера пробы.
+
             val ordWord = VoiceOrdinals.word(result.ordinal)
             val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
+
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
                     "$subject — весовой контроль. Вес?"
+
                 result.needsWeight ->
                     "$subject — холостая. Вес?"
+
                 result.isWeightControl ->
                     "$subject — весовой контроль, отмечена."
+
                 else ->
                     "$subject отмечена."
             }
+
             controller?.speak(phrase)
         }
 
@@ -308,7 +382,6 @@ private fun handleFeedback(
 
         is VoiceExecResult.WeightSet -> {
             fb.soundOk()
-            // FIX 5.8.9d-2b: без номера пробы — короткая финальная фраза.
             controller?.speak("Вес ${result.weight}. Проба отмечена.")
         }
 
@@ -332,7 +405,9 @@ private fun handleFeedback(
         }
 
         is VoiceExecResult.Message -> {
-            if (viewModel.voiceSession.awaitingContinue) {
+            if (viewModel.voiceSession.awaitingContinue ||
+                viewModel.voiceSession.pendingMarkChoice != null
+            ) {
                 fb.soundAttention()
             }
             controller?.speak(result.text)
@@ -362,12 +437,15 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
             if (ord.isNotEmpty()) sb.append(", наряд $ord")
             sb.append(". ")
         }
+
         AnswerReason.FOUND_OTHER_ORDER -> {
             val ord = r.otherOrderNumber ?: "другой"
             sb.append("Другой наряд — $ord. ")
         }
+
         else -> {}
     }
+
     sb.append("Выберите на экране.")
     return sb.toString()
 }
@@ -379,8 +457,8 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = VoiceSpeaker.spellOut(r.query)
     val total = VoiceSpeaker.spellNumber(r.totalSamples)
     val found = VoiceSpeaker.spellNumber(r.foundSamples)
-
     val sb = StringBuilder()
+
     if (r.isSample) {
         sb.append("Проба $spokenNumber. ${r.orderTitle}. ")
         val stateText = if (r.foundSamples > 0) "уже отмечена" else "не отмечена"
@@ -391,18 +469,23 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     }
 
     val extras = mutableListOf<String>()
+
     if (r.blanks > 0) {
         extras.add("холостых ${VoiceSpeaker.spellNumber(r.blanks)}")
     }
+
     if (r.weightControls > 0) {
         extras.add("весовой контроль ${VoiceSpeaker.spellNumber(r.weightControls)}")
     }
+
     if (r.postponed > 0) {
         extras.add("отложено ${VoiceSpeaker.spellNumber(r.postponed)}")
     }
+
     if (extras.isNotEmpty()) {
-        sb.append(" ").append(extras.joinToString(", ")).append(".")
+        sb.append(". ").append(extras.joinToString(", ")).append(".")
     }
+
     return sb.toString()
 }
 
@@ -426,20 +509,26 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
             VoiceStatus.Found("${result.query} — ${result.orderTitle}")
         }
     }
+
     is VoiceExecResult.FoundMany -> VoiceStatus.Found("Найден в нескольких нарядах")
     is VoiceExecResult.Marked -> VoiceStatus.Marked(result.sampleNumber)
+
     is VoiceExecResult.MarkedMultiple ->
         VoiceStatus.Marked("Отмечено: ${result.sampleNumbers.size}")
+
     is VoiceExecResult.MarkedAll ->
         VoiceStatus.Marked("Все отмечены: ${result.count}")
+
     is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${result.weight}")
     is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
+
     is VoiceExecResult.ModeChanged -> VoiceStatus.Found(
         when (result.mode) {
             VoiceSessionMode.SORT -> "Режим: сортировка"
             VoiceSessionMode.SEARCH -> "Режим: поиск"
         }
     )
+
     is VoiceExecResult.Message -> VoiceStatus.Found(result.text)
     VoiceExecResult.Next -> VoiceStatus.Idle
     VoiceExecResult.NotFound -> VoiceStatus.Error("Не нашёл")
@@ -456,11 +545,13 @@ private fun describeResult(
     viewModel: ReconciliationViewModel
 ): String {
     val isSort = viewModel.voiceSession.mode == VoiceSessionMode.SORT
+
     return when (result) {
         is VoiceExecResult.FoundOne -> {
             if (result.attentionReason != null) {
                 val sb = StringBuilder()
                 sb.append("Скважина ${result.query}. ")
+
                 when (result.attentionReason) {
                     AnswerReason.FOUND_OTHER_AREA -> {
                         val area = result.otherAreaTitle ?: "другой"
@@ -469,12 +560,15 @@ private fun describeResult(
                         if (ord.isNotEmpty()) sb.append(", наряд $ord")
                         sb.append(". Выберите на экране.")
                     }
+
                     AnswerReason.FOUND_OTHER_ORDER -> {
                         val ord = result.otherOrderNumber ?: "другой"
                         sb.append("⚠ Другой наряд — $ord. Выберите на экране.")
                     }
+
                     else -> {}
                 }
+
                 sb.toString()
             } else if (isSort) {
                 if (result.isSample) {
@@ -484,44 +578,61 @@ private fun describeResult(
                 }
             } else if (result.isSample) {
                 val label = if (result.foundSamples > 0) "Уже отмечена" else "Не отмечена"
-                "Проба ${result.query} → ${result.orderTitle}. $label"
+                "Проба ${result.query} → ${result.orderTitle}. $label."
             } else {
                 buildString {
                     append("Скважина ${result.query} → ${result.orderTitle}. ")
                     append("Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}")
+
                     val extras = mutableListOf<String>()
                     if (result.blanks > 0) extras.add("холостых ${result.blanks}")
                     if (result.weightControls > 0) extras.add("ВК ${result.weightControls}")
                     if (result.postponed > 0) extras.add("отложено ${result.postponed}")
-                    if (extras.isNotEmpty()) append(". ").append(extras.joinToString(", "))
+
+                    if (extras.isNotEmpty()) {
+                        append(". ").append(extras.joinToString(", "))
+                    }
                 }
             }
         }
-        is VoiceExecResult.FoundMany -> "⚠ Найден в нескольких нарядах (${result.variants})"
+
+        is VoiceExecResult.FoundMany ->
+            "⚠ Найден в нескольких нарядах (${result.variants})"
+
         is VoiceExecResult.Marked -> {
-            // FIX 5.8.9d-2b: порядковое слово в карточке.
             val ordWord = VoiceOrdinals.word(result.ordinal)
             val subject = ordWord?.replaceFirstChar { it.uppercase() }
                 ?: "Проба ${result.sampleNumber}"
+
             val extra = when {
                 result.needsWeight && result.isWeightControl -> " — весовой контроль, вес?"
                 result.needsWeight -> " — холостая, вес?"
                 result.isWeightControl -> " — весовой контроль"
                 else -> ""
             }
+
             "$subject отмечена: ${result.sampleNumber}$extra"
         }
+
         is VoiceExecResult.MarkedMultiple -> {
             "Отмечено проб: ${result.sampleNumbers.size} " +
                     "(${result.sampleNumbers.joinToString(", ")})"
         }
-        is VoiceExecResult.MarkedAll -> "Отмечено всех проб: ${result.count}"
-        is VoiceExecResult.WeightSet -> "Вес: ${result.weight} кг. Проба отмечена."
-        is VoiceExecResult.Unmarked -> "Снято: ${result.sampleNumber}"
+
+        is VoiceExecResult.MarkedAll ->
+            "Отмечено всех проб: ${result.count}"
+
+        is VoiceExecResult.WeightSet ->
+            "Вес: ${result.weight} кг. Проба отмечена."
+
+        is VoiceExecResult.Unmarked ->
+            "Снято: ${result.sampleNumber}"
+
         is VoiceExecResult.ModeChanged -> when (result.mode) {
             VoiceSessionMode.SORT -> "Режим: Сортировка"
             VoiceSessionMode.SEARCH -> "Режим: Поиск"
         }
+
         is VoiceExecResult.Message -> result.text
         VoiceExecResult.Next -> "Следующая скважина"
         VoiceExecResult.Undone -> "Отменено"
