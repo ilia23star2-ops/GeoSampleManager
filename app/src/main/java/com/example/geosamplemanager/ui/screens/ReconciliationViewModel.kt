@@ -67,6 +67,38 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private var orderInfoByTitle: Map<String, OrderInfo> = emptyMap()
     private var searchJob: Job? = null
 
+    /**
+     * FIX 5.8.6-3:
+     * Слова, после которых не надо делать поиск по голосовой фразе.
+     */
+    private val voiceCommandLikeWords = setOf(
+        "стоп",
+        "хватит",
+        "пауза",
+        "паузу",
+        "продолжить",
+        "продолжай",
+        "отмена",
+        "отменить",
+        "верни",
+        "назад",
+        "повтори",
+        "вперёд",
+        "вперед",
+        "следующая",
+        "следующий",
+        "следующую",
+        "далее",
+        "помощь",
+        "команда",
+        "команды",
+        "сколько",
+        "осталось",
+        "показать",
+        "отложенные",
+        "найденные"
+    )
+
     companion object {
         private const val TAG = "ReconciliationVM"
         private const val SEARCH_DEBOUNCE_MS = 500L
@@ -84,6 +116,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         viewModelScope.launch {
             try {
                 val vs = voiceSettingsRepo.load()
+
                 if (vs.showOnboarding) {
                     withContext(Dispatchers.Main) {
                         state.voiceOnboardingVisible = true
@@ -98,6 +131,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun dismissOnboarding() {
         state.voiceOnboardingVisible = false
+
         viewModelScope.launch {
             try {
                 val vs = voiceSettingsRepo.load()
@@ -117,8 +151,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     repo.getAllOrdersFlow()
                 ) { areas, orders ->
                     val result = mutableListOf<OrderInfo>()
+
                     for (order in orders) {
                         val area = areas.firstOrNull { it.id == order.areaId } ?: continue
+
                         result.add(
                             OrderInfo(
                                 areaId = area.id,
@@ -128,6 +164,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             )
                         )
                     }
+
                     val areaNames = areas.map { it.areaName }.distinct().sorted()
                     areaNames to result
                 }.collect { (areaNames, orderInfos) ->
@@ -200,15 +237,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
+
         val info = orderTitle?.let { orderInfoByTitle[it] }
+
         if (info != null) {
             viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
         }
+
         refreshMultiQueryIfNeeded()
     }
 
     private fun refreshMultiQueryIfNeeded() {
         if (!state.isMultiQuery) return
+
         val tokens = state.queryTokens
 
         searchJob?.cancel()
@@ -236,10 +277,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             when (tokens.size) {
                 0 -> state.clearQueryGroups()
+
                 1 -> {
                     state.clearQueryGroups()
                     loadGroupsForQuery(tokens[0])
                 }
+
                 else -> buildMultiQueryGroups(tokens)
             }
         }
@@ -305,6 +348,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val query = number.ifEmpty { token }
 
         val allIds = repo.findOrderIdsByQuery(query)
+
         if (prefix == null) return null to allIds
 
         val matchingAreas = settings.areaPrefixes
@@ -341,7 +385,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
 
-        // FIX 5.8.9d-3c2b2:
+        // FIX 5.8.9d-3c2b2 / 5.8.6-3-fix-1:
         // Команды выбора обрабатываем до паузы и других состояний.
         when (cmd) {
             VoiceCommand.ChoiceRemove -> return voiceChoiceRemove()
@@ -350,7 +394,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             else -> Unit
         }
 
-        // Если ГП ждёт выбор, любые другие команды — переспрос.
+        // Если ГП ждёт выбор «отложить», команда «отметить» означает
+        // «снять отложенность и отметить».
+        if (cmd is VoiceCommand.MarkCurrent && voiceSession.pendingMarkChoice != null) {
+            return voiceChoiceMarkCurrent()
+        }
+
+        // Любые другие команды во время выбора — переспрос.
         if (voiceSession.pendingMarkChoice != null) {
             return handlePendingChoiceFallback(cmd)
         }
@@ -399,10 +449,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             }
         }
 
+        // FIX 5.8.6-3:
+        // Голосовой вес может прийти как Search или как Sort,
+        // например «два и шесть» парсер иногда разбирает как сортировку.
+        // В состоянии awaitingWeight оба варианта трактуем как ответ на вес.
         if (voiceSession.awaitingWeight) {
-            if (cmd is VoiceCommand.Search) {
-                // FIX 5.8.9d-3c2a: валидация через общее ядро.
-                val parsed = commandParser.parseWeightAnswer(cmd.query)
+            val weightText = when (cmd) {
+                is VoiceCommand.Search -> cmd.query
+                is VoiceCommand.Sort -> cmd.queries.joinToString(" ")
+                else -> null
+            }
+
+            if (weightText != null) {
+                val parsed = commandParser.parseWeightAnswer(weightText)
+
                 when (val v = validateWeight(parsed)) {
                     is WeightValidation.Ok -> {
                         voiceSession.awaitingWeight = false
@@ -417,7 +477,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (cmd is VoiceCommand.Undo) {
                 voiceSession.awaitingWeight = false
+                return VoiceExecResult.Undone
             }
+
+            return VoiceExecResult.Message("Сначала скажите вес или «отмена».")
         }
 
         return when (cmd) {
@@ -436,7 +499,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Unpostpone -> voiceUnpostpone()
 
-            // FIX 5.8.9d-3c2b1-fix-2 / 5.8.9d-3c2b2:
+            // FIX 5.8.6-3-fix-1:
             // Исчерпывающая обработка команд выбора.
             VoiceCommand.ChoiceRemove -> voiceChoiceRemove()
             VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
@@ -482,6 +545,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (voiceSession.mode == VoiceSessionMode.SORT) {
             return VoiceExecResult.Message("Режим сортировки — отметки недоступны.")
         }
+
         return action()
     }
 
@@ -491,12 +555,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
+        // FIX 5.8.6-3:
+        // Если фраза не похожа на номер, не пытаемся ни отмечать, ни искать.
+        if (!isLikelyVoiceSearchQuery(query)) {
+            return VoiceExecResult.Message("Не понял команду")
+        }
+
         val hasSession = voiceSession.currentOrderId != null &&
                 voiceSession.currentWellNumber != null
 
         if (hasSession && voiceSession.mode == VoiceSessionMode.SEARCH) {
             val parsed = voiceParser.parse(query)
             val num = parsed.primary?.toIntOrNull()
+
             if (num != null && num in 1..30) {
                 Log.i(TAG, "handleSearchInSession: «$query» → MarkOrdinal($num)")
                 return voiceMarkOrdinal(num)
@@ -525,6 +596,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             val parsed = voiceParser.parse(numberText)
             val candidates = parsed.candidates.map { c ->
                 val clean = c.replace("|", "")
+
                 if (extraction.prefix != null) extraction.prefix + clean else clean
             }
 
@@ -541,8 +613,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.clear()
 
                     val displayQuery = candidates.firstOrNull() ?: query
-                    withContext(Dispatchers.Main) {
-                        setQuery(displayQuery)
+
+                    // FIX 5.8.6-3:
+                    // Не засоряем поисковое поле, если фраза не похожа на номер.
+                    if (isLikelyVoiceSearchQuery(displayQuery)) {
+                        withContext(Dispatchers.Main) {
+                            setQuery(displayQuery)
+                        }
                     }
 
                     VoiceExecResult.NotFound
@@ -759,8 +836,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceSession.lastMarkedSampleNumber = row.sampleNumber
 
                 // FIX 5.8.9d-3c2b2:
-                // Уже отмеченная проба — не просто awaitingContinue,
-                // а отдельное состояние выбора.
+                // Уже отмеченная проба — отдельное состояние выбора.
                 voiceSession.startPendingMarkChoice(
                     type = PendingMarkChoiceType.ALREADY_FOUND,
                     ordinal = decision.ordinal,
@@ -840,6 +916,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
         val rows = group.rows.filter { it.wellNumber == wellNumber && !it.found }
+
         if (rows.isEmpty()) {
             return VoiceExecResult.Message("Все пробы уже отмечены")
         }
@@ -945,7 +1022,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Отложенность снята")
     }
 
-    // FIX 5.8.9d-3c2b2: обработка выбора для проблемной пробы.
+    // FIX 5.8.9d-3c2b2 / 5.8.6-3-fix-1: обработка выбора для проблемной пробы.
     private fun voiceChoiceRemove(): VoiceExecResult {
         val pending = voiceSession.pendingMarkChoice
             ?: return VoiceExecResult.Message("Нет ожидаемого выбора")
@@ -1036,6 +1113,47 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Пропущено.")
     }
 
+    private fun voiceChoiceMarkCurrent(): VoiceExecResult {
+        val pending = voiceSession.pendingMarkChoice
+            ?: return VoiceExecResult.Message("Нет ожидаемого выбора")
+
+        val rowId = voiceSession.lastMarkedRowId
+        if (rowId == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Нет активной пробы")
+        }
+
+        val row = state.rowById(rowId)
+        if (row == null) {
+            finishPendingChoice()
+            return VoiceExecResult.Message("Проба потеряна")
+        }
+
+        return when (pending.type) {
+            PendingMarkChoiceType.POSTPONED -> {
+                if (row.found) {
+                    finishPendingChoice()
+                    return VoiceExecResult.Message("Уже отмечена.")
+                }
+
+                setPostponed(row.id, false)
+
+                val updatedRow = state.rowById(row.id) ?: row
+
+                voiceSession.clearPendingMarkChoice()
+                voiceSession.awaitingWeight = false
+                voiceSession.awaitingContinue = false
+
+                applyMarkDecision(updatedRow)
+            }
+
+            PendingMarkChoiceType.ALREADY_FOUND -> {
+                finishPendingChoice()
+                VoiceExecResult.Message("Уже отмечена.")
+            }
+        }
+    }
+
     private fun handlePendingChoiceFallback(cmd: VoiceCommand): VoiceExecResult {
         // FIX 5.8.9d-3c2b2:
         // Отмена во время выбора — безопасный пропуск.
@@ -1080,6 +1198,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             .sortedBy { it.numberInWell }
 
         val leftRows = rows.filter { !it.found }
+
         if (leftRows.isEmpty()) {
             return VoiceExecResult.Message("Все пробы отмечены.")
         }
@@ -1191,6 +1310,29 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         Log.i(TAG, "voiceSort: text=«$text», awaitingContinue=$hasAmbiguous")
 
         return VoiceExecResult.Message(text)
+    }
+
+    /**
+     * FIX 5.8.6-3:
+     * Проверка, что голосовая фраза действительно похожа на поисковый запрос.
+     */
+    private fun isLikelyVoiceSearchQuery(query: String): Boolean {
+        val norm = query
+            .lowercase()
+            .replace('ё', 'е')
+            .trim('.', ',', '!', '?', ';', ':')
+
+        if (norm.isEmpty()) return false
+
+        if (norm.split(Regex("\\s+")).any { it in voiceCommandLikeWords }) {
+            return false
+        }
+
+        if (norm.any { it.isDigit() }) return true
+
+        if (norm.any { it.isLetter() && it.code < 128 }) return true
+
+        return voiceParser.parse(norm).candidates.isNotEmpty()
     }
 
     private fun rowById(rowId: String): SampleRow? = state.rowById(rowId)
@@ -1316,6 +1458,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun toggleWeightControl(rowId: String): Boolean {
         val ok = state.toggleWeightControl(rowId)
+
         if (ok) {
             val id = rowId.toLongOrNull() ?: return ok
             val flag = rowById(rowId)?.weightControl ?: return ok
@@ -1330,6 +1473,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
             }
         }
+
         return ok
     }
 
@@ -1356,6 +1500,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 withContext(Dispatchers.IO) {
                     repo.deleteSampleWithRenumber(id, recalc)
                 }
+
                 state.deleteRow(rowId, recalc)
             } catch (e: CancellationException) {
                 throw e
@@ -1433,18 +1578,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     repo.deleteNote(sampleId)
                 } else {
                     val existing = repo.getNote(sampleId)
+
                     val note = SampleNoteEntity(
                         id = existing?.id ?: 0,
                         sampleId = sampleId,
                         noteText = trimmed,
                         createdDate = existing?.createdDate ?: System.currentTimeMillis()
                     )
+
                     repo.upsertNote(note)
                 }
 
                 repo.syncHasNoteAndPhoto(sampleId)
 
                 val s = repo.getSampleById(sampleId)
+
                 if (s != null) {
                     withContext(Dispatchers.Main) {
                         state.updateRowFlags(
@@ -1523,7 +1671,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return try {
             withContext(Dispatchers.IO) {
                 val ok = repo.deletePhoto(imageId, sampleId)
+
                 if (ok) refreshSampleFlagsInternal(sampleId)
+
                 ok
             }
         } catch (e: CancellationException) {

@@ -2,77 +2,126 @@ package com.example.geosamplemanager.data.voice
 
 /**
  * Разбор голосовой фразы в VoiceCommand.
+ *
+ * FIX 5.8.6-3-fix-1:
+ * - возвращён параметр pendingChoice;
+ * - команды выбора «снять / отложить / пропустить» распознаются только
+ *   когда VoiceSession.pendingMarkChoice != null;
+ * - служебные команды не уходят в Search;
+ * - фразы вида «назад один» не превращаются в MarkOrdinal(1);
+ * - в поиск уходят только фразы, похожие на номер/код пробы или скважины.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
 ) {
 
     /**
-     * FIX 5.8.9d-3c2b1:
-     * Добавлен параметр pendingChoice.
+     * Слова, которые почти всегда являются служебной командой.
      *
-     * Когда VoiceSession.pendingMarkChoice != null, парсер разрешает
-     * короткие команды выбора:
-     * «снять», «отложить», «пропустить», «отметить».
-     *
-     * Вне состояния выбора эти фразы обрабатываются как раньше,
-     * чтобы не сломать существующие сценарии.
+     * Если такое слово встречается во фразе, не пытаемся из него
+     * сделать поиск или отметку.
      */
-    fun parse(input: String, pendingChoice: Boolean = false): VoiceCommand {
+    private val commandLikeWords = setOf(
+        "стоп",
+        "хватит",
+        "пауза",
+        "паузу",
+        "продолжить",
+        "продолжай",
+        "отмена",
+        "отменить",
+        "верни",
+        "назад",
+        "повтори",
+        "вперёд",
+        "вперед",
+        "следующая",
+        "следующий",
+        "следующую",
+        "далее",
+        "помощь",
+        "команда",
+        "команды",
+        "сколько",
+        "осталось",
+        "показать",
+        "отложенные",
+        "найденные",
+        "отложить",
+        "отложи",
+        "пропустить",
+        "пропусти"
+    )
+
+    private val pendingRemovePhrases = setOf(
+        "снять",
+        "сними",
+        "убрать",
+        "убери",
+        "удали",
+        "удалить",
+        "снять отметку",
+        "убрать отметку",
+        "снять пробу",
+        "убрать пробу"
+    )
+
+    private val pendingPostponePhrases = setOf(
+        "отложить",
+        "отложи",
+        "перенести",
+        "перенеси",
+        "отложить пробу",
+        "перенести пробу"
+    )
+
+    private val pendingSkipPhrases = setOf(
+        "пропустить",
+        "пропусти",
+        "дальше",
+        "не надо",
+        "ничего",
+        "оставить",
+        "потом"
+    )
+
+    private val pendingMarkCurrentPhrases = setOf(
+        "отметить",
+        "отметь",
+        "отметьте",
+        "отметить эту",
+        "отметь эту",
+        "эту",
+        "отметить ее",
+        "отметь ее",
+        "отметить её",
+        "отметь её",
+        "ее",
+        "её"
+    )
+
+    fun parse(
+        input: String,
+        pendingChoice: Boolean = false
+    ): VoiceCommand {
         val raw = input.trim()
         if (raw.isEmpty()) return VoiceCommand.Unknown
 
-        val norm = numberParser.normalize(raw)
+        val norm = numberParser
+            .normalize(raw)
+            .trim('.', ',', '!', '?', ';', ':')
 
-        // ---- FIX 5.8.9d-3c2b1: команды выбора для проблемной пробы ----
+        // ---- FIX 5.8.9d-3c2b1 / 5.8.6-3-fix-1: команды выбора ----
         if (pendingChoice) {
             when (norm) {
-                "снять",
-                "убрать",
-                "удали",
-                "удалить",
-                "сними",
-                "убери",
-                "снять отметку",
-                "убрать отметку",
-                "снять пробу",
-                "убрать пробу" ->
-                    return VoiceCommand.ChoiceRemove
-
-                "отложить",
-                "отложи",
-                "перенести",
-                "перенеси",
-                "отложить пробу",
-                "перенести пробу" ->
-                    return VoiceCommand.ChoicePostpone
-
-                "пропустить",
-                "пропусти",
-                "дальше",
-                "не надо",
-                "ничего",
-                "оставить",
-                "потом" ->
-                    return VoiceCommand.ChoiceSkip
-
-                "отметить",
-                "отметь",
-                "отметьте",
-                "отметить эту",
-                "отметь эту",
-                "эту",
-                "отметить ее",
-                "отметь ее",
-                "отметить её",
-                "отметь её",
-                "ее",
-                "её" ->
-                    return VoiceCommand.MarkCurrent
+                in pendingRemovePhrases -> return VoiceCommand.ChoiceRemove
+                in pendingPostponePhrases -> return VoiceCommand.ChoicePostpone
+                in pendingSkipPhrases -> return VoiceCommand.ChoiceSkip
+                in pendingMarkCurrentPhrases -> return VoiceCommand.MarkCurrent
             }
         }
 
-        // ---- Управляющие (одиночные слова) ----
+        // ---- Управляющие (точные совпадения) ----
         when (norm) {
             "стоп", "хватит" -> return VoiceCommand.Stop
             "пауза", "паузу" -> return VoiceCommand.Pause
@@ -81,7 +130,7 @@ class VoiceCommandParser(
             "повтори", "вперёд", "вперед" -> return VoiceCommand.Redo
             "следующая", "далее", "следующую", "следующий" -> return VoiceCommand.Next
             "помощь", "команды", "команда" -> return VoiceCommand.Help
-            "сколько осталось", "сколько осталось?" -> return VoiceCommand.HowManyLeft
+            "сколько осталось" -> return VoiceCommand.HowManyLeft
             "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
             "показать найденные", "найденные" -> return VoiceCommand.ShowFound
             "снять все", "сбросить все", "очистить все" ->
@@ -109,25 +158,44 @@ class VoiceCommandParser(
                 return VoiceCommand.SetMode(VoiceSessionMode.SEARCH)
         }
 
-        // ---- Вес ----
+        // ---- Вес: «вес два и шесть» ----
         if (norm == "вес" || norm.startsWith("вес ")) {
             val tail = norm.removePrefix("вес").trim()
             val value = parseWeightAnswer(tail)
-            if (value != null) return VoiceCommand.SetWeight(value)
+
+            return if (value != null) {
+                VoiceCommand.SetWeight(value)
+            } else {
+                VoiceCommand.Unknown
+            }
         }
 
         // ---- Снять <ordinal> ----
         val words = norm.split(Regex("\\s+"))
+
         if (words.size >= 2 &&
             words[0] in setOf("снять", "убрать", "удали", "удалить")
         ) {
             val tail = words.drop(1).joinToString(" ")
             val ord = VoiceOrdinals.match(tail)
-            if (ord != null) return VoiceCommand.ClearOrdinal(ord)
+
+            return if (ord != null) {
+                VoiceCommand.ClearOrdinal(ord)
+            } else {
+                VoiceCommand.Unknown
+            }
+        }
+
+        // FIX 5.8.6-3:
+        // Если во фразе есть служебное слово, не превращаем её ни в отметку,
+        // ни в поиск. Например: «назад один», «стоп первая», «сколько осталось одна».
+        if (containsCommandWord(norm)) {
+            return VoiceCommand.Unknown
         }
 
         // ---- Отметить <ordinal> / <ordinal> <ordinal> ... ----
         val ordinals = VoiceOrdinals.matchAll(norm)
+
         when {
             ordinals.size == 1 -> return VoiceCommand.MarkOrdinal(ordinals[0])
             ordinals.size > 1 -> return VoiceCommand.MarkByNumbers(ordinals)
@@ -135,9 +203,11 @@ class VoiceCommandParser(
 
         // ---- Сортировка: "<X> и <Y>" ----
         val sortParts = norm.split(Regex("\\s+и\\s+"))
+
         if (sortParts.size in 2..5) {
             val parsed = sortParts.map { part ->
                 val trimmed = part.trim()
+
                 numberParser.parse(trimmed).primary?.takeIf { it.isNotBlank() }
                     ?: trimmed.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
             }
@@ -147,8 +217,37 @@ class VoiceCommandParser(
             }
         }
 
-        // ---- Всё остальное — поиск ----
-        return VoiceCommand.Search(raw)
+        // FIX 5.8.6-3:
+        // В поиск уходит только то, что похоже на номер/код.
+        return if (looksLikeSearchQuery(norm)) {
+            VoiceCommand.Search(raw)
+        } else {
+            VoiceCommand.Unknown
+        }
+    }
+
+    private fun containsCommandWord(norm: String): Boolean {
+        return norm.split(Regex("\\s+")).any { it in commandLikeWords }
+    }
+
+    /**
+     * Похожа ли фраза на поисковый запрос: номер скважины, номер пробы, код с буквами.
+     *
+     * Разрешаем:
+     * - цифры: «1524», «15 24 01»;
+     * - латиницу: «KPD1090031»;
+     * - русские числительные, если VoiceNumberParser дал кандидатов.
+     *
+     * Не разрешаем чистые служебные слова — они отсекаются выше.
+     */
+    private fun looksLikeSearchQuery(norm: String): Boolean {
+        if (norm.isEmpty()) return false
+
+        if (norm.any { it.isDigit() }) return true
+
+        if (norm.any { it.isLetter() && it.code < 128 }) return true
+
+        return numberParser.parse(norm).candidates.isNotEmpty()
     }
 
     /**
@@ -180,7 +279,10 @@ class VoiceCommandParser(
      * (data.reconciliation).
      */
     fun parseWeightAnswer(input: String): Double? {
-        var norm = numberParser.normalize(input).trim()
+        var norm = numberParser
+            .normalize(input)
+            .trim('.', ',', '!', '?', ';', ':')
+
         if (norm.isEmpty()) return null
 
         // FIX 5.8.9d-3c2a-fix-1: сначала простые сокращения — до
@@ -210,6 +312,7 @@ class VoiceCommandParser(
 
         // «два с половиной» / «два с четвертью».
         val halfSuffix = "с половиной"
+
         if (norm.endsWith(halfSuffix)) {
             val baseText = norm.removeSuffix(halfSuffix).trim()
             val base = parseWeightAnswer(baseText) ?: return null
@@ -217,6 +320,7 @@ class VoiceCommandParser(
         }
 
         val quarterSuffix = "с четвертью"
+
         if (norm.endsWith(quarterSuffix)) {
             val baseText = norm.removeSuffix(quarterSuffix).trim()
             val base = parseWeightAnswer(baseText) ?: return null
@@ -316,14 +420,18 @@ class VoiceCommandParser(
                 if (c.length == 2 && c.all { ch -> ch.isDigit() }) {
                     val a = c[0].digitToInt()
                     val b = c[1].digitToInt()
+
                     if (b != 0) return "$a.$b".toDoubleOrNull()
                 }
+
                 return it
             }
+
             return null
         }
 
         val parts = c.split('|')
+
         if (parts.size == 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
             return "${parts[0]}.${parts[1]}".toDoubleOrNull()
         }
