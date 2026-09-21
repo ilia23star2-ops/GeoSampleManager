@@ -94,6 +94,11 @@ class VoiceCommandParser(
      * Парсит свободный ответ на «Вес?».
      *
      * FIX 5.8.9d-3c2a: расширено покрытие русских форм.
+     * FIX 5.8.9d-3c2a-fix-1: сначала проверяем простые сокращения
+     * («полтора», «полкило»), потом отрезаем единицы измерения.
+     * Иначе removeSuffix("кило") съедал «кило» из «полкило» и
+     * оставлял мусор «пол».
+     *
      * Поддерживается:
      *   «два»                     → 2.0
      *   «два пять»                → 25.0 (через numberParser)
@@ -116,6 +121,14 @@ class VoiceCommandParser(
         var norm = numberParser.normalize(input).trim()
         if (norm.isEmpty()) return null
 
+        // FIX 5.8.9d-3c2a-fix-1: сначала простые сокращения — до
+        // отрезания единиц измерения. Иначе «полкило» превратится
+        // в «пол» после removeSuffix("кило").
+        when (norm) {
+            "полтора", "полторы" -> return 1.5
+            "полкило" -> return 0.5
+        }
+
         // Отрезаем единицы измерения — в БД канонические килограммы.
         norm = norm
             .removeSuffix("килограмма")
@@ -125,12 +138,6 @@ class VoiceCommandParser(
             .removeSuffix("кило")
             .trim()
         if (norm.isEmpty()) return null
-
-        // Простые сокращения.
-        when (norm) {
-            "полтора", "полторы" -> return 1.5
-            "полкило" -> return 0.5
-        }
 
         // Явное «X целых Y десятых / сотых / тысячных».
         tryParseExplicitDecimal(norm)?.let { return it }
