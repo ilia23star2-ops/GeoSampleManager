@@ -19,11 +19,12 @@ import java.util.Locale
  *
  * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
  *
- * FIX 5.8.9i-2:
- * - скорость TTS по умолчанию 1.10;
- * - пустые фразы не озвучиваются;
- * - текст перед озвучкой обрезается по краям;
- * - лог инициализации TTS показывает скорость.
+ * FIX 5.8.6-2:
+ * - скорость TTS 1.10;
+ * - увеличена задержка возобновления Vosk после речи до 800 мс;
+ * - добавлено окно подавления эха: результаты Vosk, пришедшие
+ *   сразу после speak(), игнорируются;
+ * - исправлены пустые catch-блоки.
  */
 class VoiceController(
     private val context: Context,
@@ -39,6 +40,11 @@ class VoiceController(
     private var listening = false
     private var lastFinalText: String = ""
 
+    /**
+     * Время, до которого результаты Vosk считаются эхом TTS.
+     */
+    private var suppressUntil: Long = 0L
+
     init {
         initTts()
     }
@@ -52,8 +58,6 @@ class VoiceController(
             if (status == TextToSpeech.SUCCESS) {
                 try {
                     tts?.language = Locale("ru", "RU")
-
-                    // FIX 5.8.9i-2: чуть быстрее обычного человеческого темпа.
                     tts?.setSpeechRate(DEFAULT_SPEECH_RATE)
 
                     ttsReady = true
@@ -62,7 +66,6 @@ class VoiceController(
                     Log.e(TAG, "TTS: ошибка языка", e)
                 }
 
-                // Слушатель прогресса — глушит микрофон во время речи.
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         Log.e(TAG, "TTS onStart → пауза Vosk")
@@ -70,19 +73,19 @@ class VoiceController(
                     }
 
                     override fun onDone(utteranceId: String?) {
-                        Log.e(TAG, "TTS onDone → возобновляю Vosk через 300 мс")
-                        resumeVoskDelayed(300)
+                        Log.e(TAG, "TTS onDone → возобновляю Vosk через ${RESUME_DELAY_MS} мс")
+                        resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
                         Log.e(TAG, "TTS onError → возобновляю Vosk")
-                        resumeVoskDelayed(300)
+                        resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
                         Log.e(TAG, "TTS onError($errorCode) → возобновляю Vosk")
-                        resumeVoskDelayed(300)
+                        resumeVoskDelayed(RESUME_DELAY_MS)
                     }
                 })
             } else {
@@ -100,6 +103,8 @@ class VoiceController(
         val clean = text.trim()
         if (clean.isEmpty()) return
 
+        suppressUntil = System.currentTimeMillis() + estimateSpeechMs(clean)
+
         try {
             tts?.speak(
                 clean,
@@ -110,6 +115,10 @@ class VoiceController(
         } catch (e: Exception) {
             Log.w(TAG, "speak failed", e)
         }
+    }
+
+    private fun estimateSpeechMs(text: String): Long {
+        return SPEECH_BASE_MS + text.length * SPEECH_CHAR_MS
     }
 
     private fun pauseVosk() {
@@ -151,6 +160,7 @@ class VoiceController(
 
         try {
             lastFinalText = ""
+            suppressUntil = 0L
 
             val service = speechService ?: createService(model)
 
@@ -214,6 +224,9 @@ class VoiceController(
         override fun onResult(hypothesis: String?) {
             val text = extractText(hypothesis, "text")
             if (text.isEmpty()) return
+
+            if (isEcho(text)) return
+
             if (text == lastFinalText) return
 
             lastFinalText = text
@@ -231,6 +244,9 @@ class VoiceController(
         override fun onFinalResult(hypothesis: String?) {
             val text = extractText(hypothesis, "text")
             if (text.isEmpty()) return
+
+            if (isEcho(text)) return
+
             if (text == lastFinalText) return
 
             lastFinalText = text
@@ -257,6 +273,13 @@ class VoiceController(
         }
     }
 
+    private fun isEcho(text: String): Boolean {
+        if (System.currentTimeMillis() >= suppressUntil) return false
+
+        Log.e(TAG, "VOSK echo suppressed: «$text»")
+        return true
+    }
+
     fun destroy() {
         Log.e(TAG, "destroy")
 
@@ -279,9 +302,8 @@ class VoiceController(
         recognizer = null
         listening = false
         lastFinalText = ""
+        suppressUntil = 0L
 
-        // TTS живёт в VoiceTtsHolder, здесь только через callback.speak()
-        // Но контроллер держит свой TTS для UtteranceProgressListener.
         try {
             tts?.stop()
             tts?.shutdown()
@@ -306,7 +328,10 @@ class VoiceController(
         private const val TAG = "VoiceController"
         private const val SAMPLE_RATE = 16000.0f
 
-        // FIX 5.8.9i-2: рабочий темп для ГП.
         private const val DEFAULT_SPEECH_RATE = 1.10f
+        private const val RESUME_DELAY_MS = 800L
+
+        private const val SPEECH_BASE_MS = 600L
+        private const val SPEECH_CHAR_MS = 70L
     }
 }
