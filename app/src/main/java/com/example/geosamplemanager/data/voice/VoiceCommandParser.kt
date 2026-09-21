@@ -26,17 +26,12 @@ class VoiceCommandParser(
             "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
             "показать найденные", "найденные" -> return VoiceCommand.ShowFound
 
-            // FIX 5.8.9g-1: снять все — как было.
             "снять все", "сбросить все", "очистить все" -> return VoiceCommand.ClearAll
 
-            // FIX 5.8.9g-1: отметить все пробы текущей скважины.
             "все", "отметь все", "отметить все", "отметьте все" ->
                 return VoiceCommand.MarkAll
 
             // FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
-            // Номер пробы НЕ называется — берётся из сессии.
-            // Сюда попадают только фразы без порядковых числительных
-            // (иначе сработал бы MarkOrdinal / MarkByNumbers).
             "отметь", "отметить", "отметьте",
             "отметь эту", "отметить эту", "эту", "эту отметь",
             "отметь ее", "отметить ее", "отметь её", "отметить её",
@@ -48,7 +43,6 @@ class VoiceCommandParser(
             "снять последнюю", "последнюю снять" -> return VoiceCommand.ClearLast
             "снять отложенную", "снять отложенную пробу" -> return VoiceCommand.Unpostpone
 
-            // FIX 5.8.9f-1a-fix-1: переключение режима.
             "сортировка", "режим сортировка", "режим сортировки" ->
                 return VoiceCommand.SetMode(VoiceSessionMode.SORT)
             "поиск", "режим поиск" ->
@@ -99,23 +93,58 @@ class VoiceCommandParser(
     /**
      * Парсит свободный ответ на «Вес?».
      *
-     * FIX 5.8.9d-2a: поддерживаются варианты произношения:
-     *   «два пять»         → 2.5
-     *   «два с половиной»  → 2.5
-     *   «два с четвертью»  → 2.25
-     *   «пятнадцать»       → 15.0
+     * FIX 5.8.9d-3c2a: расширено покрытие русских форм.
+     * Поддерживается:
+     *   «два»                     → 2.0
+     *   «два пять»                → 25.0 (через numberParser)
+     *   «два и шесть»             → 2.6
+     *   «2,6» / «2.6»             → 2.6
+     *   «две целых шесть десятых» → 2.6
+     *   «два целых шесть сотых»   → 2.06
+     *   «шесть десятых»           → 0.6
+     *   «шесть сотых»             → 0.06
+     *   «два с половиной»         → 2.5
+     *   «два с четвертью»         → 2.25
+     *   «полтора»                 → 1.5
+     *   «полкило»                 → 0.5
+     *   «два кг» / «два кило»     → 2.0 (суффикс отрезается)
+     *
+     * Возвращает null, если не удалось распознать. Округление до
+     * сотых и проверку границ делает validateWeight (data.reconciliation).
      */
     fun parseWeightAnswer(input: String): Double? {
-        val norm = numberParser.normalize(input).trim()
+        var norm = numberParser.normalize(input).trim()
         if (norm.isEmpty()) return null
 
+        // Отрезаем единицы измерения — в БД канонические килограммы.
+        norm = norm
+            .removeSuffix("килограмма")
+            .removeSuffix("килограмм")
+            .removeSuffix("килограммы")
+            .removeSuffix("кг")
+            .removeSuffix("кило")
+            .trim()
+        if (norm.isEmpty()) return null
+
+        // Простые сокращения.
+        when (norm) {
+            "полтора", "полторы" -> return 1.5
+            "полкило" -> return 0.5
+        }
+
+        // Явное «X целых Y десятых / сотых / тысячных».
+        tryParseExplicitDecimal(norm)?.let { return it }
+
+        // Дробное без целых: «Y десятых», «Y сотых».
+        tryParseFractionOnly(norm)?.let { return it }
+
+        // «два с половиной» / «два с четвертью».
         val halfSuffix = "с половиной"
         if (norm.endsWith(halfSuffix)) {
             val baseText = norm.removeSuffix(halfSuffix).trim()
             val base = parseWeightAnswer(baseText) ?: return null
             return base + 0.5
         }
-
         val quarterSuffix = "с четвертью"
         if (norm.endsWith(quarterSuffix)) {
             val baseText = norm.removeSuffix(quarterSuffix).trim()
@@ -124,6 +153,79 @@ class VoiceCommandParser(
         }
 
         return parseWeight(norm)
+    }
+
+    /**
+     * FIX 5.8.9d-3c2a: «X целых Y десятых / сотых / тысячных» → Double.
+     *
+     *   «две целых шесть десятых»  → 2.6
+     *   «два целых шесть сотых»    → 2.06
+     *   «ноль целых шесть десятых» → 0.6
+     *   «три целых двести пятьдесят тысячных» → 3.25
+     *
+     * Возвращает null, если фраза не подходит под шаблон.
+     */
+    private fun tryParseExplicitDecimal(text: String): Double? {
+        val splitWords = listOf("целых", "целая", "целое")
+        val delimiter = splitWords.firstOrNull { text.contains(" $it ") } ?: return null
+
+        val idx = text.indexOf(" $delimiter ")
+        if (idx < 0) return null
+
+        val intText = text.substring(0, idx).trim()
+        val tailText = text.substring(idx + delimiter.length + 2).trim()
+
+        val intPart = numberParser.parse(intText).primary?.toIntOrNull() ?: return null
+        if (intPart < 0) return null
+
+        // tail: "шесть десятых" | "шесть сотых" | "двести пятьдесят тысячных"
+        val tailWords = tailText.split(Regex("\\s+"))
+        if (tailWords.size < 2) return null
+
+        val denominator = tailWords.last()
+        val numeratorText = tailWords.dropLast(1).joinToString(" ")
+        val numerator = numberParser.parse(numeratorText).primary?.toIntOrNull()
+            ?: return null
+
+        val digits = when (denominator) {
+            "десятых", "десятая", "десятые" -> 1
+            "сотых", "сотая", "сотые" -> 2
+            "тысячных", "тысячная", "тысячные" -> 3
+            else -> return null
+        }
+
+        val numeratorStr = numerator.toString().padStart(digits, '0')
+        if (numeratorStr.length != digits) return null
+
+        return "$intPart.$numeratorStr".toDoubleOrNull()
+    }
+
+    /**
+     * FIX 5.8.9d-3c2a: «Y десятых» / «Y сотых» без целой части.
+     *
+     *   «шесть десятых» → 0.6
+     *   «шесть сотых»   → 0.06
+     */
+    private fun tryParseFractionOnly(text: String): Double? {
+        val tailWords = text.split(Regex("\\s+"))
+        if (tailWords.size < 2) return null
+
+        val denominator = tailWords.last()
+        val numeratorText = tailWords.dropLast(1).joinToString(" ")
+        val numerator = numberParser.parse(numeratorText).primary?.toIntOrNull()
+            ?: return null
+
+        val digits = when (denominator) {
+            "десятых", "десятая", "десятые" -> 1
+            "сотых", "сотая", "сотые" -> 2
+            "тысячных", "тысячная", "тысячные" -> 3
+            else -> return null
+        }
+
+        val numeratorStr = numerator.toString().padStart(digits, '0')
+        if (numeratorStr.length != digits) return null
+
+        return "0.$numeratorStr".toDoubleOrNull()
     }
 
     // ================================================================
