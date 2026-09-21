@@ -25,7 +25,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,7 +51,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val LOG_TAG = "VoiceDialog"
-private const val PENDING_CHOICE_TIMEOUT_MS = 5000L
 
 @Composable
 fun VoiceDialog(
@@ -165,38 +163,6 @@ fun VoiceDialog(
             controller = null
             feedback = null
             viewModel.setVoiceStatus(VoiceStatus.Idle)
-        }
-    }
-
-    // FIX 5.8.9d-3c2b2:
-    // Таймаут ожидания выбора. Если пользователь молчит 5 секунд —
-    // автоматически пропускаем проблемную пробу.
-    val pendingChoiceState = viewModel.voiceSession.pendingMarkChoice
-    LaunchedEffect(pendingChoiceState) {
-        if (pendingChoiceState != null) {
-            delay(PENDING_CHOICE_TIMEOUT_MS)
-
-            if (viewModel.voiceSession.pendingMarkChoice == pendingChoiceState) {
-                val fb = feedback
-                val ctrl = controller
-
-                try {
-                    val result = viewModel.voiceExecute(VoiceCommand.ChoiceSkip)
-                    resultText = describeResult(result, viewModel)
-                    status = "Готово"
-                    viewModel.setVoiceStatus(statusFromResult(result))
-
-                    if (fb != null) {
-                        handleFeedback(result, fb, ctrl, viewModel)
-                    }
-                } catch (e: Exception) {
-                    Log.e(LOG_TAG, "pending choice timeout УПАЛ", e)
-                    resultText = "Ошибка: ${e.message}"
-                    status = "Ошибка"
-                    viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
-                    fb?.soundError()
-                }
-            }
         }
     }
 
