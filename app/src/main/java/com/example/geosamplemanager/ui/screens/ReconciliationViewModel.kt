@@ -8,9 +8,12 @@ import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.data.reconciliation.MarkDecision
+import com.example.geosamplemanager.data.reconciliation.analyzeMark
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
+import com.example.geosamplemanager.data.voice.MarkDecisionVoiceRenderer
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.UnifiedSearch
 import com.example.geosamplemanager.data.voice.UnifiedSearchResult
@@ -18,6 +21,7 @@ import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceNumberParser
+import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoicePrefixResolver
 import com.example.geosamplemanager.data.voice.VoiceSearchRepository
 import com.example.geosamplemanager.data.voice.VoiceSession
@@ -63,6 +67,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         private const val SEARCH_DEBOUNCE_MS = 500L
         private const val MAX_SEARCH_ORDERS = 20
         private const val MAX_QUERY_TOKENS = 5
+
+        /**
+         * FIX 5.8.9d-2c: максимум порядковых для перечисления
+         * в ответе «сколько осталось». Дальше — «и ещё N».
+         */
+        private const val MAX_LEFT_LIST = 10
     }
 
     init {
@@ -565,6 +575,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.8.9d-3c1: единый анализ через [analyzeMark].
+     *
+     * Было: ручные проверки «found / isBlank / weightControl» прямо в
+     * методе. Стало: [analyzeMark] даёт решение, [applyMarkDecision]
+     * выполняет действие. Логика совпадает с UI (SearchScreen.onToggleFound).
+     */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -575,27 +592,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
-        if (row.found) {
-            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
-            return VoiceExecResult.Message("Проба $spoken уже отмечена")
-        }
 
-        setFound(row.id, true)
-        voiceSession.lastMarkedRowId = row.id
-        voiceSession.lastMarkedSampleNumber = row.sampleNumber
-
-        val needsWeight = (row.isBlank && row.weight == null) ||
-                (row.weightControl && row.controlWeight == null)
-        if (needsWeight) voiceSession.awaitingWeight = true
-
-        return VoiceExecResult.Marked(
-            sampleNumber = row.sampleNumber,
-            ordinal = ordinal,
-            isWeightControl = row.weightControl,
-            needsWeight = needsWeight
-        )
+        return applyMarkDecision(row)
     }
 
+    /**
+     * FIX 5.8.9d-3c1: отметить пробу, найденную последним поиском,
+     * через тот же [analyzeMark].
+     */
     private fun voiceMarkCurrent(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите пробу")
@@ -606,25 +610,90 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val row = group.rows.firstOrNull { it.sampleNumber == sampleNumber }
             ?: return VoiceExecResult.Message("Проба не найдена в наряде")
 
-        if (row.found) {
-            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
-            return VoiceExecResult.Message("Проба $spoken уже отмечена")
+        return applyMarkDecision(row)
+    }
+
+    /**
+     * FIX 5.8.9d-3c1: общее ядро обработки решения для ГП.
+     *
+     * Вызывается из voiceMarkOrdinal / voiceMarkCurrent после того,
+     * как row найдена. Анализ — через [analyzeMark], реакция — здесь.
+     *
+     * Реакция для UI и ГП различается только формой (диалог vs TTS),
+     * но решения — одинаковые. Соответствие:
+     *
+     *   CanMark             → setFound + Marked
+     *   MarkWithWeight      → setBlankWeightAndMarkFound + Marked
+     *   NeedsControlWeight  → awaitingWeight + Message
+     *   NeedsBlankWeight    → awaitingWeight + Message
+     *   AlreadyFound        → awaitingContinue + Message (действия — 3c2)
+     *   Postponed           → awaitingContinue + Message (действия — 3c2)
+     *   ImportError         → Message
+     */
+    private fun applyMarkDecision(row: SampleRow): VoiceExecResult {
+        val decision = analyzeMark(toMarkContext(state, row))
+        Log.i(TAG, "applyMarkDecision: row=${row.sampleNumber} decision=$decision")
+
+        return when (decision) {
+            is MarkDecision.CanMark -> {
+                setFound(row.id, true)
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                VoiceExecResult.Marked(
+                    sampleNumber = row.sampleNumber,
+                    ordinal = row.numberInWell,
+                    isWeightControl = row.weightControl,
+                    needsWeight = false
+                )
+            }
+
+            is MarkDecision.MarkWithWeight -> {
+                setBlankWeightAndMarkFound(row.id, decision.weight)
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                VoiceExecResult.Marked(
+                    sampleNumber = row.sampleNumber,
+                    ordinal = row.numberInWell,
+                    isWeightControl = false,
+                    needsWeight = false
+                )
+            }
+
+            is MarkDecision.NeedsControlWeight -> {
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                voiceSession.awaitingWeight = true
+                VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
+            }
+
+            is MarkDecision.NeedsBlankWeight -> {
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                voiceSession.awaitingWeight = true
+                VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
+            }
+
+            is MarkDecision.AlreadyFound -> {
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                // 3c2: обработка «снять / отложить / пропустить» + автопауза.
+                // Пока просто сообщаем — VoiceDialog сыграет soundAttention.
+                voiceSession.awaitingContinue = true
+                VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
+            }
+
+            is MarkDecision.Postponed -> {
+                voiceSession.lastMarkedRowId = row.id
+                voiceSession.lastMarkedSampleNumber = row.sampleNumber
+                // 3c2: обработка «отметить / снять» + автопауза.
+                voiceSession.awaitingContinue = true
+                VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
+            }
+
+            is MarkDecision.ImportError -> {
+                VoiceExecResult.Message(MarkDecisionVoiceRenderer.render(decision))
+            }
         }
-
-        setFound(row.id, true)
-        voiceSession.lastMarkedRowId = row.id
-        voiceSession.lastMarkedSampleNumber = row.sampleNumber
-
-        val needsWeight = (row.isBlank && row.weight == null) ||
-                (row.weightControl && row.controlWeight == null)
-        if (needsWeight) voiceSession.awaitingWeight = true
-
-        return VoiceExecResult.Marked(
-            sampleNumber = row.sampleNumber,
-            ordinal = row.numberInWell,
-            isWeightControl = row.weightControl,
-            needsWeight = needsWeight
-        )
     }
 
     private fun voiceMarkByNumbers(ordinals: List<Int>): VoiceExecResult {
@@ -680,14 +749,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * FIX 5.8.9d-2a-fix-2: вес идёт в правильное поле.
-     *
-     *   Проба с weightControl = true → setControlWeightAndFound
-     *     (пишет в controlWeight, не стирает основной weight).
-     *   Холостая / обычная → setWeight
-     *     (пишет в weight — как и раньше).
-     *
-     * До фикса голосовой вес всегда шёл в weight, из-за чего
-     * основной вес ВК-пробы перезаписывался.
      */
     private fun voiceSetWeight(value: Double): VoiceExecResult {
         val rowId = voiceSession.lastMarkedRowId
@@ -773,9 +834,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
-        val rows = group.rows.filter { it.wellNumber == wellNumber }
-        val left = rows.count { !it.found }
-        return VoiceExecResult.Message("Осталось отметить: $left")
+
+        val rows = group.rows
+            .filter { it.wellNumber == wellNumber }
+            .sortedBy { it.numberInWell }
+        val leftRows = rows.filter { !it.found }
+
+        if (leftRows.isEmpty()) {
+            return VoiceExecResult.Message("Все пробы отмечены.")
+        }
+
+        val ordinals = leftRows.mapNotNull { VoiceOrdinals.word(it.numberInWell) }
+        val shown = ordinals.take(MAX_LEFT_LIST)
+        val tail = if (ordinals.size > MAX_LEFT_LIST) {
+            " и ещё ${ordinals.size - MAX_LEFT_LIST}"
+        } else ""
+        val list = shown.joinToString(", ") + tail
+
+        return if (leftRows.size == 1) {
+            VoiceExecResult.Message("Осталась одна: $list.")
+        } else {
+            VoiceExecResult.Message("Осталось ${leftRows.size}: $list.")
+        }
     }
 
     private fun voiceShowFilter(filter: ResultFilter, label: String): VoiceExecResult {
