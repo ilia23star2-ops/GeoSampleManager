@@ -1,268 +1,115 @@
 package com.example.geosamplemanager.data.voice
 
 /**
- * Разбор голосовой фразы в VoiceCommand.
+ * Команда, распознанная из фразы.
+ *
+ * Разбор и выполнение разделены: парсер даёт VoiceCommand,
+ * ViewModel решает, что с ним делать.
  */
-class VoiceCommandParser(
-    private val numberParser: VoiceNumberParser = VoiceNumberParser()
-) {
+sealed class VoiceCommand {
 
-    fun parse(input: String): VoiceCommand {
-        val raw = input.trim()
-        if (raw.isEmpty()) return VoiceCommand.Unknown
+    /** Поиск: введён номер скважины или пробы. */
+    data class Search(val query: String) : VoiceCommand()
 
-        val norm = numberParser.normalize(raw)
-
-        // ---- Управляющие (одиночные слова) ----
-        when (norm) {
-            "стоп", "хватит" -> return VoiceCommand.Stop
-            "пауза", "паузу" -> return VoiceCommand.Pause
-            "продолжить", "продолжай" -> return VoiceCommand.Resume
-            "отмена", "отменить", "верни", "назад" -> return VoiceCommand.Undo
-            "повтори", "вперёд", "вперед" -> return VoiceCommand.Redo
-            "следующая", "далее", "следующую", "следующий" -> return VoiceCommand.Next
-            "помощь", "команды", "команда" -> return VoiceCommand.Help
-            "сколько осталось", "сколько осталось?" -> return VoiceCommand.HowManyLeft
-            "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
-            "показать найденные", "найденные" -> return VoiceCommand.ShowFound
-
-            "снять все", "сбросить все", "очистить все" -> return VoiceCommand.ClearAll
-
-            "все", "отметь все", "отметить все", "отметьте все" ->
-                return VoiceCommand.MarkAll
-
-            // FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
-            "отметь", "отметить", "отметьте",
-            "отметь эту", "отметить эту", "эту", "эту отметь",
-            "отметь ее", "отметить ее", "отметь её", "отметить её",
-            "ее", "её", "ее отметь", "её отметь",
-            "отметь найденную", "отметить найденную",
-            "отметь найденное", "отметить найденное" ->
-                return VoiceCommand.MarkCurrent
-
-            "снять последнюю", "последнюю снять" -> return VoiceCommand.ClearLast
-            "снять отложенную", "снять отложенную пробу" -> return VoiceCommand.Unpostpone
-
-            "сортировка", "режим сортировка", "режим сортировки" ->
-                return VoiceCommand.SetMode(VoiceSessionMode.SORT)
-            "поиск", "режим поиск" ->
-                return VoiceCommand.SetMode(VoiceSessionMode.SEARCH)
-        }
-
-        // ---- Вес ----
-        if (norm == "вес" || norm.startsWith("вес ")) {
-            val tail = norm.removePrefix("вес").trim()
-            val value = parseWeight(tail)
-            if (value != null) return VoiceCommand.SetWeight(value)
-        }
-
-        // ---- Снять <ordinal> ----
-        val words = norm.split(Regex("\\s+"))
-        if (words.size >= 2 &&
-            words[0] in setOf("снять", "убрать", "удали", "удалить")
-        ) {
-            val tail = words.drop(1).joinToString(" ")
-            val ord = VoiceOrdinals.match(tail)
-            if (ord != null) return VoiceCommand.ClearOrdinal(ord)
-        }
-
-        // ---- Отметить <ordinal> / <ordinal> <ordinal> ... ----
-        val ordinals = VoiceOrdinals.matchAll(norm)
-        when {
-            ordinals.size == 1 -> return VoiceCommand.MarkOrdinal(ordinals[0])
-            ordinals.size > 1 -> return VoiceCommand.MarkByNumbers(ordinals)
-        }
-
-        // ---- Сортировка: "<X> и <Y>" ----
-        val sortParts = norm.split(Regex("\\s+и\\s+"))
-        if (sortParts.size in 2..5) {
-            val parsed = sortParts.map { part ->
-                val trimmed = part.trim()
-                numberParser.parse(trimmed).primary?.takeIf { it.isNotBlank() }
-                    ?: trimmed.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
-            }
-            if (parsed.all { it != null }) {
-                return VoiceCommand.Sort(parsed.filterNotNull())
-            }
-        }
-
-        // ---- Всё остальное — поиск ----
-        return VoiceCommand.Search(raw)
-    }
+    /** Отметить пробу по порядковому номеру (1..30). */
+    data class MarkOrdinal(val ordinal: Int) : VoiceCommand()
 
     /**
-     * Парсит свободный ответ на «Вес?».
-     *
-     * FIX 5.8.9d-3c2a: расширено покрытие русских форм.
-     * FIX 5.8.9d-3c2a-fix-1: сначала проверяем простые сокращения
-     * («полтора», «полкило»), потом отрезаем единицы измерения.
-     * Иначе removeSuffix("кило") съедал «кило» из «полкило» и
-     * оставлял мусор «пол».
-     *
-     * Поддерживается:
-     *   «два»                     → 2.0
-     *   «два пять»                → 25.0 (через numberParser)
-     *   «два и шесть»             → 2.6
-     *   «2,6» / «2.6»             → 2.6
-     *   «две целых шесть десятых» → 2.6
-     *   «два целых шесть сотых»   → 2.06
-     *   «шесть десятых»           → 0.6
-     *   «шесть сотых»             → 0.06
-     *   «два с половиной»         → 2.5
-     *   «два с четвертью»         → 2.25
-     *   «полтора»                 → 1.5
-     *   «полкило»                 → 0.5
-     *   «два кг» / «два кило»     → 2.0 (суффикс отрезается)
-     *
-     * Возвращает null, если не удалось распознать. Округление до
-     * сотых и проверку границ делает validateWeight (data.reconciliation).
+     * FIX 5.8.9g-1: отметить несколько проб подряд одной фразой.
      */
-    fun parseWeightAnswer(input: String): Double? {
-        var norm = numberParser.normalize(input).trim()
-        if (norm.isEmpty()) return null
-
-        // FIX 5.8.9d-3c2a-fix-1: сначала простые сокращения — до
-        // отрезания единиц измерения. Иначе «полкило» превратится
-        // в «пол» после removeSuffix("кило").
-        when (norm) {
-            "полтора", "полторы" -> return 1.5
-            "полкило" -> return 0.5
-        }
-
-        // Отрезаем единицы измерения — в БД канонические килограммы.
-        norm = norm
-            .removeSuffix("килограмма")
-            .removeSuffix("килограмм")
-            .removeSuffix("килограммы")
-            .removeSuffix("кг")
-            .removeSuffix("кило")
-            .trim()
-        if (norm.isEmpty()) return null
-
-        // Явное «X целых Y десятых / сотых / тысячных».
-        tryParseExplicitDecimal(norm)?.let { return it }
-
-        // Дробное без целых: «Y десятых», «Y сотых».
-        tryParseFractionOnly(norm)?.let { return it }
-
-        // «два с половиной» / «два с четвертью».
-        val halfSuffix = "с половиной"
-        if (norm.endsWith(halfSuffix)) {
-            val baseText = norm.removeSuffix(halfSuffix).trim()
-            val base = parseWeightAnswer(baseText) ?: return null
-            return base + 0.5
-        }
-        val quarterSuffix = "с четвертью"
-        if (norm.endsWith(quarterSuffix)) {
-            val baseText = norm.removeSuffix(quarterSuffix).trim()
-            val base = parseWeightAnswer(baseText) ?: return null
-            return base + 0.25
-        }
-
-        return parseWeight(norm)
-    }
+    data class MarkByNumbers(val ordinals: List<Int>) : VoiceCommand()
 
     /**
-     * FIX 5.8.9d-3c2a: «X целых Y десятых / сотых / тысячных» → Double.
-     *
-     *   «две целых шесть десятых»  → 2.6
-     *   «два целых шесть сотых»    → 2.06
-     *   «ноль целых шесть десятых» → 0.6
-     *   «три целых двести пятьдесят тысячных» → 3.25
-     *
-     * Возвращает null, если фраза не подходит под шаблон.
+     * FIX 5.8.9g-1: отметить все пробы текущей скважины.
      */
-    private fun tryParseExplicitDecimal(text: String): Double? {
-        val splitWords = listOf("целых", "целая", "целое")
-        val delimiter = splitWords.firstOrNull { text.contains(" $it ") } ?: return null
-
-        val idx = text.indexOf(" $delimiter ")
-        if (idx < 0) return null
-
-        val intText = text.substring(0, idx).trim()
-        val tailText = text.substring(idx + delimiter.length + 2).trim()
-
-        val intPart = numberParser.parse(intText).primary?.toIntOrNull() ?: return null
-        if (intPart < 0) return null
-
-        // tail: "шесть десятых" | "шесть сотых" | "двести пятьдесят тысячных"
-        val tailWords = tailText.split(Regex("\\s+"))
-        if (tailWords.size < 2) return null
-
-        val denominator = tailWords.last()
-        val numeratorText = tailWords.dropLast(1).joinToString(" ")
-        val numerator = numberParser.parse(numeratorText).primary?.toIntOrNull()
-            ?: return null
-
-        val digits = when (denominator) {
-            "десятых", "десятая", "десятые" -> 1
-            "сотых", "сотая", "сотые" -> 2
-            "тысячных", "тысячная", "тысячные" -> 3
-            else -> return null
-        }
-
-        val numeratorStr = numerator.toString().padStart(digits, '0')
-        if (numeratorStr.length != digits) return null
-
-        return "$intPart.$numeratorStr".toDoubleOrNull()
-    }
+    data object MarkAll : VoiceCommand()
 
     /**
-     * FIX 5.8.9d-3c2a: «Y десятых» / «Y сотых» без целой части.
+     * FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
      *
-     *   «шесть десятых» → 0.6
-     *   «шесть сотых»   → 0.06
+     * Используется, когда после поиска конкретной пробы «15 26 01»
+     * пользователь говорит «отметь» / «отметь её» / «эту».
+     *
+     * В отличие от [MarkOrdinal], номер пробы не называется —
+     * берётся из сессии (что нашли, то и отмечаем).
      */
-    private fun tryParseFractionOnly(text: String): Double? {
-        val tailWords = text.split(Regex("\\s+"))
-        if (tailWords.size < 2) return null
+    data object MarkCurrent : VoiceCommand()
 
-        val denominator = tailWords.last()
-        val numeratorText = tailWords.dropLast(1).joinToString(" ")
-        val numerator = numberParser.parse(numeratorText).primary?.toIntOrNull()
-            ?: return null
+    /** Установить вес. */
+    data class SetWeight(val value: Double) : VoiceCommand()
 
-        val digits = when (denominator) {
-            "десятых", "десятая", "десятые" -> 1
-            "сотых", "сотая", "сотые" -> 2
-            "тысячных", "тысячная", "тысячные" -> 3
-            else -> return null
-        }
+    /** Снять отметку у пробы по порядковому номеру. */
+    data class ClearOrdinal(val ordinal: Int) : VoiceCommand()
 
-        val numeratorStr = numerator.toString().padStart(digits, '0')
-        if (numeratorStr.length != digits) return null
+    /** Снять отметку у последней отмеченной. */
+    data object ClearLast : VoiceCommand()
 
-        return "0.$numeratorStr".toDoubleOrNull()
-    }
+    /** Снять все отметки в текущей скважине. */
+    data object ClearAll : VoiceCommand()
 
-    // ================================================================
-    // Разбор веса (общая логика)
-    // ================================================================
+    /** Снять «отложена» с текущей пробы. */
+    data object Unpostpone : VoiceCommand()
 
-    private fun parseWeight(text: String): Double? {
-        if (text.isEmpty()) return null
+    /** Перейти к следующей скважине (очистить запрос). */
+    data object Next : VoiceCommand()
 
-        text.replace(',', '.').toDoubleOrNull()?.let { return it }
+    /** Отмена. */
+    data object Undo : VoiceCommand()
 
-        val r = numberParser.parse(text)
-        val c = r.primary ?: return null
+    /** Возврат отменённого. */
+    data object Redo : VoiceCommand()
 
-        if (!c.contains('|')) {
-            c.toDoubleOrNull()?.let {
-                if (c.length == 2 && c.all { ch -> ch.isDigit() }) {
-                    val a = c[0].digitToInt()
-                    val b = c[1].digitToInt()
-                    if (b != 0) return "$a.$b".toDoubleOrNull()
-                }
-                return it
-            }
-            return null
-        }
+    /** Пауза. */
+    data object Pause : VoiceCommand()
 
-        val parts = c.split('|')
-        if (parts.size == 2 && parts[0].isNotEmpty() && parts[1].isNotEmpty()) {
-            return "${parts[0]}.${parts[1]}".toDoubleOrNull()
-        }
-        return null
-    }
+    /** Продолжить после паузы. */
+    data object Resume : VoiceCommand()
+
+    /** Завершить сессию. */
+    data object Stop : VoiceCommand()
+
+    /** «Сколько осталось». */
+    data object HowManyLeft : VoiceCommand()
+
+    /** Показать отложенные. */
+    data object ShowPostponed : VoiceCommand()
+
+    /** Показать найденные. */
+    data object ShowFound : VoiceCommand()
+
+    /** Справка. */
+    data object Help : VoiceCommand()
+
+    /** Сортировка: два и более номера подряд. */
+    data class Sort(val queries: List<String>) : VoiceCommand()
+
+    /**
+     * FIX 5.8.9f-1a-fix-1: переключение режима голосом.
+     *
+     * Распознаётся из фраз:
+     * «сортировка» / «режим сортировка» / «режим сортировки» → SORT.
+     * «поиск» / «режим поиск» → SEARCH.
+     */
+    data class SetMode(val mode: VoiceSessionMode) : VoiceCommand()
+
+    /**
+     * FIX 5.8.9d-3c2b1: выбор действия для уже отмеченной / отложенной пробы.
+     *
+     * Используется только когда VoiceSession.pendingMarkChoice != null.
+     *
+     * Примеры:
+     * «снять»   → ChoiceRemove
+     * «отложить» → ChoicePostpone
+     * «пропустить» → ChoiceSkip
+     */
+    data object ChoiceRemove : VoiceCommand()
+
+    /** FIX 5.8.9d-3c2b1: отложить текущую пробу из состояния выбора. */
+    data object ChoicePostpone : VoiceCommand()
+
+    /** FIX 5.8.9d-3c2b1: пропустить текущую пробу из состояния выбора. */
+    data object ChoiceSkip : VoiceCommand()
+
+    /** Распознать не удалось. */
+    data object Unknown : VoiceCommand()
 }
