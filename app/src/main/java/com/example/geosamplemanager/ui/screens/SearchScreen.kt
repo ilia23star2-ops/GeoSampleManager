@@ -37,6 +37,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.entity.SampleImageEntity
+import com.example.geosamplemanager.data.reconciliation.MarkDecision
+import com.example.geosamplemanager.data.reconciliation.analyzeMark
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
@@ -231,37 +233,45 @@ fun SearchScreen(
         notePhotos = photos
     }
 
+    /**
+     * FIX 5.8.9d-3b: единый алгоритм через analyzeMark.
+     *
+     * Было: пять вложенных if с ручным разбором (found / importError /
+     * postponed / ВК / холостая). ГП имел свою копию той же логики —
+     * расхождения были неизбежны.
+     *
+     * Стало: одна функция analyzeMark даёт MarkDecision, UI только
+     * отображает его (открывает нужный диалог или сразу отмечает).
+     * Тот же analyzeMark будет использовать ГП в 5.8.9d-3c.
+     */
     fun onToggleFound(row: SampleRow) {
-        if (row.found) { alreadyFoundRowId = row.id; return }
-        if (row.hasImportError) { errorDialogRowId = row.id; return }
-        if (row.postponed) { postponedDialogRowId = row.id; return }
-        if (row.weightControl && row.controlWeight == null) {
-            weightDialogRowId = row.id
-            weightDialogIsControl = true
-            return
-        }
-        if (row.isBlank) {
-            if (row.weight != null) { viewModel.setFound(row.id, true); return }
-            val settings = state.currentBlankWeight
-            when (settings.mode) {
-                BlankWeightMode.FIXED -> {
-                    val v = settings.fixedValue
-                    if (v != null && v > 0) viewModel.setBlankWeightAndMarkFound(row.id, v)
-                    else { weightDialogRowId = row.id; weightDialogIsControl = false }
-                }
-                BlankWeightMode.AVERAGE -> {
-                    val group = state.groupById(row.groupId)
-                    val avg = group?.let { calculateAverageNeighborWeight(it, row.id) }
-                    if (avg != null && avg > 0) viewModel.setBlankWeightAndMarkFound(row.id, avg)
-                    else { weightDialogRowId = row.id; weightDialogIsControl = false }
-                }
-                BlankWeightMode.MANUAL -> {
-                    weightDialogRowId = row.id; weightDialogIsControl = false
-                }
+        val decision = analyzeMark(toMarkContext(state, row))
+        when (decision) {
+            is MarkDecision.AlreadyFound -> {
+                alreadyFoundRowId = row.id
             }
-            return
+            is MarkDecision.ImportError -> {
+                errorDialogRowId = row.id
+            }
+            is MarkDecision.Postponed -> {
+                postponedDialogRowId = row.id
+            }
+            is MarkDecision.NeedsControlWeight -> {
+                weightDialogRowId = row.id
+                weightDialogIsControl = true
+            }
+            is MarkDecision.NeedsBlankWeight -> {
+                weightDialogRowId = row.id
+                weightDialogIsControl = false
+            }
+            is MarkDecision.MarkWithWeight -> {
+                // Холостая с авто-весом (FIXED / AVERAGE) — сразу отмечаем.
+                viewModel.setBlankWeightAndMarkFound(row.id, decision.weight)
+            }
+            is MarkDecision.CanMark -> {
+                viewModel.setFound(row.id, true)
+            }
         }
-        viewModel.setFound(row.id, true)
     }
 
     fun onMarkAllClick(groupId: String) {
@@ -333,8 +343,6 @@ fun SearchScreen(
                             onVoiceClick = { requestMic() },
                             voiceMode = viewModel.voiceSession.mode,
                             onVoiceModeToggle = {
-                                // FIX 5.8.9f-2b: тап по чипу переключает режим.
-                                // Поле mode — Compose State, UI перерисуется сам.
                                 viewModel.voiceSession.mode =
                                     if (viewModel.voiceSession.mode == VoiceSessionMode.SEARCH)
                                         VoiceSessionMode.SORT
