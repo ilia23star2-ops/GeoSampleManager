@@ -3,10 +3,12 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.6-3:
- * - служебные команды больше не должны уходить в Search;
- * - фразы вида «назад один» не должны превращаться в MarkOrdinal(1);
- * - весовой ответ обрабатывается через parseWeightAnswer, а не старый parseWeight;
+ * FIX 5.8.6-3-fix-1:
+ * - возвращён параметр pendingChoice;
+ * - команды выбора «снять / отложить / пропустить» распознаются только
+ *   когда VoiceSession.pendingMarkChoice != null;
+ * - служебные команды не уходят в Search;
+ * - фразы вида «назад один» не превращаются в MarkOrdinal(1);
  * - в поиск уходят только фразы, похожие на номер/код пробы или скважины.
  */
 class VoiceCommandParser(
@@ -44,16 +46,80 @@ class VoiceCommandParser(
         "осталось",
         "показать",
         "отложенные",
-        "найденные"
+        "найденные",
+        "отложить",
+        "отложи",
+        "пропустить",
+        "пропусти"
     )
 
-    fun parse(input: String): VoiceCommand {
+    private val pendingRemovePhrases = setOf(
+        "снять",
+        "сними",
+        "убрать",
+        "убери",
+        "удали",
+        "удалить",
+        "снять отметку",
+        "убрать отметку",
+        "снять пробу",
+        "убрать пробу"
+    )
+
+    private val pendingPostponePhrases = setOf(
+        "отложить",
+        "отложи",
+        "перенести",
+        "перенеси",
+        "отложить пробу",
+        "перенести пробу"
+    )
+
+    private val pendingSkipPhrases = setOf(
+        "пропустить",
+        "пропусти",
+        "дальше",
+        "не надо",
+        "ничего",
+        "оставить",
+        "потом"
+    )
+
+    private val pendingMarkCurrentPhrases = setOf(
+        "отметить",
+        "отметь",
+        "отметьте",
+        "отметить эту",
+        "отметь эту",
+        "эту",
+        "отметить ее",
+        "отметь ее",
+        "отметить её",
+        "отметь её",
+        "ее",
+        "её"
+    )
+
+    fun parse(
+        input: String,
+        pendingChoice: Boolean = false
+    ): VoiceCommand {
         val raw = input.trim()
         if (raw.isEmpty()) return VoiceCommand.Unknown
 
         val norm = numberParser
             .normalize(raw)
             .trim('.', ',', '!', '?', ';', ':')
+
+        // ---- FIX 5.8.9d-3c2b1 / 5.8.6-3-fix-1: команды выбора ----
+        if (pendingChoice) {
+            when (norm) {
+                in pendingRemovePhrases -> return VoiceCommand.ChoiceRemove
+                in pendingPostponePhrases -> return VoiceCommand.ChoicePostpone
+                in pendingSkipPhrases -> return VoiceCommand.ChoiceSkip
+                in pendingMarkCurrentPhrases -> return VoiceCommand.MarkCurrent
+            }
+        }
 
         // ---- Управляющие (точные совпадения) ----
         when (norm) {
@@ -67,7 +133,8 @@ class VoiceCommandParser(
             "сколько осталось" -> return VoiceCommand.HowManyLeft
             "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
             "показать найденные", "найденные" -> return VoiceCommand.ShowFound
-            "снять все", "сбросить все", "очистить все" -> return VoiceCommand.ClearAll
+            "снять все", "сбросить все", "очистить все" ->
+                return VoiceCommand.ClearAll
 
             "все", "отметь все", "отметить все", "отметьте все" ->
                 return VoiceCommand.MarkAll
