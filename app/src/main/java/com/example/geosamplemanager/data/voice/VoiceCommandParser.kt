@@ -157,8 +157,8 @@ class VoiceCommandParser(
             "стоп", "хватит" -> return VoiceCommand.Stop
             "пауза", "паузу" -> return VoiceCommand.Pause
             "продолжить", "продолжай" -> return VoiceCommand.Resume
-            "отмена", "отменить", "верни", "назад" -> return VoiceCommand.Undo
-            "повтори", "вперёд", "вперед" -> return VoiceCommand.Redo
+            "отмена", "отменить" -> return VoiceCommand.Undo
+            "вперёд", "вперед" -> return VoiceCommand.Redo
             "следующая", "далее", "следующую", "следующий" -> return VoiceCommand.Next
             "помощь", "команды", "команда" -> return VoiceCommand.Help
             "сколько осталось" -> return VoiceCommand.HowManyLeft
