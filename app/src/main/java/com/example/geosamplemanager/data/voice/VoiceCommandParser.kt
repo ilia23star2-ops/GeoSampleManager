@@ -18,6 +18,9 @@ package com.example.geosamplemanager.data.voice
  * FIX 5.8.6-5a-fix-1:
  * - починены составные порядковые: «двадцать первая», «тридцать первая»;
  * - при этом «семь», «двадцать», «это первая проба» не становятся отметкой.
+ *
+ * FIX 5.8.6-5a-fix-2:
+ * - исправлена компиляция: `num in 30` → `num in 1..30`.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -227,7 +230,7 @@ class VoiceCommandParser(
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
 
             val num = numberParser.parse(tail).primary?.toIntOrNull()
-            if (num != null && num in 30) return VoiceCommand.ClearOrdinal(num)
+            if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
 
             return VoiceCommand.Unknown
         }
