@@ -3,24 +3,22 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.6-3-fix-1:
- * - возвращён параметр pendingChoice;
- * - команды выбора «снять / отложить / пропустить» распознаются только
- *   когда VoiceSession.pendingMarkChoice != null;
- * - служебные команды не уходят в Search;
- * - фразы вида «назад один» не превращаются в MarkOrdinal(1);
- * - в поиск уходят только фразы, похожие на номер/код пробы или скважины.
+ * FIX 5.8.6-5a — строгий голосовой шлюз:
+ * - «семья» → «семь» больше не отмечает пробу: количественные числа
+ *   сами по себе не становятся MarkOrdinal;
+ * - отметка только по явным конструкциям:
+ *   «первая», «отметь 7», «отметить седьмую», «отметь эту»;
+ * - «снять 7» работает как ClearOrdinal;
+ * - сортировка понимает разделители: «и», запятая, точка с запятой, «запятая», «тире»;
+ *   но только если части похожи на номера (≥2 цифр), чтобы «два и шесть»
+ *   не превращалось в Sort;
+ * - служебные слова не уходят в Search;
+ * - команды выбора распознаются только при pendingChoice.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
 ) {
 
-    /**
-     * Слова, которые почти всегда являются служебной командой.
-     *
-     * Если такое слово встречается во фразе, не пытаемся из него
-     * сделать поиск или отметку.
-     */
     private val commandLikeWords = setOf(
         "стоп",
         "хватит",
@@ -100,6 +98,29 @@ class VoiceCommandParser(
         "её"
     )
 
+    /** Глаголы явной отметки с аргументом: «отметь 7», «отметить первую». */
+    private val markVerbPrefixes = listOf(
+        "отметь ",
+        "отметить ",
+        "отметьте "
+    )
+
+    /** Глаголы явного снятия с аргументом: «снять 7», «убрать первую». */
+    private val removeVerbWords = setOf(
+        "снять",
+        "убрать",
+        "удали",
+        "удалить"
+    )
+
+    /** Союзы/разделители, допустимые между порядковыми числительными. */
+    private val ordinalJoinWords = setOf(
+        "и",
+        "запятая",
+        ",",
+        ";"
+    )
+
     fun parse(
         input: String,
         pendingChoice: Boolean = false
@@ -111,7 +132,7 @@ class VoiceCommandParser(
             .normalize(raw)
             .trim('.', ',', '!', '?', ';', ':')
 
-        // ---- FIX 5.8.9d-3c2b1 / 5.8.6-3-fix-1: команды выбора ----
+        // ---- Команды выбора (только в состоянии pendingChoice) ----
         if (pendingChoice) {
             when (norm) {
                 in pendingRemovePhrases -> return VoiceCommand.ChoiceRemove
@@ -139,7 +160,6 @@ class VoiceCommandParser(
             "все", "отметь все", "отметить все", "отметьте все" ->
                 return VoiceCommand.MarkAll
 
-            // FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
             "отметь", "отметить", "отметьте",
             "отметь эту", "отметить эту", "эту", "эту отметь",
             "отметь ее", "отметить ее", "отметь её", "отметить её",
@@ -158,7 +178,7 @@ class VoiceCommandParser(
                 return VoiceCommand.SetMode(VoiceSessionMode.SEARCH)
         }
 
-        // ---- Вес: «вес два и шесть» ----
+        // ---- Вес: «вес два и шесть», «вес полтора» ----
         if (norm == "вес" || norm.startsWith("вес ")) {
             val tail = norm.removePrefix("вес").trim()
             val value = parseWeightAnswer(tail)
@@ -170,46 +190,76 @@ class VoiceCommandParser(
             }
         }
 
-        // ---- Снять <ordinal> ----
-        val words = norm.split(Regex("\\s+"))
+        // ---- Явная отметка с аргументом: «отметь 7», «отметить первую» ----
+        for (prefix in markVerbPrefixes) {
+            if (norm.startsWith(prefix)) {
+                val tail = norm.removePrefix(prefix).trim()
 
-        if (words.size >= 2 &&
-            words[0] in setOf("снять", "убрать", "удали", "удалить")
-        ) {
-            val tail = words.drop(1).joinToString(" ")
-            val ord = VoiceOrdinals.match(tail)
+                if (tail.isEmpty()) {
+                    return VoiceCommand.MarkCurrent
+                }
 
-            return if (ord != null) {
-                VoiceCommand.ClearOrdinal(ord)
-            } else {
-                VoiceCommand.Unknown
+                val ord = VoiceOrdinals.match(tail)
+                if (ord != null) return VoiceCommand.MarkOrdinal(ord)
+
+                val num = numberParser.parse(tail).primary?.toIntOrNull()
+                if (num != null && num in 1..30) return VoiceCommand.MarkOrdinal(num)
+
+                return VoiceCommand.Unknown
             }
         }
 
-        // FIX 5.8.6-3:
-        // Если во фразе есть служебное слово, не превращаем её ни в отметку,
-        // ни в поиск. Например: «назад один», «стоп первая», «сколько осталось одна».
+        // ---- Явное снятие с аргументом: «снять 7», «убрать первую» ----
+        val words = norm.split(Regex("\\s+"))
+
+        if (words.size >= 2 && words[0] in removeVerbWords) {
+            val tail = words.drop(1).joinToString(" ")
+            val ord = VoiceOrdinals.match(tail)
+
+            if (ord != null) return VoiceCommand.ClearOrdinal(ord)
+
+            val num = numberParser.parse(tail).primary?.toIntOrNull()
+            if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
+
+            return VoiceCommand.Unknown
+        }
+
+        // ---- Служебное слово внутри фразы → не отметка и не поиск ----
         if (containsCommandWord(norm)) {
             return VoiceCommand.Unknown
         }
 
-        // ---- Отметить <ordinal> / <ordinal> <ordinal> ... ----
+        // ---- Голые порядковые: «первая», «первая вторая» ----
+        // Разрешаем только если ВСЕ токены — порядковые или союзы между ними.
+        // Иначе «это первая проба» не станет MarkOrdinal(1).
+        val tokens = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         val ordinals = VoiceOrdinals.matchAll(norm)
 
-        when {
-            ordinals.size == 1 -> return VoiceCommand.MarkOrdinal(ordinals[0])
-            ordinals.size > 1 -> return VoiceCommand.MarkByNumbers(ordinals)
+        if (ordinals.isNotEmpty() && tokens.all { isOrdinalOrJoin(it) }) {
+            return when {
+                ordinals.size == 1 -> VoiceCommand.MarkOrdinal(ordinals[0])
+                else -> VoiceCommand.MarkByNumbers(ordinals)
+            }
         }
 
-        // ---- Сортировка: "<X> и <Y>" ----
-        val sortParts = norm.split(Regex("\\s+и\\s+"))
+        // ---- Сортировка: «1524 и 1525», «1524 запятая 1525» ----
+        val sortNormalized = norm
+            .replace(Regex("\\s*запятая\\s*"), ", ")
+            .replace(Regex("\\s*тире\\s*"), ", ")
+            .replace(Regex("\\s*;\\s*"), ", ")
+
+        val sortParts = sortNormalized
+            .split(Regex("\\s*,\\s+|\\s+и\\s+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
 
         if (sortParts.size in 2..5) {
             val parsed = sortParts.map { part ->
-                val trimmed = part.trim()
+                val cand = numberParser.parse(part).primary?.takeIf { it.isNotBlank() }
+                    ?: part.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
 
-                numberParser.parse(trimmed).primary?.takeIf { it.isNotBlank() }
-                    ?: trimmed.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
+                // Требujemy номер, а не одиночную цифру веса.
+                cand?.takeIf { it.filter { ch -> ch.isDigit() }.length >= 2 }
             }
 
             if (parsed.all { it != null }) {
@@ -217,8 +267,7 @@ class VoiceCommandParser(
             }
         }
 
-        // FIX 5.8.6-3:
-        // В поиск уходит только то, что похоже на номер/код.
+        // ---- В поиск уходит только то, что похоже на номер/код ----
         return if (looksLikeSearchQuery(norm)) {
             VoiceCommand.Search(raw)
         } else {
@@ -230,53 +279,30 @@ class VoiceCommandParser(
         return norm.split(Regex("\\s+")).any { it in commandLikeWords }
     }
 
+    private fun isOrdinalOrJoin(token: String): Boolean {
+        if (token in ordinalJoinWords) return true
+        return VoiceOrdinals.match(token) != null
+    }
+
     /**
      * Похожа ли фраза на поисковый запрос: номер скважины, номер пробы, код с буквами.
-     *
-     * Разрешаем:
-     * - цифры: «1524», «15 24 01»;
-     * - латиницу: «KPD1090031»;
-     * - русские числительные, если VoiceNumberParser дал кандидатов.
-     *
-     * Не разрешаем чистые служебные слова — они отсекаются выше.
      */
     private fun looksLikeSearchQuery(norm: String): Boolean {
         if (norm.isEmpty()) return false
-
         if (norm.any { it.isDigit() }) return true
-
         if (norm.any { it.isLetter() && it.code < 128 }) return true
-
         return numberParser.parse(norm).candidates.isNotEmpty()
     }
 
     /**
      * Парсит свободный ответ на «Вес?».
      *
-     * FIX 5.8.9d-3c2a: расширено покрытие русских форм.
-     * FIX 5.8.9d-3c2a-fix-1: сначала проверяем простые сокращения
-     * («полтора», «полкило»), потом отрезаем единицы измерения.
-     * Иначе removeSuffix("кило") съедал «кило» из «полкило» и
-     * оставлял мусор «пол».
-     *
      * Поддерживается:
-     * «два»                     → 2.0
-     * «два пять»                → 25.0 (через numberParser)
-     * «два и шесть»             → 2.6
-     * «2,6» / «2.6»             → 2.6
-     * «две целых шесть десятых» → 2.6
-     * «два целых шесть сотых»   → 2.06
-     * «шесть десятых»           → 0.6
-     * «шесть сотых»             → 0.06
-     * «два с половиной»         → 2.5
-     * «два с четвертью»         → 2.25
-     * «полтора»                 → 1.5
-     * «полкило»                 → 0.5
-     * «два кг» / «два кило»     → 2.0 (суффикс отрезается)
-     *
-     * Возвращает null, если не удалось распознать.
-     * Округление до сотых и проверку границ делает validateWeight
-     * (data.reconciliation).
+     * «два» → 2.0; «два и шесть» → 2.6; «2,6»/«2.6» → 2.6;
+     * «две целых шесть десятых» → 2.6; «два целых шесть сотых» → 2.06;
+     * «шесть десятых» → 0.6; «шесть сотых» → 0.06;
+     * «два с половиной» → 2.5; «два с четвертью» → 2.25;
+     * «полтора» → 1.5; «полкило» → 0.5; «два кг»/«два кило» → 2.0.
      */
     fun parseWeightAnswer(input: String): Double? {
         var norm = numberParser
@@ -285,15 +311,11 @@ class VoiceCommandParser(
 
         if (norm.isEmpty()) return null
 
-        // FIX 5.8.9d-3c2a-fix-1: сначала простые сокращения — до
-        // отрезания единиц измерения. Иначе «полкило» превратится
-        // в «пол» после removeSuffix("кило").
         when (norm) {
             "полтора", "полторы" -> return 1.5
             "полкило" -> return 0.5
         }
 
-        // Отрезаем единицы измерения — в БД канонические килограммы.
         norm = norm
             .removeSuffix("килограмма")
             .removeSuffix("килограмм")
@@ -304,15 +326,10 @@ class VoiceCommandParser(
 
         if (norm.isEmpty()) return null
 
-        // Явное «X целых Y десятых / сотых / тысячных».
         tryParseExplicitDecimal(norm)?.let { return it }
-
-        // Дробное без целых: «Y десятых», «Y сотых».
         tryParseFractionOnly(norm)?.let { return it }
 
-        // «два с половиной» / «два с четвертью».
         val halfSuffix = "с половиной"
-
         if (norm.endsWith(halfSuffix)) {
             val baseText = norm.removeSuffix(halfSuffix).trim()
             val base = parseWeightAnswer(baseText) ?: return null
@@ -320,7 +337,6 @@ class VoiceCommandParser(
         }
 
         val quarterSuffix = "с четвертью"
-
         if (norm.endsWith(quarterSuffix)) {
             val baseText = norm.removeSuffix(quarterSuffix).trim()
             val base = parseWeightAnswer(baseText) ?: return null
@@ -330,16 +346,6 @@ class VoiceCommandParser(
         return parseWeight(norm)
     }
 
-    /**
-     * FIX 5.8.9d-3c2a: «X целых Y десятых / сотых / тысячных» → Double.
-     *
-     * «две целых шесть десятых»  → 2.6
-     * «два целых шесть сотых»    → 2.06
-     * «ноль целых шесть десятых» → 0.6
-     * «три целых двести пятьдесят тысячных» → 3.25
-     *
-     * Возвращает null, если фраза не подходит под шаблон.
-     */
     private fun tryParseExplicitDecimal(text: String): Double? {
         val splitWords = listOf("целых", "целая", "целое")
         val delimiter = splitWords.firstOrNull { text.contains(" $it ") } ?: return null
@@ -353,7 +359,6 @@ class VoiceCommandParser(
         val intPart = numberParser.parse(intText).primary?.toIntOrNull() ?: return null
         if (intPart < 0) return null
 
-        // tail: "шесть десятых" | "шесть сотых" | "двести пятьдесят тысячных"
         val tailWords = tailText.split(Regex("\\s+"))
         if (tailWords.size < 2) return null
 
@@ -375,12 +380,6 @@ class VoiceCommandParser(
         return "$intPart.$numeratorStr".toDoubleOrNull()
     }
 
-    /**
-     * FIX 5.8.9d-3c2a: «Y десятых» / «Y сотых» без целой части.
-     *
-     * «шесть десятых» → 0.6
-     * «шесть сотых»   → 0.06
-     */
     private fun tryParseFractionOnly(text: String): Double? {
         val tailWords = text.split(Regex("\\s+"))
         if (tailWords.size < 2) return null
@@ -402,10 +401,6 @@ class VoiceCommandParser(
 
         return "0.$numeratorStr".toDoubleOrNull()
     }
-
-    // ================================================================
-    // Разбор веса (общая логика)
-    // ================================================================
 
     private fun parseWeight(text: String): Double? {
         if (text.isEmpty()) return null
