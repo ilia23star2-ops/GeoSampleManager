@@ -245,12 +245,12 @@ fun VoiceDialog(
                 }
 
                 Text(
-                    "Команды: «первая», «отметь», «снять первую», " +
+                    "Команды: «первая», «отметь», «снять первая», " +
                             "«вес два пять», «следующая», «стоп», «пауза», " +
                             "«продолжить», «помощь». " +
                             "При выборе: «снять», «отложить», «пропустить». " +
                             "Номера: «1524», «KPD1090031». " +
-                            "Сортировка: «1524 и 1525». " +
+                            "Сортировка: «1524 и 1525» / «1524 запятая 1525». " +
                             "Режим: «сортировка» / «поиск».",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -285,6 +285,7 @@ fun VoiceDialog(
  * FIX 5.8.9d-2b: подтверждение отметки — коротко, порядковым числом.
  * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
  * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
+ * FIX 5.8.6-5c: звук и озвучка для снятия / отмены / повтора.
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -350,6 +351,23 @@ private fun handleFeedback(
             fb.soundOk()
             val spokenWeight = VoiceSpeaker.spokenWeight(result.weight)
             controller?.speak("Вес $spokenWeight. Проба отмечена.")
+        }
+
+        // FIX 5.8.6-5c: снятие отметки теперь подтверждается звуком и фразой.
+        is VoiceExecResult.Unmarked -> {
+            fb.soundOk()
+            controller?.speak("Снято.")
+        }
+
+        // FIX 5.8.6-5c: отмена и повтор тоже дают обратную связь.
+        VoiceExecResult.Undone -> {
+            fb.soundOk()
+            controller?.speak("Отменено.")
+        }
+
+        VoiceExecResult.Redone -> {
+            fb.soundOk()
+            controller?.speak("Повторено.")
         }
 
         is VoiceExecResult.FoundMany -> {

@@ -22,9 +22,12 @@ import java.util.Locale
  * FIX 5.8.6-2:
  * - скорость TTS 1.10;
  * - увеличена задержка возобновления Vosk после речи до 800 мс;
- * - добавлено окно подавления эха: результаты Vosk, пришедшие
- *   сразу после speak(), игнорируются;
- * - исправлены пустые catch-блоки.
+ * - добавлено окно подавления эха.
+ *
+ * FIX 5.8.6-5c:
+ * - вечный игнор одинаковых фраз заменён на time-based debounce 600 мс;
+ * - теперь можно сказать «отмена» несколько раз подряд;
+ * - дубликат в пределах 600 мс всё ещё подавляется.
  */
 class VoiceController(
     private val context: Context,
@@ -38,7 +41,9 @@ class VoiceController(
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var listening = false
+
     private var lastFinalText: String = ""
+    private var lastFinalAt: Long = 0L
 
     /**
      * Время, до которого результаты Vosk считаются эхом TTS.
@@ -160,6 +165,7 @@ class VoiceController(
 
         try {
             lastFinalText = ""
+            lastFinalAt = 0L
             suppressUntil = 0L
 
             val service = speechService ?: createService(model)
@@ -227,9 +233,9 @@ class VoiceController(
 
             if (isEcho(text)) return
 
-            if (text == lastFinalText) return
+            if (isDuplicate(text)) return
 
-            lastFinalText = text
+            acceptFinal(text)
 
             Log.e(TAG, "RESULT: «$text» → вызываю callback.onResult")
 
@@ -247,9 +253,9 @@ class VoiceController(
 
             if (isEcho(text)) return
 
-            if (text == lastFinalText) return
+            if (isDuplicate(text)) return
 
-            lastFinalText = text
+            acceptFinal(text)
 
             Log.e(TAG, "FINAL: «$text» → вызываю callback.onResult")
 
@@ -280,6 +286,27 @@ class VoiceController(
         return true
     }
 
+    /**
+     * FIX 5.8.6-5c:
+     * Дубликат игнорируется только в коротком окне.
+     * Повтор команды через 600+ мс принимается.
+     */
+    private fun isDuplicate(text: String): Boolean {
+        val now = System.currentTimeMillis()
+
+        if (text == lastFinalText && now - lastFinalAt < DUPLICATE_WINDOW_MS) {
+            Log.e(TAG, "VOSK duplicate suppressed: «$text»")
+            return true
+        }
+
+        return false
+    }
+
+    private fun acceptFinal(text: String) {
+        lastFinalText = text
+        lastFinalAt = System.currentTimeMillis()
+    }
+
     fun destroy() {
         Log.e(TAG, "destroy")
 
@@ -302,6 +329,7 @@ class VoiceController(
         recognizer = null
         listening = false
         lastFinalText = ""
+        lastFinalAt = 0L
         suppressUntil = 0L
 
         try {
@@ -333,5 +361,8 @@ class VoiceController(
 
         private const val SPEECH_BASE_MS = 600L
         private const val SPEECH_CHAR_MS = 70L
+
+        // FIX 5.8.6-5c: окно подавления дубликатов.
+        private const val DUPLICATE_WINDOW_MS = 600L
     }
 }
