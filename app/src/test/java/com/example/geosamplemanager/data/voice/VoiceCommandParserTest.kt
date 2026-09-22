@@ -81,6 +81,15 @@ class VoiceCommandParserTest {
     @Test
     fun undoAndRedo() {
         assertEquals(VoiceCommand.Undo, parser.parse("отмена"))
-        assertEquals(VoiceCommand.Redo, parser.parse("повтори"))
+        assertEquals(VoiceCommand.Undo, parser.parse("отменить"))
+        assertEquals(VoiceCommand.Undo, parser.parse("верни"))
+        assertEquals(VoiceCommand.Undo, parser.parse("назад"))
+
+        assertEquals(VoiceCommand.Redo, parser.parse("вперёд"))
+        assertEquals(VoiceCommand.Redo, parser.parse("вперед"))
+
+        // FIX 5.8.6-5c: «повтори» убран из активных команд,
+        // потому что Vosk часто распознаёт его как «три».
+        assertEquals(VoiceCommand.Unknown, parser.parse("повтори"))
     }
 }
