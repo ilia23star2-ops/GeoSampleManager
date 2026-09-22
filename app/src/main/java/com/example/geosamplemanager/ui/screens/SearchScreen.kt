@@ -283,12 +283,17 @@ fun SearchScreen(
     }
 
     val isMulti = state.isMultiQuery
-    val items by remember(
-        state.showCharacteristic, state.activeFilters, state.isMultiQuery,
-        state.queryTokens, state.queryGroups, state.groups,
-        state.selectedArea, state.selectedOrder
-    ) {
+    val items by remember {
         derivedStateOf {
+            // FIX 5.8.6-5f: явные чтения State — гарантия, что
+            // derivedStateOf подписан на изменения _groups и _queryGroups.
+            // Без этого при query=blank visibleGroups возвращал emptyList,
+            // не читая _groups, и Undo не перерисовывал UI.
+            @Suppress("UNUSED_EXPRESSION")
+            state.groups.toList()
+            @Suppress("UNUSED_EXPRESSION")
+            state.queryGroups.toList()
+
             if (state.isMultiQuery) buildMultiQueryList(state) else buildFlatList(state)
         }
     }
@@ -1244,9 +1249,9 @@ private fun VoiceModeChip(
 ) {
     val isSort = mode == VoiceSessionMode.SORT
     val container = if (isSort) MaterialTheme.colorScheme.tertiaryContainer
-                    else MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.primaryContainer
     val content = if (isSort) MaterialTheme.colorScheme.onTertiaryContainer
-                  else MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
             .padding(start = 4.dp)
