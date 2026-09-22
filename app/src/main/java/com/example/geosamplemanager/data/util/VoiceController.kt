@@ -1,368 +1,178 @@
 package com.example.geosamplemanager.data.util
 
 import android.content.Context
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.util.Log
-import com.example.geosamplemanager.GeoSampleApp
-import com.example.geosamplemanager.data.voice.VoiceCallback
-import com.example.geosamplemanager.data.voice.VoiceGrammar
-import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import org.vosk.Recognizer.EndpointerMode
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
-import java.util.Locale
+import org.vosk.android.StorageService
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Обёртка над Vosk + TTS.
+ * Управление оффлайн-распознаванием Vosk.
  *
- * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
+ * Ключевые настройки этой версии (5.8.6-5e):
+ * - EndpointerMode.VERY_LONG — максимальная терпимость к паузам.
+ * - setEndpointerDelays — кастомные задержки вместо дефолтных:
+ *   tStartMax = 5.0 с (максимум ожидания начала речи),
+ *   tEnd     = 3.0 с (пауза после речи до финализации),
+ *   tMax     = 50.0 с (абсолютный максимум длины фразы).
  *
- * FIX 5.8.6-2:
- * - скорость TTS 1.10;
- * - увеличена задержка возобновления Vosk после речи до 800 мс;
- * - добавлено окно подавления эха.
- *
- * FIX 5.8.6-5c:
- * - вечный игнор одинаковых фраз заменён на time-based debounce 600 мс;
- * - теперь можно сказать «отмена» несколько раз подряд;
- * - дубликат в пределах 600 мс всё ещё подавляется.
+ * Почему: дефолтный endpoint Vosk обрывает длинные номера
+ * (KPD1090031, «15 24 01 2 ноля 5») на середине.
  */
 class VoiceController(
     private val context: Context,
-    private val callback: VoiceCallback
-) {
-
-    private val app = context.applicationContext as GeoSampleApp
-
-    private var speechService: SpeechService? = null
-    private var recognizer: Recognizer? = null
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private var listening = false
-
-    private var lastFinalText: String = ""
-    private var lastFinalAt: Long = 0L
-
-    /**
-     * Время, до которого результаты Vosk считаются эхом TTS.
-     */
-    private var suppressUntil: Long = 0L
-
-    init {
-        initTts()
-    }
-
-    // ================================================================
-    // TTS
-    // ================================================================
-
-    private fun initTts() {
-        tts = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                try {
-                    tts?.language = Locale("ru", "RU")
-                    tts?.setSpeechRate(DEFAULT_SPEECH_RATE)
-
-                    ttsReady = true
-                    Log.e(TAG, "TTS готов, скорость=$DEFAULT_SPEECH_RATE")
-                } catch (e: Exception) {
-                    Log.e(TAG, "TTS: ошибка языка", e)
-                }
-
-                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        Log.e(TAG, "TTS onStart → пауза Vosk")
-                        pauseVosk()
-                    }
-
-                    override fun onDone(utteranceId: String?) {
-                        Log.e(TAG, "TTS onDone → возобновляю Vosk через ${RESUME_DELAY_MS} мс")
-                        resumeVoskDelayed(RESUME_DELAY_MS)
-                    }
-
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) {
-                        Log.e(TAG, "TTS onError → возобновляю Vosk")
-                        resumeVoskDelayed(RESUME_DELAY_MS)
-                    }
-
-                    override fun onError(utteranceId: String?, errorCode: Int) {
-                        Log.e(TAG, "TTS onError($errorCode) → возобновляю Vosk")
-                        resumeVoskDelayed(RESUME_DELAY_MS)
-                    }
-                })
-            } else {
-                Log.e(TAG, "TTS init failed: status=$status")
-            }
-        }
-    }
-
-    fun speak(text: String) {
-        if (!ttsReady) {
-            Log.d(TAG, "speak: TTS не готов, пропускаю")
-            return
-        }
-
-        val clean = text.trim()
-        if (clean.isEmpty()) return
-
-        suppressUntil = System.currentTimeMillis() + estimateSpeechMs(clean)
-
-        try {
-            tts?.speak(
-                clean,
-                TextToSpeech.QUEUE_FLUSH,
-                null,
-                "v_${System.currentTimeMillis()}"
-            )
-        } catch (e: Exception) {
-            Log.w(TAG, "speak failed", e)
-        }
-    }
-
-    private fun estimateSpeechMs(text: String): Long {
-        return SPEECH_BASE_MS + text.length * SPEECH_CHAR_MS
-    }
-
-    private fun pauseVosk() {
-        try {
-            speechService?.setPause(true)
-            Log.e(TAG, "Vosk: приостановлен")
-        } catch (e: Exception) {
-            Log.w(TAG, "pause failed", e)
-        }
-    }
-
-    private fun resumeVoskDelayed(delayMs: Long) {
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            try {
-                speechService?.setPause(false)
-                Log.e(TAG, "Vosk: возобновлён")
-            } catch (e: Exception) {
-                Log.w(TAG, "resume failed", e)
-            }
-        }, delayMs)
-    }
-
-    // ================================================================
-    // РАСПОЗНАВАНИЕ
-    // ================================================================
-
-    fun startListening() {
-        if (listening) {
-            Log.d(TAG, "startListening: уже слушаю")
-            return
-        }
-
-        val model = app.voiceModel
-        if (model == null) {
-            Log.e(TAG, "startListening: МОДЕЛЬ НЕ ЗАГРУЖЕНА")
-            callback.onError("Модель Vosk не загружена")
-            return
-        }
-
-        try {
-            lastFinalText = ""
-            lastFinalAt = 0L
-            suppressUntil = 0L
-
-            val service = speechService ?: createService(model)
-
-            listening = true
-            callback.onReady()
-
-            service.startListening(listener)
-
-            Log.e(TAG, "startListening: старт (грамматика=${app.voiceUseGrammar})")
-        } catch (e: Exception) {
-            listening = false
-            Log.e(TAG, "startListening: ИСКЛЮЧЕНИЕ", e)
-            callback.onError("Не удалось запустить: ${e.message}")
-        }
-    }
-
-    private fun createService(model: Model): SpeechService {
-        val rec = if (app.voiceUseGrammar) {
-            try {
-                val grammar = VoiceGrammar.build()
-                Log.e(TAG, "createService: с грамматикой (${grammar.length} байт)")
-                Recognizer(model, SAMPLE_RATE, grammar)
-            } catch (e: Exception) {
-                Log.e(TAG, "createService: грамматика упала, без неё", e)
-                Recognizer(model, SAMPLE_RATE)
-            }
-        } else {
-            Log.e(TAG, "createService: без грамматики")
-            Recognizer(model, SAMPLE_RATE)
-        }
-
-        recognizer = rec
-
-        val service = SpeechService(rec, SAMPLE_RATE)
-        speechService = service
-
-        return service
-    }
-
-    fun stopListening() {
-        if (!listening) return
-
-        try {
-            speechService?.stop()
-        } catch (e: Exception) {
-            Log.w(TAG, "stopListening ошибка", e)
-        }
-
-        listening = false
-    }
-
-    private val listener = object : RecognitionListener {
-
-        override fun onPartialResult(hypothesis: String?) {
-            val text = extractText(hypothesis, "partial")
-            if (text.isEmpty()) return
-
-            callback.onPartial(text)
-        }
-
-        override fun onResult(hypothesis: String?) {
-            val text = extractText(hypothesis, "text")
-            if (text.isEmpty()) return
-
-            if (isEcho(text)) return
-
-            if (isDuplicate(text)) return
-
-            acceptFinal(text)
-
-            Log.e(TAG, "RESULT: «$text» → вызываю callback.onResult")
-
-            try {
-                callback.onResult(text)
-                Log.e(TAG, "RESULT: callback.onResult отработал")
-            } catch (e: Exception) {
-                Log.e(TAG, "RESULT: callback.onResult УПАЛ", e)
-            }
-        }
-
-        override fun onFinalResult(hypothesis: String?) {
-            val text = extractText(hypothesis, "text")
-            if (text.isEmpty()) return
-
-            if (isEcho(text)) return
-
-            if (isDuplicate(text)) return
-
-            acceptFinal(text)
-
-            Log.e(TAG, "FINAL: «$text» → вызываю callback.onResult")
-
-            try {
-                callback.onResult(text)
-            } catch (e: Exception) {
-                Log.e(TAG, "FINAL: callback.onResult УПАЛ", e)
-            }
-        }
-
-        override fun onError(e: Exception?) {
-            listening = false
-            Log.e(TAG, "VOSK onError: ${e?.message}", e)
-            callback.onError("Ошибка распознавания: ${e?.message ?: "неизвестная"}")
-        }
-
-        override fun onTimeout() {
-            listening = false
-            Log.e(TAG, "VOSK onTimeout")
-            callback.onError("Тишина в микрофоне")
-        }
-    }
-
-    private fun isEcho(text: String): Boolean {
-        if (System.currentTimeMillis() >= suppressUntil) return false
-
-        Log.e(TAG, "VOSK echo suppressed: «$text»")
-        return true
-    }
-
-    /**
-     * FIX 5.8.6-5c:
-     * Дубликат игнорируется только в коротком окне.
-     * Повтор команды через 600+ мс принимается.
-     */
-    private fun isDuplicate(text: String): Boolean {
-        val now = System.currentTimeMillis()
-
-        if (text == lastFinalText && now - lastFinalAt < DUPLICATE_WINDOW_MS) {
-            Log.e(TAG, "VOSK duplicate suppressed: «$text»")
-            return true
-        }
-
-        return false
-    }
-
-    private fun acceptFinal(text: String) {
-        lastFinalText = text
-        lastFinalAt = System.currentTimeMillis()
-    }
-
-    fun destroy() {
-        Log.e(TAG, "destroy")
-
-        try {
-            speechService?.stop()
-        } catch (_: Exception) {
-        }
-
-        try {
-            speechService?.shutdown()
-        } catch (_: Exception) {
-        }
-
-        try {
-            recognizer?.close()
-        } catch (_: Exception) {
-        }
-
-        speechService = null
-        recognizer = null
-        listening = false
-        lastFinalText = ""
-        lastFinalAt = 0L
-        suppressUntil = 0L
-
-        try {
-            tts?.stop()
-            tts?.shutdown()
-        } catch (_: Exception) {
-        }
-
-        tts = null
-        ttsReady = false
-    }
-
-    private fun extractText(json: String?, field: String): String {
-        if (json.isNullOrEmpty()) return ""
-
-        return try {
-            JSONObject(json).optString(field, "").trim()
-        } catch (_: Exception) {
-            ""
-        }
-    }
+    private val onResult: (String) -> Unit,
+    private val onPartial: (String) -> Unit,
+    private val onError: (String) -> Unit,
+    private val onTimeout: () -> Unit = {}
+) : RecognitionListener {
 
     companion object {
         private const val TAG = "VoiceController"
-        private const val SAMPLE_RATE = 16000.0f
 
-        private const val DEFAULT_SPEECH_RATE = 1.10f
+        // Настройки endpoint (5.8.6-5e)
+        private const val ENDPOINTER_T_START_MAX = 5.0f
+        private const val ENDPOINTER_T_END = 3.0f
+        private const val ENDPOINTER_T_MAX = 50.0f
+
+        // Anti-echo: окно подавления после TTS (5.8.6-2)
         private const val RESUME_DELAY_MS = 800L
+    }
 
-        private const val SPEECH_BASE_MS = 600L
-        private const val SPEECH_CHAR_MS = 70L
+    private var model: Model? = null
+    private var speechService: SpeechService? = null
+    private var isListening = AtomicBoolean(false)
+    private var suppressUntil = 0L
 
-        // FIX 5.8.6-5c: окно подавления дубликатов.
-        private const val DUPLICATE_WINDOW_MS = 600L
+    /**
+     * Инициализация модели Vosk и запуск распознавания.
+     */
+    fun start() {
+        if (isListening.getAndSet(true)) {
+            Log.w(TAG, "start() вызван повторно — уже слушаем")
+            return
+        }
+
+        try {
+            StorageService.unpack(
+                context,
+                "vosk-model-small-ru-0.22",
+                "model",
+                { model ->
+                    this.model = model
+                    startRecognition(model)
+                },
+                { exception ->
+                    isListening.set(false)
+                    onError("Ошибка загрузки модели: ${exception.message}")
+                }
+            )
+        } catch (e: Exception) {
+            isListening.set(false)
+            onError("Ошибка инициализации: ${e.message}")
+        }
+    }
+
+    private fun startRecognition(model: Model) {
+        try {
+            val recognizer = Recognizer(model, 16000.0f).apply {
+                // 5.8.6-5e: endpoint tuning
+                setEndpointerMode(EndpointerMode.VERY_LONG)
+                setEndpointerDelays(
+                    ENDPOINTER_T_START_MAX,
+                    ENDPOINTER_T_END,
+                    ENDPOINTER_T_MAX
+                )
+                setMaxAlternatives(1)
+                setWords(true)
+                setPartialWords(true)
+            }
+
+            speechService = SpeechService(recognizer, 16000.0f).apply {
+                startListening(this@VoiceController)
+            }
+
+            Log.i(TAG, "Vosk запущен: VERY_LONG, delays=($ENDPOINTER_T_START_MAX, $ENDPOINTER_T_END, $ENDPOINTER_T_MAX)")
+        } catch (e: Exception) {
+            isListening.set(false)
+            onError("Ошибка запуска распознавания: ${e.message}")
+        }
+    }
+
+    /**
+     * Остановка распознавания.
+     */
+    fun stop() {
+        if (!isListening.getAndSet(false)) return
+
+        try {
+            speechService?.stop()
+            speechService?.shutdown()
+        } catch (e: Exception) {
+            Log.e(TAG, "Ошибка остановки SpeechService", e)
+        } finally {
+            speechService = null
+            model?.close()
+            model = null
+        }
+    }
+
+    /**
+     * Пауза распознавания (например, на время TTS).
+     */
+    fun pause() {
+        speechService?.stop()
+        Log.d(TAG, "Vosk на паузе")
+    }
+
+    /**
+     * Возобновление распознавания после TTS с anti-echo задержкой.
+     */
+    fun resumeWithEchoSuppression(phraseLength: Int) {
+        val dynamicDelay = RESUME_DELAY_MS + (phraseLength * 15L).coerceAtMost(1200L)
+        suppressUntil = System.currentTimeMillis() + dynamicDelay
+
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (isListening.get()) {
+                speechService?.startListening(this)
+                Log.d(TAG, "Vosk возобновлён после TTS (задержка ${dynamicDelay}мс)")
+            }
+        }, dynamicDelay)
+    }
+
+    // ==================== RecognitionListener ====================
+
+    override fun onResult(hypothesis: String?) {
+        if (isSuppressed()) return
+        hypothesis?.let { onResult(it) }
+    }
+
+    override fun onPartialResult(hypothesis: String?) {
+        if (isSuppressed()) return
+        hypothesis?.let { onPartial(it) }
+    }
+
+    override fun onFinalResult(hypothesis: String?) {
+        if (isSuppressed()) return
+        hypothesis?.let { onResult(it) }
+    }
+
+    override fun onError(exception: Exception?) {
+        Log.e(TAG, "Ошибка распознавания", exception)
+        onError(exception?.message ?: "Неизвестная ошибка Vosk")
+    }
+
+    override fun onTimeout() {
+        Log.w(TAG, "Таймаут распознавания")
+        onTimeout()
+    }
+
+    private fun isSuppressed(): Boolean {
+        return System.currentTimeMillis() < suppressUntil
     }
 }
