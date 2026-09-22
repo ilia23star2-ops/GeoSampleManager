@@ -117,10 +117,20 @@ fun VoiceDialog(
                 // Если ГП ждёт выбор, парсер должен распознавать
                 // «снять», «отложить», «пропустить».
                 val isPendingChoice = viewModel.voiceSession.pendingMarkChoice != null
-                val cmd = commandParser.parse(text, isPendingChoice)
-
-                Log.e(LOG_TAG, "parsed command = $cmd, pendingChoice=$isPendingChoice")
-
+                val awaitingWeight = viewModel.voiceSession.awaitingWeight
+                
+                val weightCmd = if (awaitingWeight && !isPendingChoice) {
+                    commandParser.parseWeightAnswer(text)?.let { VoiceCommand.SetWeight(it) }
+                } else {
+                    null
+                }
+                
+                val cmd = weightCmd ?: commandParser.parse(text, isPendingChoice)
+                
+                Log.e(
+                    LOG_TAG,
+                    "parsed command = $cmd, pendingChoice=$isPendingChoice, awaitingWeight=$awaitingWeight"
+                )
                 scope.launch {
                     try {
                         val result = viewModel.voiceExecute(cmd)
