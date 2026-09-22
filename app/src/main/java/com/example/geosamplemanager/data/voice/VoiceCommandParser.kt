@@ -14,6 +14,10 @@ package com.example.geosamplemanager.data.voice
  *   не превращалось в Sort;
  * - служебные слова не уходят в Search;
  * - команды выбора распознаются только при pendingChoice.
+ *
+ * FIX 5.8.6-5a-fix-1:
+ * - починены составные порядковые: «двадцать первая», «тридцать первая»;
+ * - при этом «семь», «двадцать», «это первая проба» не становятся отметкой.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -131,6 +135,9 @@ class VoiceCommandParser(
         val norm = numberParser
             .normalize(raw)
             .trim('.', ',', '!', '?', ';', ':')
+            .replace('-', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
 
         // ---- Команды выбора (только в состоянии pendingChoice) ----
         if (pendingChoice) {
@@ -160,6 +167,7 @@ class VoiceCommandParser(
             "все", "отметь все", "отметить все", "отметьте все" ->
                 return VoiceCommand.MarkAll
 
+            // FIX 5.8.9d-2a: отметить пробу, найденную последним поиском.
             "отметь", "отметить", "отметьте",
             "отметь эту", "отметить эту", "эту", "эту отметь",
             "отметь ее", "отметить ее", "отметь её", "отметить её",
@@ -219,7 +227,7 @@ class VoiceCommandParser(
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
 
             val num = numberParser.parse(tail).primary?.toIntOrNull()
-            if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
+            if (num != null && num in 30) return VoiceCommand.ClearOrdinal(num)
 
             return VoiceCommand.Unknown
         }
@@ -229,13 +237,15 @@ class VoiceCommandParser(
             return VoiceCommand.Unknown
         }
 
-        // ---- Голые порядковые: «первая», «первая вторая» ----
-        // Разрешаем только если ВСЕ токены — порядковые или союзы между ними.
+        // ---- Голые порядковые: «первая», «двадцать первая», «первая вторая» ----
+        // Разрешаем только если фраза состоит из порядковых слов,
+        // допустимых кардинальных приставок («двадцать», «тридцать»)
+        // и союзов между ними.
         // Иначе «это первая проба» не станет MarkOrdinal(1).
         val tokens = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         val ordinals = VoiceOrdinals.matchAll(norm)
 
-        if (ordinals.isNotEmpty() && tokens.all { isOrdinalOrJoin(it) }) {
+        if (ordinals.isNotEmpty() && isOrdinalPhrase(tokens)) {
             return when {
                 ordinals.size == 1 -> VoiceCommand.MarkOrdinal(ordinals[0])
                 else -> VoiceCommand.MarkByNumbers(ordinals)
@@ -258,7 +268,7 @@ class VoiceCommandParser(
                 val cand = numberParser.parse(part).primary?.takeIf { it.isNotBlank() }
                     ?: part.takeIf { it.isNotEmpty() && it.all { ch -> ch.isDigit() } }
 
-                // Требujemy номер, а не одиночную цифру веса.
+                // Требуем номер, а не одиночную цифру веса.
                 cand?.takeIf { it.filter { ch -> ch.isDigit() }.length >= 2 }
             }
 
@@ -279,9 +289,41 @@ class VoiceCommandParser(
         return norm.split(Regex("\\s+")).any { it in commandLikeWords }
     }
 
-    private fun isOrdinalOrJoin(token: String): Boolean {
-        if (token in ordinalJoinWords) return true
-        return VoiceOrdinals.match(token) != null
+    /**
+     * FIX 5.8.6-5a-fix-1:
+     * Позволяет составные порядковые:
+     * - «первая»
+     * - «двадцать первая»
+     * - «тридцать первая»
+     * - «первая и вторая»
+     *
+     * Но не позволяет:
+     * - «семь»
+     * - «двадцать»
+     * - «это первая проба»
+     * - «семья»
+     */
+    private fun isOrdinalPhrase(tokens: List<String>): Boolean {
+        if (tokens.isEmpty()) return false
+
+        var hasOrdinal = false
+
+        for (token in tokens) {
+            when {
+                token in ordinalJoinWords -> Unit
+
+                VoiceOrdinals.match(token) != null -> hasOrdinal = true
+
+                token in VoiceOrdinals.map.keys -> hasOrdinal = true
+
+                // Для составных порядковых: «двадцать первая», «тридцать вторая».
+                token in VoiceDictionary.tens.keys -> Unit
+
+                else -> return false
+            }
+        }
+
+        return hasOrdinal
     }
 
     /**
@@ -308,6 +350,9 @@ class VoiceCommandParser(
         var norm = numberParser
             .normalize(input)
             .trim('.', ',', '!', '?', ';', ':')
+            .replace('-', ' ')
+            .replace(Regex("\\s+"), " ")
+            .trim()
 
         if (norm.isEmpty()) return null
 
