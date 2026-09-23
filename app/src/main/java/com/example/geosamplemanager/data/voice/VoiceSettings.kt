@@ -11,8 +11,12 @@ import java.io.File
  *
  * FIX 5.8.10-a (И-10):
  * добавлено поле `showCharacteristic` — переключатель колонки
- * «Характеристика» в таблице проб. Раньше состояние жило только в
- * ReconciliationState и сбрасывалось при перезапуске.
+ * «Характеристика» в таблице проб.
+ *
+ * FIX 5.8.10-b (И-9):
+ * в load() добавлена защита `showOnboarding = true`, если ключа нет
+ * в JSON. Раньше Gson ставил false и онбординг не показывался
+ * на старых файлах настроек.
  */
 data class VoiceSettings(
     val segmentPauseMs: Long = 800L,
@@ -64,6 +68,11 @@ class VoiceSettingsRepository(context: Context) {
             }
             if (!json.contains("\"showCharacteristic\"")) {
                 parsed = parsed.copy(showCharacteristic = true)
+            }
+            // FIX 5.8.10-b (И-9): без этой защиты на старых файлах
+            // showOnboarding был false, и онбординг не показывался.
+            if (!json.contains("\"showOnboarding\"")) {
+                parsed = parsed.copy(showOnboarding = true)
             }
 
             parsed
