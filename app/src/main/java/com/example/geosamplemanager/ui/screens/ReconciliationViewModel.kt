@@ -643,6 +643,27 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         if (voiceSession.awaitingWeight) {
+            // FIX 5.8.11-e4a:
+            // VoiceDialog (заход e3) уже собрал готовый SetWeight
+            // (через parseWeightAnswer или parseWithState). Валидируем
+            // и применяем здесь. Раньше SetWeight проваливался мимо
+            // всех веток и пользователь слышал «Сначала скажите вес
+            // или отмена».
+            if (cmd is VoiceCommand.SetWeight) {
+                return when (val v = validateWeight(cmd.value)) {
+                    is WeightValidation.Ok -> {
+                        voiceSession.awaitingWeight = false
+                        voiceSetWeight(v.value)
+                    }
+
+                    is WeightValidation.Invalid -> {
+                        VoiceExecResult.Message("Не понял вес. Повторите.")
+                    }
+                }
+            }
+
+            // Старый путь через Search/Sort с текстом веса. Оставлен
+            // на случай, если parse() (без state) увёл в Search.
             val weightText = when (cmd) {
                 is VoiceCommand.Search -> cmd.query
                 is VoiceCommand.Sort -> cmd.queries.joinToString(" ")
@@ -1174,10 +1195,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val row = state.rowById(rowId)
             ?: return VoiceExecResult.Message("Проба потеряна")
 
-        if (row.weightControl) {
-            setControlWeightAndFound(rowId, value)
-        } else {
-            setWeight(rowId, value)
+        // FIX 5.8.11-e4a:
+        // Раньше для холостой пробы ставился только вес, а отметка
+        // «найдена» не выставлялась. ГП говорил «Проба отмечена»,
+        // а галки в списке не было. Теперь холостая идёт через
+        // setBlankWeightAndMarkFound (вес + отметка), как в UI-пути.
+        when {
+            row.weightControl -> setControlWeightAndFound(rowId, value)
+
+            row.isBlank -> setBlankWeightAndMarkFound(rowId, value)
+
+            else -> setWeight(rowId, value)
         }
 
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
