@@ -26,6 +26,14 @@ package com.example.geosamplemanager.data.voice
  * - дробные/порядковые формы мн.ч. («четвертых», «пятых», «десятых»)
  *   глушатся: Unknown вместо Search. «Пять четвертых» больше не ищет
  *   пробу с номером 5.
+ *
+ * FIX 5.8.11-e4b (SEARCH_MODEL §3.3, §5.6):
+ * - parseWeightAnswer принимает только «чистые» весовые фразы. Если в
+ *   ответе есть посторонние слова («семь утра было холодно» → Vosk
+ *   распознал «семь проба одна») — возвращаем null, а не склеиваем
+ *   случайные числа в вес 7.1.
+ * - Список разрешённых слов — weightAllowedWords. Всё, что не в нём
+ *   и не похоже на число, отсекается до разбора.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -132,6 +140,51 @@ class VoiceCommandParser(
         ",",
         ";"
     )
+
+    /**
+     * FIX 5.8.11-e4b:
+     * Слова, допустимые в ответе на «Вес?». Всё, что не входит в этот
+     * список (и не похоже на число), — сигнал, что фраза не является
+     * весом. Используется в isCleanWeightPhrase.
+     *
+     * Состав:
+     *  - числительные из VoiceDictionary (все падежные формы);
+     *  - союзы «и», предлог «с»;
+     *  - части дробей: «целых», «десятых», «сотых», «тысячных»;
+     *  - особые формы: «полтора», «полкило», «половиной», «четвертью»;
+     *  - единицы измерения: «кг», «кило», «килограмма»;
+     *  - синонимы «вес» на случай «вес семь».
+     */
+    private val weightAllowedWords: Set<String> = buildSet {
+        // Числительные — все формы.
+        addAll(VoiceDictionary.singleDigits.keys)
+        addAll(VoiceDictionary.teens.keys)
+        addAll(VoiceDictionary.tens.keys)
+        addAll(VoiceDictionary.hundreds.keys)
+        addAll(VoiceDictionary.thousandWords)
+        addAll(VoiceDictionary.millionWords)
+
+        // Союзы / предлоги.
+        add("и")
+        add("с")
+
+        // Части дробей.
+        add("целых"); add("целая"); add("целое")
+        add("десятых"); add("десятая"); add("десятые")
+        add("сотых"); add("сотая"); add("сотые")
+        add("тысячных"); add("тысячная"); add("тысячные")
+
+        // Особые формы.
+        add("полтора"); add("полторы"); add("полкило")
+        add("половиной"); add("четвертью")
+
+        // Единицы измерения.
+        add("кг"); add("кило")
+        add("килограмма"); add("килограмм"); add("килограммы")
+
+        // Синонимы «вес» — на случай «вес семь».
+        add("вес"); add("веса"); add("весу"); add("весом"); add("весе")
+    }
 
     fun parse(
         input: String,
@@ -318,9 +371,6 @@ class VoiceCommandParser(
      * mode (SEARCH/SORT) пока не влияет на разбор: блокировка отметок
      * в SORT реализована в voiceExecute (markGuard). Если потребуется —
      * расширим здесь.
-     *
-     * Этот метод — закладка. Пока его никто не вызывает, кроме тестов.
-     * Переключение VoiceDialog на parseWithState — в 5.8.11-e3.
      */
     fun parseWithState(
         input: String,
@@ -346,14 +396,14 @@ class VoiceCommandParser(
      * В состоянии AWAITING_WEIGHT парсер принимает только:
      *   - число-вес («два», «два и шесть», «полтора», «2.6»);
      *   - Undo («отмена», «отменить»);
-     *   - Stop («стоп», «хватит»).
+     *   - Stop («стоп», «хатит»).
      * Всё остальное — Unknown. Никаких MarkOrdinal, Search, Sort.
      */
     private fun parseForWeight(input: String): VoiceCommand {
         val norm = numberParser.normalize(input).trim()
 
         when (norm) {
-            "стоп", "хватит" -> return VoiceCommand.Stop
+            "стоп", "хатит" -> return VoiceCommand.Stop
             "отмена", "отменить" -> return VoiceCommand.Undo
         }
 
@@ -366,7 +416,7 @@ class VoiceCommandParser(
      * В AWAITING_CONTINUE парсер принимает:
      *   - Resume («продолжить», «продолжай»);
      *   - Pause («пауза», «паузу»);
-     *   - Stop («стоп», «хватит»);
+     *   - Stop («стоп», «хатит»);
      *   - иначе — падаем на полный разбор (может вернуть Search/Sort,
      *     это допустимо: пользователь переходит к следующему запросу).
      */
@@ -376,7 +426,7 @@ class VoiceCommandParser(
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
             "пауза", "паузу" -> VoiceCommand.Pause
-            "стоп", "хватит" -> VoiceCommand.Stop
+            "стоп", "хатит" -> VoiceCommand.Stop
             else -> parse(input, pendingChoice = false)
         }
     }
@@ -384,7 +434,7 @@ class VoiceCommandParser(
     /**
      * В PAUSED парсер принимает только:
      *   - Resume («продолжить», «продолжай»);
-     *   - Stop («стоп», «хватит»).
+     *   - Stop («стоп», «хатит»).
      * Всё остальное — Unknown.
      */
     private fun parseForPaused(input: String): VoiceCommand {
@@ -392,7 +442,7 @@ class VoiceCommandParser(
 
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
-            "стоп", "хватит" -> VoiceCommand.Stop
+            "стоп", "хатит" -> VoiceCommand.Stop
             else -> VoiceCommand.Unknown
         }
     }
@@ -450,7 +500,53 @@ class VoiceCommandParser(
     }
 
     /**
+     * FIX 5.8.11-e4b:
+     * Проверка: фраза целиком состоит из слов, допустимых в весе.
+     *
+     * Слово считается допустимым, если:
+     *   - целиком из цифр («7», «26», «1524»);
+     *   - десятичное число в записи («2.6», «2,6»);
+     *   - входит в weightAllowedWords.
+     *
+     * Примеры:
+     *   «семь»                          → true
+     *   «два и шесть»                   → true
+     *   «полтора»                       → true
+     *   «2.6»                           → true
+     *   «два килограмма»                → true
+     *   «две целых шесть десятых»       → true
+     *   «семь утра было холодно»        → false («утра», «было», «холодно»)
+     *   «семь проба одна»               → false («проба»)
+     *   «пятнадцать двадцать четыре»    → true (числа, склеятся в 15.24)
+     *
+     * Возвращает false для пустой строки.
+     */
+    private fun isCleanWeightPhrase(norm: String): Boolean {
+        if (norm.isEmpty()) return false
+
+        val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return false
+
+        return words.all { word ->
+            // Цифры: «7», «26», «1524».
+            if (word.all { it.isDigit() }) return@all true
+
+            // Десятичное число: «2.6», «2,6».
+            val decimal = word.replace(',', '.')
+            if (decimal.toDoubleOrNull() != null) return@all true
+
+            // Слово из белого списка.
+            word in weightAllowedWords
+        }
+    }
+
+    /**
      * Парсит свободный ответ на «Вес?».
+     *
+     * FIX 5.8.11-e4b: если фраза не является «чистой» (см.
+     * isCleanWeightPhrase) — возвращаем null. Это отсекает мусор
+     * вида «семь проба одна» и «семь утра было холодно», которые
+     * Vosk подсовывает в ответ на «Вес?».
      *
      * Поддерживается:
      * «два» → 2.0; «два и шесть» → 2.6; «2,6»/«2.6» → 2.6;
@@ -468,6 +564,9 @@ class VoiceCommandParser(
             .trim()
 
         if (norm.isEmpty()) return null
+
+        // FIX 5.8.11-e4b: до всякой логики — проверка чистоты фразы.
+        if (!isCleanWeightPhrase(norm)) return null
 
         when (norm) {
             "полтора", "полторы" -> return 1.5
