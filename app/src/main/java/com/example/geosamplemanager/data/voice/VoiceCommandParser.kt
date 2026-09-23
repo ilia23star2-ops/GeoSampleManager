@@ -21,6 +21,11 @@ package com.example.geosamplemanager.data.voice
  *
  * FIX 5.8.6-5a-fix-2:
  * - исправлена компиляция: `num in 30` → `num in 1..30`.
+ *
+ * FIX 5.8.6-5g:
+ * - дробные/порядковые формы мн.ч. («четвертых», «пятых», «десятых»)
+ *   глушатся: Unknown вместо Search. «Пять четвертых» больше не ищет
+ *   пробу с номером 5.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -253,6 +258,15 @@ class VoiceCommandParser(
                 ordinals.size == 1 -> VoiceCommand.MarkOrdinal(ordinals[0])
                 else -> VoiceCommand.MarkByNumbers(ordinals)
             }
+        }
+
+        // ---- FIX 5.8.6-5g: дробные формы мн.ч. ----
+        // «Пять четвертых», «две десятых», «шесть сотых» — это части
+        // дробей или артефакты распознавания, а не команды и не номера
+        // проб. Раньше такая фраза уходила в Search по оставшейся цифре
+        // («пять четвертых» → Search("5")). Теперь — Unknown.
+        if (tokens.any { it in VoiceOrdinals.pluralForms }) {
+            return VoiceCommand.Unknown
         }
 
         // ---- Сортировка: «1524 и 1525», «1524 запятая 1525» ----
