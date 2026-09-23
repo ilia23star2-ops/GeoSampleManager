@@ -307,7 +307,10 @@ fun SearchScreen(
                 showCharacteristic = state.showCharacteristic,
                 onUndo = { viewModel.undo() },
                 onRedo = { viewModel.redo() },
-                onShowCharacteristicChange = { state.showCharacteristic = it },
+                // FIX 5.8.10-a (И-10): сохранение в VoiceSettings.
+                // Прямое присваивание state.showCharacteristic убрано —
+                // теперь через ViewModel, который пишет в файл.
+                onShowCharacteristicChange = { viewModel.setShowCharacteristic(it) },
                 onHelpClick = { state.showLegend = true }
             )
 
@@ -1249,9 +1252,9 @@ private fun VoiceModeChip(
 ) {
     val isSort = mode == VoiceSessionMode.SORT
     val container = if (isSort) MaterialTheme.colorScheme.tertiaryContainer
-    else MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.primaryContainer
     val content = if (isSort) MaterialTheme.colorScheme.onTertiaryContainer
-    else MaterialTheme.colorScheme.onPrimaryContainer
+                  else MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
             .padding(start = 4.dp)
