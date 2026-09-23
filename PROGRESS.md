@@ -2,6 +2,16 @@
 
 ## 5.8.6 серия — Vosk-полировка и защита от ложных срабатываний
 
+### `5.8.6-5g` (закрыт unit, 🟡 device) — «четвертых» → Unknown
+- `VoiceOrdinals.kt`: добавлен `pluralForms` — формы порядковых во мн.ч. («четвертых», «пятых», «десятых»).
+- `VoiceCommandParser.kt`: если во фразе есть такая форма — возвращается `Unknown`, до сортировки и поиска.
+- Итог: «пять четвертых» → Unknown, не Search("5"). «четвертая» (одиночное) — по-прежнему `MarkOrdinal(4)`.
+
+### `5.8.6-5f` (закрыт unit, 🟡 device) — Undo UI
+- `SearchScreen.kt`: блок `items` переведён на `remember { derivedStateOf { ... } }` без ключей.
+- Внутри `derivedStateOf` явные чтения `state.groups.toList()` и `state.queryGroups.toList()` — гарантия подписки.
+- Причина: при пустом `query` функция `visibleGroups` возвращала `emptyList()`, не читая `_groups`, и `derivedStateOf` не пересчитывался. Отмена не перерисовывала экран.
+
 ### `5.8.6-5c` (закрыт unit, 🟡 device) — повтор команд + звук снятия/отмены
 - `VoiceController.kt`: вечный игнор одинаковых фраз → time-based debounce 600 мс.
 - `VoiceDialog.kt`: звук и озвучка для `Unmarked`, `Undone`, `Redone`.
