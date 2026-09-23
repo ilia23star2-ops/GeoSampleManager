@@ -9,6 +9,11 @@ import androidx.compose.runtime.setValue
  *
  *   SEARCH — поиск со статистикой и отметками (по умолчанию).
  *   SORT   — сортировка: только «X — наряд Y», без отметок.
+ *
+ * FIX 5.8.11-a (SEARCH_MODEL §3):
+ * Режим ортогонален состоянию (VoiceState). Может быть SEARCH при
+ * любом состоянии и SORT при любом. Переключение режима не меняет
+ * состояние. Отметки блокируются только в SORT.
  */
 enum class VoiceSessionMode {
     SEARCH,
@@ -28,9 +33,6 @@ enum class PendingMarkChoiceType {
 
 /**
  * FIX 5.8.9d-3c2b1: контекст ожидаемого выбора.
- *
- * Храним ordinal и sampleNumber, чтобы рендерер и ViewModel могли
- * построить одинаковый ответ для UI и ГП.
  */
 data class PendingMarkChoice(
     val type: PendingMarkChoiceType,
@@ -41,16 +43,24 @@ data class PendingMarkChoice(
 /**
  * Контекст голосовой сессии.
  *
- * FIX 5.8.9f-2b: поле `mode` переведено на Compose mutableStateOf.
- * Теперь чип SEARCH/SORT рядом с кнопкой 🎤 автоматически
- * перерисовывается при переключении режима — и голосом, и тапом.
+ * FIX 5.8.11-a (SEARCH_MODEL §3):
+ * Добавлено вычисляемое свойство `state: VoiceState`. Источник правды —
+ * существующие флаги (`isPaused`, `awaitingWeight`, `awaitingContinue`,
+ * `pendingMarkChoice`). Enum VoiceState добавлен как read-only view —
+ * парсер и презентер смогут читать состояние одним полем.
  *
- * FIX 5.8.9d-2a: добавлены currentSampleNumber / currentSampleOrdinal —
- * контекст «какая проба сейчас на экране». Нужен для команды «отметь»
- * (MarkCurrent) без порядкового номера.
+ * Порядок приоритетов (сверху вниз):
+ *   1. pendingMarkChoice != null → AWAITING_CHOICE
+ *   2. isPaused                  → PAUSED
+ *   3. awaitingWeight            → AWAITING_WEIGHT
+ *   4. awaitingContinue          → AWAITING_CONTINUE
+ *   5. иначе                     → LISTENING
  *
- * FIX 5.8.9d-3c2b1: добавлено состояние pendingMarkChoice для ситуаций,
- * когда ГП должен спросить: «снять / отложить / пропустить?».
+ * FIX 5.8.9f-2b: поле `mode` — Compose mutableStateOf.
+ *
+ * FIX 5.8.9d-2a: currentSampleNumber / currentSampleOrdinal.
+ *
+ * FIX 5.8.9d-3c2b1: pendingMarkChoice.
  */
 class VoiceSession {
 
@@ -60,16 +70,7 @@ class VoiceSession {
     var currentQuery: String? = null
     var currentWellNumber: String? = null
 
-    /**
-     * Номер пробы (sample_number), найденной последним поиском.
-     * null — последний поиск нашёл скважину, а не пробу.
-     */
     var currentSampleNumber: String? = null
-
-    /**
-     * Порядковый номер пробы внутри скважины (numberInWell).
-     * Используется для ответа «Третья отмечена» в 5.8.9d-2b.
-     */
     var currentSampleOrdinal: Int? = null
 
     var lastMarkedRowId: String? = null
@@ -78,10 +79,8 @@ class VoiceSession {
     var isPaused: Boolean = false
 
     /**
-     * Текущий режим. По умолчанию — SEARCH.
-     * Сбрасывается при clear() и advanceToNext().
-     *
-     * Compose State — чтобы UI читал значение реактивно.
+     * Режим. По умолчанию — SEARCH.
+     * Ортогонален состоянию [state].
      */
     var mode: VoiceSessionMode by mutableStateOf(VoiceSessionMode.SEARCH)
 
@@ -98,17 +97,35 @@ class VoiceSession {
     /**
      * FIX 5.8.9d-3c2b1:
      * true — ГП ждёт выбор действия для уже отмеченной / отложенной пробы.
-     *
-     * Compose State — чтобы UI/диалог мог реактивно показать подсказку.
      */
     var pendingMarkChoice: PendingMarkChoice? by mutableStateOf<PendingMarkChoice?>(null)
 
     /**
-     * FIX 5.8.9d-3c2b1:
      * Было ли сессионное ожидание выбора запущено поверх ручной паузы.
-     * Нужно, чтобы после выбора корректно восстановить isPaused.
      */
     private var pausedBeforePending: Boolean = false
+
+    // ================================================================
+    // FIX 5.8.11-a: состояние ГП
+    // ================================================================
+
+    /**
+     * Вычисляемое состояние. Источник правды — существующие флаги.
+     *
+     * Порядок важен: AWAITING_CHOICE перекрывает PAUSED, потому что
+     * `startPendingMarkChoice` сам ставит `isPaused = true` (см. ниже).
+     * Если проверять `isPaused` первым, мы потеряем состояние выбора.
+     */
+    val state: VoiceState
+        get() = when {
+            pendingMarkChoice != null -> VoiceState.AWAITING_CHOICE
+            isPaused -> VoiceState.PAUSED
+            awaitingWeight -> VoiceState.AWAITING_WEIGHT
+            awaitingContinue -> VoiceState.AWAITING_CONTINUE
+            else -> VoiceState.LISTENING
+        }
+
+    // ================================================================
 
     val hasContext: Boolean
         get() = currentOrderId != null && currentQuery != null
