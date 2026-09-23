@@ -19,6 +19,29 @@ interface OrderDao {
     @Query("SELECT id FROM orders WHERE area_id = :areaId AND order_number = :orderNumber LIMIT 1")
     suspend fun getOrderId(areaId: Long, orderNumber: String): Long?
 
+    /**
+     * FIX 5.8.10-d:
+     * Поиск нарядов по ИМЕНИ участка и номеру наряда, минуя area_id.
+     *
+     * Зачем: если в БД когда-либо оказались два участка с одинаковым
+     * area_name (без UNIQUE-индекса на areas.area_name это возможно),
+     * getOrderId(area_id, ...) ищет не там. Здесь связь идёт напрямую
+     * по имени — все совпадения возвращаются, вызывающий код может
+     * сложить статистику.
+     *
+     * Возвращает все id нарядов с таким номером в любом «дубликате»
+     * участка с данным именем. Обычно — 0 или 1 элемент.
+     */
+    @Query(
+        """
+        SELECT o.id FROM orders o
+        JOIN areas a ON a.id = o.area_id
+        WHERE a.area_name = :areaName AND o.order_number = :orderNumber
+        ORDER BY o.id
+        """
+    )
+    suspend fun getOrderIdsByName(areaName: String, orderNumber: String): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(order: OrderEntity): Long
 
