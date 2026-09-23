@@ -4,96 +4,91 @@
 
 ### И-24. Vosk обрывает длинные номера
 **Статус:** 🟡 открыт, нужна разведка API.
-**Симптом:** длинные номера типа `KPD1090031`, `15 24 01 2 ноля 5` обрываются после первых цифр.
+**Симптом:** `KPD1090031`, `15 24 01 2 ноля 5` обрываются после первых цифр.
 **Причина:** endpoint Vosk срабатывает по короткой паузе.
-**Стоп-сигнал:** в `vosk-android:0.3.47` (текущая версия в `build.gradle`)
-методов `Recognizer.setEndpointerMode` и `setEndpointerDelays` **нет** —
-они появились позже. Первая попытка кода под эти методы упала в CI
-(см. откат от 2026-09-22).
-**Что делать:**
-- разведка в AS: `Ctrl+B` по `Recognizer` — какие методы endpoint-tuning
-  доступны в 0.3.47;
-- варианты: обновление Vosk до 0.3.50+, пост-обработка в `VoiceCallback`,
-  либо комбинированное решение.
-**Фикс:** `5.8.6-5e` — после разведки.
+**Стоп-сигнал:** в `vosk-android:0.3.47` нет `setEndpointerMode` /
+`setEndpointerDelays`.
+**Что делать:** разведка в AS (`Ctrl+B` по `Recognizer`), варианты —
+обновление до 0.3.50+, пост-обработка в `VoiceCallback`, комбо.
 **Файл:** `data/util/VoiceController.kt`.
 
-### И-25. `назад` не обновляет UI
-**Статус:** 🟢 код-фикс выпущен в `5.8.6-5f`, 🟡 требует device-check.
-**Симптом:** после команды «назад» (Undo) данные откатываются, но экран
-остаётся в новом состоянии.
-**Причина:** `derivedStateOf` в `SearchScreen.kt` не читал `state.groups`
-напрямую. При пустом `query` ветка `visibleGroups` возвращала `emptyList()`
-без обращения к `_groups`, и подписки на изменения не было.
-**Фикс:** `items` переведён на `remember { derivedStateOf { ... } }` без
-ключей; внутри — явные `state.groups.toList()` и `state.queryGroups.toList()`
-как State-чтения.
-**Файлы:** `ui/screens/SearchScreen.kt`.
-
-### И-31. «Пять четвертых» → Search("5")
-**Статус:** 🟢 код-фикс выпущен в `5.8.6-5g`, 🟡 требует device-check.
-**Симптом:** фраза «пять четвертых» (или «две десятых», «шесть сотых»)
-уходила в Search с остаточным числом «5». Одиночное «четвертых» могло
-неявно трактоваться как порядковое.
-**Причина:** `VoiceCommandParser` не отсекал формы порядковых во мн.ч.
-Парсер числа вытаскивал «пять» → `Search("5")`, «четвертых» тихо пропускалось.
-**Фикс:**
-- `VoiceOrdinals.pluralForms` — набор форм мн.ч. («четвертых», «пятых»,
-  «десятых», «третьих» и т.д.);
-- `VoiceCommandParser.parse()` перед сортировкой и поиском: если во фразе
-  есть такая форма → `Unknown`.
-**Файлы:** `data/voice/VoiceOrdinals.kt`, `data/voice/VoiceCommandParser.kt`.
-
 ### И-3. Голосовой диалог блокирует UI
-**Статус:** 🟡 отложен (5.8.9).
+**Статус:** 🟡 открыт.
 **Симптом:** во время голосового ввода экран не реагирует на тапы.
+**Причина:** вероятно, `AlertDialog` в `VoiceDialog.kt` модальный.
+**Фикс:** заменить на BottomSheet/overlay или `DialogProperties(usePlatformDefaultWidth = false)`.
+**Файлы:** `ui/screens/VoiceDialog.kt`, возможно `SearchScreen.kt`.
 
 ### И-23. Долгая озвучка, мимикрия
-**Статус:** 🟢 частично решено в `5.8.9i`. Скорость TTS 1.10, склонения, `spokenWeight()`.
+**Статус:** 🟢 частично решено в `5.8.9i`. Скорость TTS 1.10, склонения,
+`spokenWeight()`.
 
 ## Решённые в этой сессии
 
+### И-32. Импорт находит «несуществующий» наряд
+**Статус:** 🟢 решено в `5.8.10-d`, 🟡 требует device-check.
+**Симптом:** импорт пишет «наряд уже есть в базе», но в сверке наряда нет.
+**Причина:** `AreaEntity.area_name` без UNIQUE-индекса. `addArea` могла
+создать дубликат, а `getExistingOrderStats` через `getAreaId` с `LIMIT 1`
+искала наряд не в том дубликате.
+**Фикс:**
+- `OrderDao.getOrderIdsByName(areaName, orderNumber)` — JOIN по имени.
+- `DatabaseRepository.getExistingOrderStats` — суммирует по всем совпадениям.
+**Файлы:** `data/dao/OrderDao.kt`, `data/DatabaseRepository.kt`.
+
+### И-33. Все листы файла → один наряд
+**Статус:** 🟢 решено в `5.8.10-f`, 🟡 требует device-check.
+**Симптом:** файл «опись проб 13.xlsx» с листами «НЗ №97..102» —
+импортирован только один наряд, остальные «уже есть».
+**Причина:** `OrderNumberExtractor` в режиме `AUTO` всегда сначала
+брал имя файла. Из «опись проб 13» извлекалось «13» — одно на все листы.
+**Фикс:** приоритет **осмысленного имени листа** над именем файла.
+Стандартные имена («Лист1», «Sheet2», «TDSheet») игнорируются.
+**Файл:** `data/excel/OrderNumberExtractor.kt`.
+
+### И-25. `назад` не обновляет UI
+**Статус:** 🟢 код-фикс выпущен в `5.8.6-5f`, 🟡 требует device-check.
+**Симптом:** после «назад» данные откатываются, экран не обновляется.
+**Причина:** `derivedStateOf` в `SearchScreen.kt` не читал `state.groups`
+напрямую. При пустом `query` ветка `visibleGroups` возвращала `emptyList()`.
+**Фикс:** `remember { derivedStateOf { ... } }` с явными State-чтениями.
+**Файл:** `ui/screens/SearchScreen.kt`.
+
+### И-34. Наряд не находится по orderTitle при коллизии
+**Статус:** 🟢 код-фикс выпущен в `5.8.10-e`, 🟡 требует device-check.
+**Симптом:** в БД есть два наряда «Наряд №13» в разных участках — при
+выборе наряда грузится не тот.
+**Причина:** `orderInfoByTitle = associateBy { it.orderTitle }` схлопывал.
+**Фикс:** добавлен `orderInfoByComposite` с ключом «area|order».
+**Файл:** `ui/screens/ReconciliationViewModel.kt`.
+
+### И-31. «Пять четвертых» → Search("5")
+**Статус:** 🟢 код-фикс выпущен в `5.8.6-5g`, 🟡 требует device-check.
+**Фикс:** `VoiceOrdinals.pluralForms` + блок в `VoiceCommandParser`.
+**Файлы:** `data/voice/VoiceOrdinals.kt`, `data/voice/VoiceCommandParser.kt`.
+
 ### И-10. `showCharacteristic` сбрасывается после перезапуска
 **Статус:** 🟢 код-фикс выпущен в `5.8.10-a`, 🟡 требует device-check.
-**Симптом:** свернул колонку «Характеристика», перезапустил приложение — колонка снова развёрнута.
-**Причина:** состояние жило только в `ReconciliationState`, нигде не сохранялось.
-**Фикс:**
-- `VoiceSettings.showCharacteristic` — новое поле;
-- `VoiceSettingsRepository.load()` — защита дефолта, если поля нет в JSON;
-- `ReconciliationViewModel.setShowCharacteristic(value)` — единая точка изменения + запись в файл;
-- `SearchScreen` — `onShowCharacteristicChange` теперь идёт через ViewModel.
-**Файлы:** `data/voice/VoiceSettings.kt`, `ui/screens/ReconciliationViewModel.kt`, `ui/screens/SearchScreen.kt`.
+**Фикс:** поле в `VoiceSettings`, чтение/запись через `VoiceSettingsRepository`,
+метод `setShowCharacteristic` в ViewModel.
+**Файлы:** `VoiceSettings.kt`, `ReconciliationViewModel.kt`, `SearchScreen.kt`.
 
 ### И-9. Онбординг не показывается
 **Статус:** 🟢 код-фикс выпущен в `5.8.10-b`, 🟡 требует device-check.
-**Симптом:** при первом запуске онбординг ГП не появляется.
-**Причина:** Gson игнорирует Kotlin-дефолты. В старых `voice_settings.json`
-не было поля `showOnboarding` — Gson ставил `false`.
-**Фикс:** `VoiceSettingsRepository.load()` — защита
-`if (!json.contains("\"showOnboarding\"")) parsed = parsed.copy(showOnboarding = true)`.
-Симметрично тому, как уже сделано для `useGrammar` и `showCharacteristic`.
-**Файлы:** `data/voice/VoiceSettings.kt`.
+**Фикс:** защита `showOnboarding = true`, если поля нет в JSON.
+**Файл:** `data/voice/VoiceSettings.kt`.
 
 ### И-26. Ложные отметки по похожим словам
 **Статус:** 🟢 решено unit-тестами в `5.8.6-5a`, 🟡 требует device-check.
-**Симптом:** «семья» → «семь» → отметка пробы №7.
-**Фикс:** строгий шлюз в `VoiceCommandParser`: количественные числа не становятся `MarkOrdinal`, отметка только по явным конструкциям.
 
 ### И-27. Команды уходят в поиск
 **Статус:** 🟢 решено unit-тестами в `5.8.6-3`, 🟡 требует device-check.
-**Симптом:** «назад», «стоп», «помощь» попадают в поисковое поле и сбивают UI.
-**Фикс:** `commandLikeWords` blacklist + `looksLikeSearchQuery()` + `isLikelyVoiceSearchQuery()`.
 
 ### И-28. `отмена` не работала несколько раз подряд
 **Статус:** 🟢 решено в `5.8.6-5c`.
-**Симптом:** вечный игнор одинаковых фраз.
-**Фикс:** time-based debounce 600 мс вместо полного игнора.
 
 ### И-29. Нет звука при снятии пробы
 **Статус:** 🟢 решено в `5.8.6-5c`.
-**Фикс:** `VoiceExecResult.Unmarked`, `Undone`, `Redone` теперь в `handleFeedback` с `fb.soundOk()` + `controller.speak(...)`.
 
 ### И-30. «15 24 01» → «15 20 01»
 **Статус:** 🟢 решено в `5.8.6-2`.
-**Симптом:** одиночное «ноль» съедалось как счётчик нулей.
-**Фикс:** `VoiceNumberParser` считает счётчиком только «два ноля / три нуля».
