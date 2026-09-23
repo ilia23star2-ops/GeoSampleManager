@@ -2,10 +2,9 @@
 
 > Спецификация того, **как в проекте устроен поиск** — и ручной, и голосовой.
 >
-> Цель: **свести две существующие системы к одной**. Чтобы ручной ввод и ГП
-> находили одно и то же, отвечали одинаково и вели себя предсказуемо.
+> Цель: **свести две существующие системы к одной**.
 
-**Статус:** 🟢 полный документ
+**Статус:** 🟢 полный документ (обсуждён, решения зафиксированы)
 **Обновлён:** 2026-09-23
 **Связанные файлы:** `VOICE.md`, `DECISIONS.md`, `AI_RULES.md`
 
@@ -15,36 +14,21 @@
 
 ### Зачем он
 
-Сейчас в проекте **две параллельные системы поиска**:
+Сейчас в проекте **две параллельные системы поиска**: ручной и голосовой.
+Обе используют `UnifiedSearch`, но **презентеры разные**. Отсюда разные
+формулировки, крайние случаи, ложные срабатывания.
 
-1. **Ручной ввод** — пользователь вводит номер в строку, дебаунс 500 мс,
-   результат в `MatchInfo`.
-2. **Голосовой ввод** — пользователь говорит, Vosk распознаёт, результат
-   в `VoiceExecResult`.
-
-Обе используют один движок `UnifiedSearch`, но **презентеры разные**.
-Отсюда:
-- разные формулировки на экране и в TTS;
-- разные крайние случаи;
-- разное поведение в сортировке;
-- ложные срабатывания ГП.
-
-Документ описывает **единую модель**, к которой всё это сведётся.
+Документ описывает **единую модель**, к которой всё сведётся.
 
 ### Что описываем
 
-- Модель ввода (ручной + голосовой).
-- Модель поиска.
-- Модель ответа (`Response`).
-- Презентер — как из `Response` получаются UI-строки и TTS-фразы.
-- Состояния ГП и что в каком состоянии принимается.
+Модель ввода (ручной + голосовой), модель поиска, модель ответа
+(`Response`), презентер, состояния ГП.
 
 ### Что НЕ описываем
 
-- UI-компоновку экрана (это `DECISIONS.md`).
-- Звуковую карту (это `VoiceFeedback.kt` + `DECISIONS.md §13.4`).
-- Vosk endpoint tuning (И-24, отложено).
-- Схему БД (это `DATABASE.md`).
+UI-компоновку (`DECISIONS.md`), звуковую карту (`VoiceFeedback`),
+Vosk endpoint tuning (И-24), схему БД (`DATABASE.md`).
 
 ---
 
@@ -55,13 +39,14 @@
 | Термин | Что значит |
 |---|---|
 | **Запрос** | Пользователь ввёл или сказал что-то. Один токен или несколько. |
-| **Токен** | Один фрагмент запроса: число, код, префикс. «15 24 01» → 3 токена. |
-| **Кандидат** | Нормализованный вид токена, который идёт в поиск: `«пятнадцать»` → `«15»`. |
-| **Попадание (hit)** | Проба из БД, которая совпала с запросом. Тип `VoiceSampleHit`. |
-| **Поиск** | Операция сопоставления кандидатов с базой. Возвращает `SearchResult`. |
-| **Ответ (`Response`)** | Единая модель того, что показать и сказать. Строится из `SearchResult`. |
-| **Презентер** | Функция `Response` → `visual` (строки UI) + `spoken` (фраза TTS). |
-| **Состояние ГП** | Режим, в котором находится голосовой помощник. Определяет, что он принимает. |
+| **Токен** | Фрагмент запроса: число, код, префикс. |
+| **Кандидат** | Нормализованный вид токена для поиска. |
+| **Попадание (hit)** | Проба из БД, совпавшая с запросом. |
+| **Поиск** | Сопоставление кандидатов с базой. |
+| **Ответ (`Response`)** | Единая модель: что показать и сказать. |
+| **Презентер** | `Response` → `visual` + `spoken`. |
+| **Состояние ГП** | Режим ожидания: что ГП принимает сейчас. |
+| **Режим ГП (`VoiceMode`)** | `SEARCH` / `SORT`. Ортогонален состоянию. |
 
 ### 1.2. Три «двойки», которые убираем
 
@@ -75,16 +60,16 @@
 
 | Что | Единый путь |
 |---|---|
-| **Парсер** | `QueryNormalizer` → нормализованные токены |
+| **Парсер** | `QueryNormalizer` → токены → кандидаты |
 | **Модель ответа** | `SearchResult` → `Response` |
-| **Презентер** | `Presenter.render(Response)` → `visual` + `spoken` |
+| **Презентер** | `Presenter.render(Response)` |
 
 ### 1.3. Границы
 
-**Внутри спецификации:** парсинг чисел, нормализация префиксов, логика
-сопоставления, формирование `SearchResult` и `Response`, озвучка.
+**Внутри:** парсинг чисел, нормализация префиксов, `UnifiedSearch`,
+`SearchResult`, `Response`, озвучка.
 
-**Вне спецификации:** визуальный дизайн, звуковая карта, работа с БД, Vosk.
+**Вне:** визуальный дизайн, звуковая карта, БД, Vosk.
 
 ---
 
@@ -92,10 +77,10 @@
 
 ### 2.1. Что уже унифицировано ✅
 
-- **Единый движок поиска** — `UnifiedSearch` (7 уровней совпадения).
-- **Единая модель состояния** — `AnswerReason` / `AnswerState` (8 причин, 4 состояния).
+- **Единый движок поиска** — `UnifiedSearch`.
+- **Единая модель состояния** — `AnswerReason` / `AnswerState`.
 - **Единая палитра** — `AnswerStateColors`.
-- **Единая звуковая карта** — `VoiceFeedback` (3 звука).
+- **Единая звуковая карта** — `VoiceFeedback`.
 
 ### 2.2. Что НЕ унифицировано ❌
 
@@ -104,28 +89,24 @@
 - **Два парсера:** `setQuery` / `analyzeMatch` и `VoiceCommandParser.parse`.
 - **Разная логика `filterMode`:** у ручного есть, у голосового нет.
 
-### 2.3. Конкретные расхождения (болячки)
+### 2.3. Болячки
 
 - **Б1. Ложные срабатывания ГП.** `VoiceCommandParser` не знает состояния.
-- **Б2а. Глюки с цифрами.** `VoiceNumberParser` — правила меняются под сценарий.
+- **Б2а. Глюки с цифрами.** Правила `VoiceNumberParser` меняются под сценарий.
 - **Б2б. Произношение номеров.** `spellOut("1090031")` → «10 90 03 1».
-- **Б3. Разные ответы UI и TTS.** Две функции дают разные формулировки.
-- **Б4. Сортировка сбрасывается.** `voiceSort()` при ненайденном вызывает `setQuery`.
+- **Б3. Разные ответы UI и TTS.**
+- **Б4. Сортировка сбрасывается** при ненайденном номере.
 - **Б5. Неточные срабатывания.** Следствие Б1–Б4.
-- **Б6. Нет единой логики поиска.** Частично решена, презентеры разные.
+- **Б6. Нет единой логики.** Частично решена.
 
 ### 2.4. Диагноз
 
-Корень — **разные презентеры одной модели**. Всё остальное — следствия.
-Два парсера → Две модели → Два презентера → Б1, Б2б, Б3, Б4
-
-text
-
-**Что решаем в первую очередь:** модель `Response` + состояния ГП.
+Корень — **разные презентеры одной модели**.
 
 ### 2.5. Что менять не будем
 
-`UnifiedSearch`, `AnswerReason`, `AnswerState`, `AnswerStateColors`, `VoiceFeedback`.
+`UnifiedSearch`, `AnswerReason`, `AnswerState`, `AnswerStateColors`,
+`VoiceFeedback`.
 
 ---
 
@@ -141,37 +122,57 @@ text
 | `AWAITING_CONTINUE` | Спросил «Выберите на экране». |
 | `AWAITING_CHOICE` | Спросил «Снять, отложить или пропустить?». |
 | `PAUSED` | Пауза. Активны «продолжить» и «стоп». |
-| `SORTING` | Режим сортировки. Отметки отключены. |
 
-### 3.2. Диаграмма переходов
+**Режим (`VoiceMode`) — отдельно, ортогонально:**
+
+| Режим | Что значит |
+|---|---|
+| `SEARCH` | Обычный поиск со статистикой и отметками. |
+| `SORT` | Сортировка: только «запрос → наряд», без отметок. |
+
+Режим **не является состоянием**. ГП может быть в `LISTENING + SORT`,
+`AWAITING_CONTINUE + SEARCH` и т.д. Переключение режима не меняет
+состояние. Отметки блокируются **только** в режиме `SORT`.
+
+### 3.2. Диаграмма переходов состояний
 IDLE ──[старт]──▶ LISTENING
 │
-┌───────────┼───────────┬─────────────┬──────────────┐
-▼ ▼ ▼ ▼ ▼
-[пауза] [Вес?] [Найден N] [Уже отмечена] [сортировка]
-│ │ │ │ │
-▼ ▼ ▼ ▼ ▼
-PAUSED AWAITING_ AWAITING_ AWAITING_ SORTING
+┌───────────┼───────────┬─────────────┐
+▼ ▼ ▼ ▼
+[пауза] [Вес?] [Найден N] [Уже отмечена]
+│ │ │ │
+▼ ▼ ▼ ▼
+PAUSED AWAITING_ AWAITING_ AWAITING_
 WEIGHT CONTINUE CHOICE
-│ │ │ │ │
-└───────────┴───────────┴─────────────┴──────────────┘
-[число/продолжить/снять/поиск]
+│ │ │ │
+└───────────┴───────────┴─────────────┘
+[ответ пользователя]
 │
 ▼
 LISTENING
 
 text
 
+**Режим `SORT` включается/выключается независимо** — командой «сортировка»
+и «поиск». Состояние при этом не меняется.
+
 ### 3.3. Что принимается в каждом состоянии
 
 | Состояние | Принимает | Всё остальное |
 |---|---|---|
-| `LISTENING` | Всё: поиск, все команды | — |
+| `LISTENING` | Всё: поиск, все команды | **Молчание** (не команда, не поиск) |
 | `AWAITING_WEIGHT` | Число-вес, `Undo`, `Stop` | «Скажите вес или отмена» |
 | `AWAITING_CONTINUE` | `Resume`, `Pause`, `Stop`, `Search`, `Sort` | «Скажите продолжить или стоп» |
-| `AWAITING_CHOICE` | `ChoiceRemove/Postpone/Skip`, `MarkCurrent` (для POSTPONED), `Undo`, `Stop` | «Скажите: снять, отложить или пропустить» |
+| `AWAITING_CHOICE` | `ChoiceRemove/Postpone/Skip`, `MarkCurrent` (POSTPONED), `Undo`, `Stop` | «Скажите: снять, отложить или пропустить» |
 | `PAUSED` | `Resume`, `Stop` | «Пауза. Скажите продолжить или стоп» |
-| `SORTING` | Поиск (без отметок), `Sort`, `Next`, `Stop`, `Pause`, `Resume`, `Undo`, `Redo`, `Help`, `SetMode(SEARCH)` | Отметки заблокированы |
+
+**В `LISTENING` на непонятное — молчать.** Не «Не понял», не звук.
+Просто ждать дальше. Это решение зафиксировано.
+
+**В режиме `SORT`:**
+- Поиск работает, но ответ упрощённый: «Запрос — Наряд №7».
+- Отметки заблокированы: `MarkOrdinal` и др. → `Message`
+  «Режим сортировки — отметки недоступны».
 
 ### 3.4. Глобальные команды
 
@@ -181,14 +182,15 @@ text
 | `Pause` | Из `LISTENING`, `AWAITING_*`. → `PAUSED`. |
 | `Resume` | Из `PAUSED`, `AWAITING_CONTINUE`. → `LISTENING`. |
 | `Undo` | Везде. В `AWAITING_*` сбрасывает ожидание. |
+| `SetMode(SEARCH/SORT)` | Меняет режим, **не состояние**. |
 
 ### 3.5. Реализация
 
-**Новый enum `VoiceState`.** `VoiceSession.state` — единственный источник
-правды. Флаги (`isPaused`, `awaitingWeight`, …) — производные от `state`.
-
-**Парсер принимает состояние.** `VoiceCommandParser.parse(text, state)`.
-Решение о `Unknown` — на основе состояния. Это убирает Б1.
+- Новый enum `VoiceState` — 6 значений (без `SORTING`).
+- Новый enum `VoiceMode` — 2 значения (`SEARCH`, `SORT`).
+- `VoiceSession.state` + `VoiceSession.mode` — два независимых поля.
+- Существующий `VoiceSessionMode` (если есть) — заменяется на `VoiceMode`.
+- `VoiceCommandParser.parse(text, state, mode)` — учитывает оба.
 
 ---
 
@@ -207,7 +209,6 @@ UnifiedSearch.search
 text
 
 Ручной и голосовой различаются **только способом получения текста**.
-Дальше — общий путь.
 
 ### 4.2. QueryNormalizer
 
@@ -243,7 +244,6 @@ text
 
 ### 4.5. Кандидаты
 
-Для каждого токена — набор кандидатов:
 1. Один `Number` → `["1524"]`.
 2. Несколько `Number` → `["152401", "15|24|01"]`.
 3. `Prefix + Number` → `["KPD1090031", "KPD109|00|31", "1090031"]`.
@@ -252,16 +252,18 @@ text
 
 ### 4.6. Примеры
 
-**Голос «пятнадцать двадцать четыре»** → токены `[15, 24]` →
-кандидаты `["1524", "15|24"]` → поиск.
+**«пятнадцать двадцать четыре»** → `[15, 24]` → `["1524", "15|24"]`.
 
-**Голос «семь утра было холодно»** (в `LISTENING`):
-токены `[Number(7), Unknown("утра"), ...]`. `Unknown` в середине →
-вся фраза `Unknown`. **Не `MarkOrdinal(7)`**.
+**«семь утра было холодно»** (в `LISTENING`):
+`[Number(7), Unknown("утра"), Unknown("было"), ...]` → **молчание**.
+Не `MarkOrdinal(7)`, не «Не понял». Просто ждём.
 
-**Голос «семь»** (в `AWAITING_WEIGHT`):
-токен `Number(7)`, состояние ждёт вес → `SetWeight(7.0)`.
-**Не `MarkOrdinal`**.
+**«семь»** (в `AWAITING_WEIGHT`): `Number(7)` → `SetWeight(7.0)`.
+
+### 4.7. Правило Unknown
+
+**`Unknown` в середине фразы → вся фраза `Unknown`.**
+В `LISTENING` — молчание. В `AWAITING_*` — фраза-подсказка.
 
 ---
 
@@ -270,25 +272,23 @@ text
 ### 5.1. Проблема
 
 Б2а: правила `VoiceNumberParser` меняются под сценарий.
-Б2б: `spellOut("1090031")` → «10 90 03 1» — структура ввода теряется.
+Б2б: `spellOut("1090031")` → «10 90 03 1» — структура теряется.
 
-### 5.2. DigitGroup — единица модели
+### 5.2. DigitGroup
 data class DigitGroup(
-val value: String, // «109», «00», «31»
+val value: String,
 val kind: GroupKind,
-val sourceText: String? // «сто девять» (если голосом)
+val sourceText: String? = null
 )
 
 text
 
-| Kind | Что значит | Пример |
-|---|---|---|
-| `PLAIN` | Обычная группа 1–3 цифры | `109`, `31`, `5` |
-| `LEADING_ZERO` | Группа нулей | `00`, `000` |
-| `PREFIX` | Латинский префикс | `KPD`, `NV` |
-| `SINGLE` | Одиночная цифра | `7`, `0` |
-
-**Почему нули отдельно:** «ноль ноль» — это разряд, не число.
+| Kind | Пример |
+|---|---|
+| `PLAIN` | `109`, `31`, `5` |
+| `LEADING_ZERO` | `00`, `000` |
+| `PREFIX` | `KPD`, `NV` |
+| `SINGLE` | `7`, `0` |
 
 ### 5.3. Группировка
 
@@ -315,8 +315,6 @@ text
 
 ### 5.5. Озвучка
 
-`VoiceSpeaker.spellOut(groups: List<DigitGroup>)`:
-
 | Группы | Озвучка |
 |---|---|
 | `[15, 24]` | «пятнадцать, двадцать четыре» |
@@ -324,42 +322,34 @@ text
 | `[KPD, 109, 00, 31]` | «ка пэ дэ, сто девять, ноль ноль, тридцать один» |
 | `[7]` | «семь» |
 
-Озвучка идёт **по группам**, не по слитной строке. Это фикс Б2б.
+Озвучка идёт **по группам**, не по слитной строке. Фикс Б2б.
 
 ---
 
 ## 6. Канал поиска
 
-### 6.1. Единый SearchService
+### 6.1. SearchService — только in-memory
 
-**Сейчас:**
-- Ручной — `SampleDao.findOrderIdsByQuery` (SQL).
-- Голосовой — `VoiceSearchRepository.loadAll()` + `UnifiedSearch` (in-memory).
+**Решение зафиксировано:** работаем **только через in-memory**.
+Загружаем все пробы (`VoiceSearchRepository.loadAll()`) и ищем через
+`UnifiedSearch`. Порогов и переключений на SQL **нет**.
 
-**После унификации:** один `SearchService` с выбором стратегии.
-SearchService.search(candidates, scope) → SearchResult
+**Почему:** проще. Для 10 000 проб хватает памяти. Если реально упрёмся —
+добавим SQL позже, отдельным заходом.
+SearchService.search(candidates) → SearchResult
 
 text
-
-**Выбор стратегии:**
-
-| Размер БД | Стратегия |
-|---|---|
-| < 5000 проб | In-memory: `loadAll()` + `UnifiedSearch` |
-| ≥ 5000 проб | SQL: `findOrderIdsByQuery` + `UnifiedSearch` по подмножеству |
-
-Порог — настройка, можно изменить без правки логики.
 
 ### 6.2. Модель SearchResult
 sealed class SearchResult {
 data class Found(
 val hits: List<VoiceSampleHit>,
-val matchedKind: UnifiedMatchKind, // WELL / SAMPLE / NONE
-val matchedValue: String, // что нашли
-val level: Int, // уровень совпадения 0..6
-val isUnique: Boolean, // один наряд?
-val groups: List<DigitGroup>, // исходная структура (для озвучки)
-val queryTokens: List<QueryToken> // что ввёл пользователь
+val matchedKind: UnifiedMatchKind,
+val matchedValue: String,
+val level: Int,
+val isUnique: Boolean,
+val groups: List<DigitGroup>,
+val queryTokens: List<QueryToken>
 ) : SearchResult()
 
 data object NotFound : SearchResult()
@@ -368,14 +358,14 @@ data class Failed(val error: String) : SearchResult()
 
 text
 
-**Ключевое:** `SearchResult` хранит **и попадания, и структуру запроса**.
-Отсюда презентер одинаково строит UI и TTS.
+`SearchResult` хранит **и попадания, и структуру запроса**. Это позволяет
+презентеру одинаково строить UI и TTS.
 
 ### 6.3. Что делает
 
-1. Принимает кандидатов от `QueryToCandidates`.
+1. Принимает кандидатов.
 2. Вызывает `UnifiedSearch.search(...)`.
-3. Упаковывает результат в `SearchResult`.
+3. Упаковывает в `SearchResult`.
 4. Возвращает.
 
 `SearchService` **не решает**, что показать. Это работа презентера.
@@ -386,43 +376,39 @@ text
 
 ### 7.1. Зачем
 
-Сейчас UI и TTS строятся **двумя разными функциями** из одного и того же
-`SearchResult`. Отсюда Б3 — разные формулировки.
+UI и TTS строятся **одним** объектом. Презентер — один на всех.
 
-`Response` — **единый объект**, из которого и UI, и TTS берут данные.
-Презентер — один на всех.
-
-### 7.2. Структура Response
+### 7.2. Структура
 data class Response(
 val kind: ResponseKind,
-val primary: String, // «Скважина 15 24» — суть
-val details: List<String>, // структурированные детали
-val reason: AnswerReason, // причина (для цвета)
-val sound: SoundKind, // OK / ATTENTION / ERROR / NONE
-val pause: Boolean, // ждать ответа?
-val groups: List<DigitGroup>?, // для озвучки номеров
-val context: ResponseContext? // доп. данные (вес, проба, …)
+val primary: String,
+val details: List<String>,
+val reason: AnswerReason,
+val sound: SoundKind,
+val pause: Boolean,
+val groups: List<DigitGroup>?,
+val context: ResponseContext?
 )
 
 text
 
 | Поле | Назначение |
 |---|---|
-| `kind` | Тип ответа (FOUND_ONE / FOUND_MANY / MARKED / …) |
-| `primary` | Главная строка: «Скважина 15 24» |
-| `details` | Детали: «Наряд №7», «Проб 3», «Отмечено 0» |
-| `reason` | `AnswerReason` — определяет цвет и звук |
+| `kind` | Тип ответа |
+| `primary` | Главная строка |
+| `details` | Детали (фиксированный порядок) |
+| `reason` | `AnswerReason` — цвет и звук |
 | `sound` | Какой звук играть |
-| `pause` | Ждём ли ответа (для AWAITING_*) |
-| `groups` | Исходная структура номеров (для TTS) |
-| `context` | Дополнительные данные (вес, ordinal, выбор) |
+| `pause` | Ждём ли ответа |
+| `groups` | Исходная структура (для TTS) |
+| `context` | Доп. данные (вес, ordinal, выбор) |
 
 ### 7.3. ResponseKind
 
 | Kind | Что значит |
 |---|---|
 | `FOUND_ONE` | Одна проба или скважина |
-| `FOUND_MANY` | Несколько нарядов с этим номером |
+| `FOUND_MANY` | Несколько нарядов |
 | `NOT_FOUND` | Нет в БД |
 | `MARKED` | Проба отмечена |
 | `MARKED_MULTIPLE` | Отмечено несколько |
@@ -430,12 +416,12 @@ text
 | `UNMARKED` | Отметка снята |
 | `WEIGHT_SET` | Вес установлен |
 | `MODE_CHANGED` | Режим переключён |
-| `NEXT` | Переход к следующей скважине |
+| `NEXT` | Переход к следующей |
 | `MESSAGE` | Информационное сообщение |
 | `ASKING_WEIGHT` | Запрос веса |
-| `ASKING_CHOICE` | Запрос выбора (снять/отложить/пропустить) |
+| `ASKING_CHOICE` | Запрос выбора |
 | `ASKING_CONTINUE` | Запрос «продолжить или стоп» |
-| `UNKNOWN` | Не понял |
+| `UNKNOWN` | Не понял (только в `AWAITING_*`) |
 | `STOPPED` | Сессия завершена |
 
 ### 7.4. SoundKind
@@ -445,51 +431,53 @@ text
 | `OK` | Действие выполнено |
 | `ATTENTION` | Нужно решение |
 | `ERROR` | Не получилось |
-| `NONE` | Без звука (успешный поиск, IDLE, пауза) |
+| `NONE` | Без звука |
 
 ### 7.5. Маппинг SearchResult → Response
 
-**Единственное место**, где определяется формулировка ответа.
-
-| SearchResult | Response.kind | reason | sound | pause |
+| SearchResult | kind | reason | sound | pause |
 |---|---|---|---|---|
-| `Found` (уникальный, SAMPLE) | `FOUND_ONE` | `OK_SINGLE` | `NONE` | false |
-| `Found` (уникальный, WELL) | `FOUND_ONE` | `OK_SINGLE` | `NONE` | false |
-| `Found` (несколько нарядов) | `FOUND_MANY` | `FOUND_MULTIPLE` | `ATTENTION` | true |
+| `Found` (уникальный) | `FOUND_ONE` | `OK_SINGLE` | `NONE` | false |
+| `Found` (несколько) | `FOUND_MANY` | `FOUND_MULTIPLE` | `ATTENTION` | true |
 | `Found` (другой наряд) | `FOUND_ONE` | `FOUND_OTHER_ORDER` | `ATTENTION` | true |
 | `Found` (другой участок) | `FOUND_ONE` | `FOUND_OTHER_AREA` | `ATTENTION` | true |
 | `NotFound` | `NOT_FOUND` | `NOT_FOUND` | `ERROR` | false |
 | `Failed` | `NOT_FOUND` | `SEARCH_FAILED` | `ERROR` | false |
 
-### 7.6. Поля primary и details
+### 7.6. Порядок details — фиксированный
 
-**Правило:** `primary` — короткая суть. `details` — список деталей.
-
-**Пример для скважины:**
-primary = "Скважина пятнадцать двадцать четыре"
-details = [
-"Наряд №7",
-"Всего три пробы",
-"Отмечено ноль",
-"Холостых одна"
-]
+**Режим `SEARCH` (скважина):**
+primary = "Скважина 15 24"
+details = ["Наряд №7", "Всего 3 пробы", "Отмечено 0", "Холостых 1"]
 
 text
 
-**Пример для пробы:**
-primary = "Проба пятнадцать двадцать четыре ноль один"
-details = [
-"Наряд №7",
-"Уже отмечена"
-]
+**Режим `SEARCH` (проба):**
+primary = "Проба 15 24 01"
+details = ["Наряд №7", "Уже отмечена"]
 
 text
 
-**Озвучка:** `primary + ". " + details.joinToString(". ") + "."`.
+**Режим `SORT` — упрощённый формат:**
+primary = "15 24 — Наряд №7"
+details = [] (пусто)
 
-**UI:** `primary` — заголовок, `details` — строки под ним.
+text
 
-**Один объект — два представления.**
+**Только `запрос → номер наряда`.** Без статистики, без отметок.
+Это правило для SORT-режима.
+
+**Правила:**
+- Порядок всегда один и тот же.
+- Лишние детали не показываются (если холостых 0 — строки нет).
+- `SORT` — всегда одна строка, без details.
+
+### 7.7. Озвучка
+spoken = primary + ". " + details.joinToString(". ") + "."
+
+text
+
+Для `SORT`: `spoken = primary + "."`. Только одна фраза.
 
 ---
 
@@ -497,53 +485,29 @@ text
 
 ### 8.1. Задача
 
-Преобразовать `Response` в:
-- `visual: VisualRender` — строки для UI.
-- `spoken: String` — фраза для TTS.
+`Response` → `VisualRender` (UI) + `SpokenRender` (TTS).
 
 ### 8.2. VisualRender
 data class VisualRender(
-val state: AnswerState, // для цвета (OK / ATTENTION / ERROR / IDLE)
-val title: String, // «Наряд 7 · проба NV152601»
-val shortStatus: String, // «Найдено»
-val reasonLabel: String, // «Другой наряд»
-val indicatorColor: Color // из AnswerStateColors
+val state: AnswerState,
+val title: String,
+val shortStatus: String,
+val reasonLabel: String,
+val indicatorColor: Color
 )
 
 text
-
-Строится из `Response.reason` + `Response.primary`.
 
 ### 8.3. SpokenRender
 fun renderSpoken(response: Response, groups: List<DigitGroup>?): String
 
 text
 
-**Правила:**
-
-1. `primary` — произносится как есть (номера через `VoiceSpeaker.spellOut(groups)`).
-2. `details` — через запятую или точку.
-3. Если `response.pause == true` — добавляется вопрос:
-   - `ASKING_WEIGHT` → «Вес?»
-   - `ASKING_CHOICE` → «Снять, отложить или пропустить?»
-   - `ASKING_CONTINUE` → «Скажите продолжить или стоп»
-
-**Пример:**
-Response(
-kind = FOUND_ONE,
-primary = "Скважина 15 24",
-details = ["Наряд №7", "Всего три пробы", "Отмечено ноль"],
-...
-)
-
-spoken = "Скважина пятнадцать двадцать четыре. Наряд семь. " +
-"Всего три пробы. Отмечено ноль."
-
-text
+1. `primary` — произносится (номера через `VoiceSpeaker.spellOut(groups)`).
+2. `details` — через точку.
+3. Если `pause == true` — добавляется вопрос.
 
 ### 8.4. Единый Presenter
-
-**Одна точка входа** — `Presenter.render(response)`:
 data class RenderedResponse(
 val visual: VisualRender,
 val spoken: String,
@@ -555,10 +519,19 @@ fun render(response: Response, groups: List<DigitGroup>?): RenderedResponse
 text
 
 **Что это даёт:**
-- UI и ГП получают **один и тот же** ответ.
-- Формулировки гарантированно совпадают.
-- Добавление новой команды — в одном месте (`Response` + маппинг).
-- Б3 (разные ответы) закрыт.
+- UI и ГП получают один и тот же ответ.
+- Формулировки совпадают гарантированно.
+- Б3 закрыт.
+
+### 8.5. Молчание при Unknown
+
+Если `Response.kind == UNKNOWN` и состояние `LISTENING` — **презентер
+возвращает пустой ответ**:
+- `visual` — без изменений (не трогаем экран).
+- `spoken` — пустая строка.
+- `sound` — `NONE`.
+
+**ГП просто ждёт дальше.** Это решение зафиксировано.
 
 ---
 
@@ -574,8 +547,8 @@ text
 | `отмена`, `верни`, `назад` | `Undo` | `MESSAGE` («Отменено») | `OK` |
 | `вперёд`, `вперед` | `Redo` | `MESSAGE` («Повторено») | `OK` |
 | `следующая` и др. | `Next` | `NEXT` | `OK` |
-| `помощь` | `Help` | `MESSAGE` (список команд) | `NONE` |
-| `сколько осталось` | `HowManyLeft` | `MESSAGE` (список) | `NONE` |
+| `помощь` | `Help` | `MESSAGE` (список) | `NONE` |
+| `сколько осталось` | `HowManyLeft` | `MESSAGE` | `NONE` |
 | `показать отложенные` | `ShowPostponed` | `MESSAGE` | `NONE` |
 | `показать найденные` | `ShowFound` | `MESSAGE` | `NONE` |
 | `сортировка` | `SetMode(SORT)` | `MODE_CHANGED` | `OK` |
@@ -586,12 +559,12 @@ text
 | `отметь`, `эту` | `MarkCurrent` | `MARKED` / `ASKING_*` | `OK` / `ATTENTION` |
 | `снять первую` | `ClearOrdinal` | `UNMARKED` | `OK` |
 | `снять последнюю` | `ClearLast` | `UNMARKED` | `OK` |
-| `снять все` | `ClearAll` | `MESSAGE` («Снято N») | `OK` |
+| `снять все` | `ClearAll` | `MESSAGE` | `OK` |
 | `вес два пять` | `SetWeight(2.5)` | `WEIGHT_SET` | `OK` |
 | `снять отложенную` | `Unpostpone` | `MESSAGE` | `OK` |
 | `снять` (в AWAITING_CHOICE) | `ChoiceRemove` | `UNMARKED` | `OK` |
 | `отложить` (в AWAITING_CHOICE) | `ChoicePostpone` | `MESSAGE` | `OK` |
-| `пропустить` (в AWAITING_CHOICE) | `ChoiceSkip` | `MESSAGE` | `NONE` |
+| `пропустить` | `ChoiceSkip` | `MESSAGE` | `NONE` |
 | (число) в `LISTENING` | `Search` | `FOUND_*` / `NOT_FOUND` | по ситуации |
 | (число) в `AWAITING_WEIGHT` | `SetWeight` | `WEIGHT_SET` | `OK` |
 
@@ -603,51 +576,92 @@ text
 | `ASKING_CHOICE` | «Снять, отложить или пропустить?» | → `AWAITING_CHOICE` |
 | `ASKING_CONTINUE` | «Скажите продолжить или стоп» | → `AWAITING_CONTINUE` |
 
+### 9.3. Множественная отметка с ошибкой
+
+Если из «первая вторая третья» отметились только первая и третья:
+spoken = "Отмечено: первая, третья."
+
+text
+
+Не переспрашивать. Не «Вторая не найдена». Просто перечислить, что
+отметили. Решение зафиксировано.
+
 ---
 
-## 10. Открытые вопросы
+## 10. Открытые вопросы и план
 
-### 10.1. Что осталось не решённым
+### 10.1. Что решено (в этой сессии)
 
-1. **Порог SQL vs in-memory.** 5000 проб — гипотеза. Может быть, 2000 или 10000. Уточняется по замерам на устройстве.
+| Вопрос | Решение |
+|---|---|
+| `SORT` — состояние или режим? | Режим (`VoiceMode`), ортогонален состоянию |
+| SQL vs in-memory? | Только in-memory |
+| `Unknown` в `LISTENING`? | Молчание |
+| Множественная отметка с ошибкой? | «Отмечено: первая, третья» |
+| `details` — порядок? | Фиксированный; для SORT — упрощённый формат |
+| План реализации? | 5 заходов (сокращён) |
+| Переписывание `VoiceDialog`? | Безопасно — рядом с текущим |
 
-2. **Реакция на `Unknown` в `LISTENING`.** Если пользователь сказал что-то непонятное — молчать или сказать «Не понял»? Сейчас — говорит. Возможно, стоит молчать, если это не команда.
+### 10.2. Что осталось
 
-3. **Множественная отметка при ошибке.** Если из «первая вторая третья» отметились только первая и третья — что говорить? «Отмечено: первая, третья» (текущее) или переспрашивать?
+1. **Формулировка `primary` для `SORT`.** «15 24 — Наряд №7». Возможно,
+   лучше «пятнадцать двадцать четыре, наряд семь». Уточнить при реализации.
+2. **Открытие `VoiceDialog` при молчании.** Если ГП молчит, панель не
+   меняется. Но должна ли она оставаться открытой? — Да, до явного
+   «стоп»/закрытия.
+3. **Обработка `Failed` vs `NotFound`.** Обе дают `NOT_FOUND`. Разница
+   — только в логе. Не показываем.
 
-4. **Связь с `VoiceSessionMode`.** `SORT` — это состояние (`SORTING`) или режим? Сейчас — режим, но в спецификации описан как состояние. Уточнить.
+### 10.3. План реализации — 5 заходов
 
-5. **Порядок `details`.** «Наряд, Всего, Отмечено, Холостые» — сейчас так. Может, менять под ситуацию.
+**Заход 1 — `5.8.11-a`: Состояния и режимы.**
+- `VoiceState` (enum, 6 значений).
+- `VoiceMode` (enum, 2 значения).
+- `VoiceSession`: `state` + `mode` — раздельные поля.
+- Флаги (`isPaused`, `awaitingWeight`, `awaitingContinue`, `pendingMarkChoice`)
+  становятся производными.
+- **Файлы:** `VoiceSession.kt`, `VoiceState.kt` (новый), `VoiceMode.kt` (новый).
 
-### 10.2. Что НЕ входит в спецификацию
+**Заход 2 — `5.8.11-b`: Единый ввод.**
+- `QueryToken` (sealed).
+- `QueryNormalizer`.
+- `QueryTokenizer`.
+- **Файлы:** `QueryToken.kt`, `QueryNormalizer.kt`, `QueryTokenizer.kt` (все новые).
 
-- Vosk endpoint tuning (И-24).
-- UI-компоновка (DECISIONS §13).
-- Звуковая карта (DECISIONS §13.4).
-- Схема БД.
+**Заход 3 — `5.8.11-c`: Модель числа.**
+- `DigitGroup` + `DigitGrouper` + `GroupToCandidates`.
+- `VoiceSpeaker.spellOut(groups: List<DigitGroup>)`.
+- **Файлы:** `DigitGroup.kt` (новый), `DigitGrouper.kt` (новый),
+  `GroupToCandidates.kt` (новый), `VoiceSpeaker.kt` (правка).
 
-### 10.3. План реализации
+**Заход 4 — `5.8.11-d`: Модель ответа.**
+- `SearchService` (in-memory).
+- `SearchResult`.
+- `Response` + маппинг.
+- `Presenter`.
+- **Файлы:** `SearchService.kt`, `SearchResult.kt`, `Response.kt`,
+  `Presenter.kt` (все новые).
 
-Порядок заходов:
+**Заход 5 — `5.8.11-e`: Переключение на новый путь.**
+- `setQuery` → `QueryNormalizer` + `QueryTokenizer` + `SearchService`.
+- `VoiceCommandParser` → принимает `VoiceState` + `VoiceMode`.
+- `VoiceDialog` → использует `Response` + `Presenter`.
+- **Безопасно:** новые функции рядом со старыми, старое не удаляем
+  до проверки на устройстве.
+- **Файлы:** `ReconciliationViewModel.kt`, `VoiceCommandParser.kt`,
+  `VoiceDialog.kt`.
 
-1. `VoiceState` (enum + `VoiceSession.state`).
-2. `QueryToken` + `QueryNormalizer` + `QueryTokenizer`.
-3. `DigitGroup` + `DigitGrouper` + `GroupToCandidates`.
-4. `SearchService` (единый).
-5. `SearchResult`.
-6. `Response` + маппинг `SearchResult → Response`.
-7. `Presenter` (единый).
-8. Перевод `setQuery` на новый путь.
-9. Перевод `VoiceCommandParser` на новый путь.
-10. Перевод `VoiceSpeaker` на `List<DigitGroup>`.
+**Итого:** 5 заходов, каждый — 1–3 файла.
 
-Каждый заход — 1–2 файла, отдельная ветка, CI + device-check.
+### 10.4. Безопасный переход `VoiceDialog`
 
-### 10.4. Риски
+В заходе 5:
+1. `VoiceDialog` **не переписывается целиком**.
+2. Рядом со старым `describeResult()` добавляется `renderFromResponse()`.
+3. Старый `VoiceExecResult` остаётся — им пользуется текущий путь.
+4. `ReconciliationViewModel.voiceExecute` получает **два варианта**:
+   старый (возвращает `VoiceExecResult`) и новый (возвращает `Response`).
+5. Переключаем `VoiceDialog` на новый. Если на устройстве всё работает —
+   удаляем старый отдельным заходом. Если нет — откат.
 
-- **Vosk-грамматика.** После изменения парсера может потребоваться
-  корректировка `VoiceGrammar.kt`. Проверять на устройстве.
-- **Существующие тесты.** Многие завязаны на текущее поведение. Часть
-  придётся переписать.
-- **Обратная совместимость.** `VoiceExecResult` используется в `VoiceDialog`.
-  При переходе на `Response` — переписать разом, не частями.
+Это **безопаснее**, чем единый болезненный переписывающий заход.
