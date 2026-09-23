@@ -3,26 +3,8 @@ package com.example.geosamplemanager.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Log
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -33,8 +15,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.geosamplemanager.data.util.VoiceController
 import com.example.geosamplemanager.data.voice.AnswerReason
@@ -53,6 +33,12 @@ import kotlin.math.roundToInt
 
 private const val LOG_TAG = "VoiceDialog"
 
+/**
+ * FIX 5.8.10-g1 (И-3):
+ * Раньше это был AlertDialog — модальное окно, блокирующее весь экран.
+ * Теперь это немодальная панель внизу экрана (VoicePanel).
+ * Логика работы с VoiceController не изменилась.
+ */
 @Composable
 fun VoiceDialog(
     viewModel: ReconciliationViewModel,
@@ -68,6 +54,7 @@ fun VoiceDialog(
     var resultText by remember { mutableStateOf("") }
     var controller by remember { mutableStateOf<VoiceController?>(null) }
     var feedback by remember { mutableStateOf<VoiceFeedback?>(null) }
+    var expanded by remember { mutableStateOf(true) }
 
     DisposableEffect(Unit) {
         Log.e(LOG_TAG, "DisposableEffect: НАЧАЛО")
@@ -118,18 +105,19 @@ fun VoiceDialog(
                 // «снять», «отложить», «пропустить».
                 val isPendingChoice = viewModel.voiceSession.pendingMarkChoice != null
                 val awaitingWeight = viewModel.voiceSession.awaitingWeight
-                
+
                 val weightCmd = if (awaitingWeight && !isPendingChoice) {
                     commandParser.parseWeightAnswer(text)?.let { VoiceCommand.SetWeight(it) }
                 } else {
                     null
                 }
-                
+
                 val cmd = weightCmd ?: commandParser.parse(text, isPendingChoice)
-                
+
                 Log.e(
                     LOG_TAG,
-                    "parsed command = $cmd, pendingChoice=$isPendingChoice, awaitingWeight=$awaitingWeight"
+                    "parsed command = $cmd, pendingChoice=$isPendingChoice, " +
+                            "awaitingWeight=$awaitingWeight"
                 )
                 scope.launch {
                     try {
@@ -177,98 +165,19 @@ fun VoiceDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Голосовой ввод") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Mic,
-                        null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(status, style = MaterialTheme.typography.bodyMedium)
-                }
-
-                if (partialText.isNotEmpty()) {
-                    Text(
-                        "Слышу: $partialText",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                if (finalText.isNotEmpty()) {
-                    Card {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Filled.VolumeUp,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "Распознано:",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(Modifier.width(4.dp))
-                            Text(finalText, style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
-                }
-
-                if (resultText.isNotEmpty()) {
-                    Card {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Filled.PlayArrow,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "Результат:",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                resultText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
-                }
-
-                Text(
-                    "Команды: «первая», «отметь», «снять первая», " +
-                            "«вес два пять», «следующая», «стоп», «пауза», " +
-                            "«продолжить», «помощь». " +
-                            "При выборе: «снять», «отложить», «пропустить». " +
-                            "Номера: «1524», «KPD1090031». " +
-                            "Сортировка: «1524 и 1525» / «1524 запятая 1525». " +
-                            "Режим: «сортировка» / «поиск».",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        VoicePanel(
+            status = status,
+            partialText = partialText,
+            finalText = finalText,
+            resultText = resultText,
+            voiceStatus = viewModel.state.voiceStatus,
+            expanded = expanded,
+            onToggleExpand = { expanded = !expanded },
+            onRetry = {
                 finalText = ""
                 resultText = ""
                 controller?.let { ctrl ->
@@ -278,16 +187,10 @@ fun VoiceDialog(
                         ctrl.startListening()
                     }
                 }
-            }) {
-                Text("Ещё раз")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Закрыть")
-            }
-        }
-    )
+            },
+            onDismiss = onDismiss
+        )
+    }
 }
 
 /**
@@ -296,8 +199,7 @@ fun VoiceDialog(
  * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
  * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
  * FIX 5.8.6-5c: звук и озвучка для снятия / отмены / повтора.
- * FIX 5.8.10-c: множественная отметка — озвучиваем список проб
- *               порядковыми («Отмечено: первая, вторая, третья»).
+ * FIX 5.8.10-c: множественная отметка — озвучиваем список проб.
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -350,8 +252,6 @@ private fun handleFeedback(
 
         is VoiceExecResult.MarkedMultiple -> {
             fb.soundOk()
-            // FIX 5.8.10-c: озвучиваем конкретный список проб
-            // («Отмечено: первая, вторая, третья»), а не только N.
             val ordinals = resolveOrdinals(result.sampleNumbers, viewModel)
             controller?.speak(buildMarkedMultiplePhrase(ordinals, result.sampleNumbers.size))
         }
@@ -368,13 +268,11 @@ private fun handleFeedback(
             controller?.speak("Вес $spokenWeight. Проба отмечена.")
         }
 
-        // FIX 5.8.6-5c: снятие отметки теперь подтверждается звуком и фразой.
         is VoiceExecResult.Unmarked -> {
             fb.soundOk()
             controller?.speak("Снято.")
         }
 
-        // FIX 5.8.6-5c: отмена и повтор тоже дают обратную связь.
         VoiceExecResult.Undone -> {
             fb.soundOk()
             controller?.speak("Отменено.")
@@ -426,8 +324,7 @@ private fun handleFeedback(
 
 /**
  * FIX 5.8.10-c: по sampleNumbers находим порядковые номера (numberInWell)
- * в state. Используется для озвучки списка проб при множественной
- * отметке. Возвращает только те, которые удалось найти.
+ * в state. Используется для озвучки списка проб при множественной отметке.
  */
 private fun resolveOrdinals(
     sampleNumbers: List<String>,
@@ -449,11 +346,6 @@ private fun resolveOrdinals(
 
 /**
  * FIX 5.8.10-c: фраза для множественной отметки.
- *
- * - 0 проб → «Отмечено ни одной.»  (не должно случаться, но на всякий)
- * - 1 проба → «Отмечена первая.»   (fallback — как обычная отметка)
- * - 2+ проб и есть порядковые → «Отмечено: первая, вторая, третья.»
- * - 2+ проб и порядковые не нашлись → «Отмечено три пробы.» (текущий формат)
  */
 private fun buildMarkedMultiplePhrase(
     ordinals: List<Int>,
@@ -505,11 +397,6 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 
 /**
  * Полная фраза (SEARCH): со статистикой.
- *
- * FIX 5.8.9i-3:
- * - «Всего одна проба», «Всего две пробы», «Всего пять проб»;
- * - «Отмечена одна», «Отмечено две пробы», «Отмечено пять проб»;
- * - вес и количества звучат по-русски.
  */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = VoiceSpeaker.spellOut(r.query)
@@ -667,7 +554,8 @@ private fun describeResult(
             } else {
                 buildString {
                     append("Скважина ${result.query} → ${result.orderTitle}. ")
-                    append("Всего проб: ${result.totalSamples}, отмечено: ${result.foundSamples}")
+                    append("Всего проб: ${result.totalSamples}, " +
+                            "отмечено: ${result.foundSamples}")
 
                     val extras = mutableListOf<String>()
                     if (result.blanks > 0) extras.add("холостых ${result.blanks}")
