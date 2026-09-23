@@ -48,16 +48,31 @@
 **Статус:** 🟡 отложен (5.8.9).
 **Симптом:** во время голосового ввода экран не реагирует на тапы.
 
-### И-9. Онбординг не показывается
-**Статус:** 🟡 открыт.
-
-### И-10. `showCharacteristic` сбрасывается после перезапуска
-**Статус:** 🟡 открыт.
-
 ### И-23. Долгая озвучка, мимикрия
 **Статус:** 🟢 частично решено в `5.8.9i`. Скорость TTS 1.10, склонения, `spokenWeight()`.
 
 ## Решённые в этой сессии
+
+### И-10. `showCharacteristic` сбрасывается после перезапуска
+**Статус:** 🟢 код-фикс выпущен в `5.8.10-a`, 🟡 требует device-check.
+**Симптом:** свернул колонку «Характеристика», перезапустил приложение — колонка снова развёрнута.
+**Причина:** состояние жило только в `ReconciliationState`, нигде не сохранялось.
+**Фикс:**
+- `VoiceSettings.showCharacteristic` — новое поле;
+- `VoiceSettingsRepository.load()` — защита дефолта, если поля нет в JSON;
+- `ReconciliationViewModel.setShowCharacteristic(value)` — единая точка изменения + запись в файл;
+- `SearchScreen` — `onShowCharacteristicChange` теперь идёт через ViewModel.
+**Файлы:** `data/voice/VoiceSettings.kt`, `ui/screens/ReconciliationViewModel.kt`, `ui/screens/SearchScreen.kt`.
+
+### И-9. Онбординг не показывается
+**Статус:** 🟢 код-фикс выпущен в `5.8.10-b`, 🟡 требует device-check.
+**Симптом:** при первом запуске онбординг ГП не появляется.
+**Причина:** Gson игнорирует Kotlin-дефолты. В старых `voice_settings.json`
+не было поля `showOnboarding` — Gson ставил `false`.
+**Фикс:** `VoiceSettingsRepository.load()` — защита
+`if (!json.contains("\"showOnboarding\"")) parsed = parsed.copy(showOnboarding = true)`.
+Симметрично тому, как уже сделано для `useGrammar` и `showCharacteristic`.
+**Файлы:** `data/voice/VoiceSettings.kt`.
 
 ### И-26. Ложные отметки по похожим словам
 **Статус:** 🟢 решено unit-тестами в `5.8.6-5a`, 🟡 требует device-check.
