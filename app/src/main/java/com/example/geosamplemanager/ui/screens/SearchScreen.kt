@@ -235,14 +235,6 @@ fun SearchScreen(
 
     /**
      * FIX 5.8.9d-3b: единый алгоритм через analyzeMark.
-     *
-     * Было: пять вложенных if с ручным разбором (found / importError /
-     * postponed / ВК / холостая). ГП имел свою копию той же логики —
-     * расхождения были неизбежны.
-     *
-     * Стало: одна функция analyzeMark даёт MarkDecision, UI только
-     * отображает его (открывает нужный диалог или сразу отмечает).
-     * Тот же analyzeMark будет использовать ГП в 5.8.9d-3c.
      */
     fun onToggleFound(row: SampleRow) {
         val decision = analyzeMark(toMarkContext(state, row))
@@ -265,7 +257,6 @@ fun SearchScreen(
                 weightDialogIsControl = false
             }
             is MarkDecision.MarkWithWeight -> {
-                // Холостая с авто-весом (FIXED / AVERAGE) — сразу отмечаем.
                 viewModel.setBlankWeightAndMarkFound(row.id, decision.weight)
             }
             is MarkDecision.CanMark -> {
@@ -287,8 +278,6 @@ fun SearchScreen(
         derivedStateOf {
             // FIX 5.8.6-5f: явные чтения State — гарантия, что
             // derivedStateOf подписан на изменения _groups и _queryGroups.
-            // Без этого при query=blank visibleGroups возвращал emptyList,
-            // не читая _groups, и Undo не перерисовывал UI.
             @Suppress("UNUSED_EXPRESSION")
             state.groups.toList()
             @Suppress("UNUSED_EXPRESSION")
@@ -307,9 +296,6 @@ fun SearchScreen(
                 showCharacteristic = state.showCharacteristic,
                 onUndo = { viewModel.undo() },
                 onRedo = { viewModel.redo() },
-                // FIX 5.8.10-a (И-10): сохранение в VoiceSettings.
-                // Прямое присваивание state.showCharacteristic убрано —
-                // теперь через ViewModel, который пишет в файл.
                 onShowCharacteristicChange = { viewModel.setShowCharacteristic(it) },
                 onHelpClick = { state.showLegend = true }
             )
@@ -483,16 +469,31 @@ fun SearchScreen(
                     }
                 }
             }
-
-            if (state.voiceStatus != VoiceStatus.Idle) {
-                VoiceStatusBar(state.voiceStatus)
-            }
         }
 
+        // FIX 5.8.10-g2 (И-3):
+        // Раньше был VoiceStatusBar — тонкая полоска снизу Column.
+        // Теперь всю нижнюю часть занимает VoicePanel. Две панели
+        // одновременно не нужны.
+
+        // FIX 5.8.10-g2 (И-3):
+        // Snackbar поднят на 100 dp — не перекрывает панель ГП.
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 100.dp, start = 16.dp, end = 16.dp)
         )
+
+        // FIX 5.8.10-g1/g2 (И-3):
+        // Панель ГП — немодальная, прижата к низу экрана.
+        // Внутри VoiceDialog сам рендерит Box(fillMaxSize, BottomCenter).
+        if (voiceDialogOpen) {
+            VoiceDialog(
+                viewModel = viewModel,
+                onDismiss = { voiceDialogOpen = false }
+            )
+        }
     }
 
     // ================================================================
@@ -746,13 +747,6 @@ fun SearchScreen(
 
     if (state.voiceHelpVisible) {
         VoiceHelpDialog(onDismiss = { state.voiceHelpVisible = false })
-    }
-
-    if (voiceDialogOpen) {
-        VoiceDialog(
-            viewModel = viewModel,
-            onDismiss = { voiceDialogOpen = false }
-        )
     }
 
     if (state.voiceOnboardingVisible) {
@@ -1224,8 +1218,6 @@ private fun SearchRowWithIndicator(
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(20.dp))
                     }
-                    // FIX 5.8.9f-2b: чип режима голосовой сессии.
-                    // FIX 5.8.9f-2b-fix-1: подписи на русском («ПОИСК» / «СОРТ»).
                     VoiceModeChip(mode = voiceMode, onClick = onVoiceModeToggle)
                 }
             },
@@ -1236,15 +1228,6 @@ private fun SearchRowWithIndicator(
     }
 }
 
-/**
- * FIX 5.8.9f-2b: чип режима голосовой сессии.
- * FIX 5.8.9f-2b-fix-1: подписи переведены на русский язык.
- *
- *   ПОИСК — нейтральный синий (primaryContainer).
- *   СОРТ  — оранжевый/жёлтый (tertiaryContainer), «внимание, отметки недоступны».
- *
- * Тап — переключение режима. См. SearchScreen.kt, вызов SearchRowWithIndicator.
- */
 @Composable
 private fun VoiceModeChip(
     mode: VoiceSessionMode,
@@ -1275,11 +1258,6 @@ private fun VoiceModeChip(
     }
 }
 
-/**
- * FIX 5.8.9h-2b-i-fix-2: явный [UnifiedMatchKind] вместо устаревшего
- * MatchedKind. Это устраняет ошибку компилятора
- * «Comparison of incompatible enums».
- */
 private fun buildSingleAnswerLine(matchInfo: MatchInfo): String {
     val value = matchInfo.matchedValue ?: return ""
     val orderRaw = matchInfo.orderTitles.firstOrNull() ?: return ""
