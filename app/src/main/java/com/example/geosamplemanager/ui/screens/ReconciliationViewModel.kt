@@ -64,7 +64,21 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private val loadedOrderIds = mutableSetOf<Long>()
     private var orderInfoById: Map<Long, OrderInfo> = emptyMap()
+
+    /**
+     * FIX 5.8.10-e:
+     * Раньше был один Map<String, OrderInfo> по ключу orderTitle
+     * («Наряд №10»). Если в разных участках есть наряды с одинаковым
+     * номером, associateBy оставлял только последний — наряд «терялся».
+     *
+     * Теперь два индекса:
+     *  - orderInfoByTitle: fallback, когда участок не выбран
+     *    (первый по id, как раньше — поведение не меняем).
+     *  - orderInfoByComposite: точный, когда участок выбран.
+     *    Ключ — «areaTitle|orderTitle».
+     */
     private var orderInfoByTitle: Map<String, OrderInfo> = emptyMap()
+    private var orderInfoByComposite: Map<String, OrderInfo> = emptyMap()
     private var searchJob: Job? = null
 
     private val voiceCommandLikeWords = setOf(
@@ -177,17 +191,47 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     repo.getAllOrdersFlow()
                 ) { areas, orders ->
                     val result = mutableListOf<OrderInfo>()
+                    var orphaned = 0
 
                     for (order in orders) {
-                        val area = areas.firstOrNull { it.id == order.areaId } ?: continue
+                        val area = areas.firstOrNull { it.id == order.areaId }
 
-                        result.add(
-                            OrderInfo(
-                                areaId = area.id,
-                                orderId = order.id,
-                                areaTitle = area.areaName,
-                                orderTitle = "Наряд №${order.orderNumber}"
+                        // FIX 5.8.10-e: не пропускаем наряд молча.
+                        // Если area не найдена — оставляем наряд в списке
+                        // с areaTitle = "—". Лог помогает диагностике:
+                        // увидим, что в БД есть orders с битым area_id.
+                        if (area == null) {
+                            orphaned++
+                            Log.w(
+                                TAG,
+                                "subscribeToAreasAndOrders: наряд id=${order.id} " +
+                                        "(№${order.orderNumber}) ссылается на несуществующий " +
+                                        "areaId=${order.areaId}"
                             )
+                            result.add(
+                                OrderInfo(
+                                    areaId = -1L,
+                                    orderId = order.id,
+                                    areaTitle = "—",
+                                    orderTitle = "Наряд №${order.orderNumber}"
+                                )
+                            )
+                        } else {
+                            result.add(
+                                OrderInfo(
+                                    areaId = area.id,
+                                    orderId = order.id,
+                                    areaTitle = area.areaName,
+                                    orderTitle = "Наряд №${order.orderNumber}"
+                                )
+                            )
+                        }
+                    }
+
+                    if (orphaned > 0) {
+                        Log.w(
+                            TAG,
+                            "subscribeToAreasAndOrders: $orphaned наряд(ов) без участка"
                         )
                     }
 
@@ -196,7 +240,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }.collect { (areaNames, orderInfos) ->
                     withContext(Dispatchers.Main) {
                         orderInfoById = orderInfos.associateBy { it.orderId }
+                        // Fallback — как раньше (первый по порядку в списке).
                         orderInfoByTitle = orderInfos.associateBy { it.orderTitle }
+                        // Точный индекс: «area|order».
+                        orderInfoByComposite = orderInfos.associateBy {
+                            compositeKey(it.areaTitle, it.orderTitle)
+                        }
                         state.allOrderTitles = orderInfos
                         state.allAreaNames = areaNames
                     }
@@ -208,6 +257,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             }
         }
     }
+
+    /** FIX 5.8.10-e: композитный ключ «area|order» для точного поиска. */
+    private fun compositeKey(areaTitle: String, orderTitle: String): String =
+        "$areaTitle|$orderTitle"
 
     suspend fun ensureOrderSamplesLoaded(orderId: Long) {
         if (orderId in loadedOrderIds) return
@@ -261,16 +314,40 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         refreshMultiQueryIfNeeded()
     }
 
+    /**
+     * FIX 5.8.10-e:
+     * Раньше искали только по orderTitle, и при коллизии
+     * «Наряд №10» в разных участках грузился не тот orderId.
+     *
+     * Теперь:
+     *  - если участок выбран — ищем по композитному ключу «area|order»;
+     *  - если нет — падаем на orderInfoByTitle (первый по id).
+     */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
 
-        val info = orderTitle?.let { orderInfoByTitle[it] }
+        val info = resolveOrderInfo(orderTitle)
 
         if (info != null) {
             viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
+        } else if (orderTitle != null) {
+            Log.w(
+                TAG,
+                "setSelectedOrder: не нашли orderInfo для «$orderTitle» " +
+                        "(area=${state.selectedArea})"
+            )
         }
 
         refreshMultiQueryIfNeeded()
+    }
+
+    private fun resolveOrderInfo(orderTitle: String?): OrderInfo? {
+        if (orderTitle == null) return null
+        val area = state.selectedArea
+        if (area != null) {
+            orderInfoByComposite[compositeKey(area, orderTitle)]?.let { return it }
+        }
+        return orderInfoByTitle[orderTitle]
     }
 
     private fun refreshMultiQueryIfNeeded() {
