@@ -112,8 +112,16 @@ fun VoiceDialog(
                     null
                 }
 
-                val cmd = weightCmd ?: commandParser.parse(text, isPendingChoice)
-
+                // FIX 5.8.11-e3 (SEARCH_MODEL §3.3):
+                // Парсер получает текущее состояние ГП. В AWAITING_WEIGHT
+                // «семь» пойдёт в вес, а не в MarkOrdinal. В PAUSED —
+                // только «продолжить»/«стоп». В AWAITING_CHOICE — только
+                // выбор действия.
+                val cmd = weightCmd ?: commandParser.parseWithState(
+                    text,
+                    viewModel.voiceSession.state,
+                    viewModel.voiceSession.mode
+                )
                 Log.e(
                     LOG_TAG,
                     "parsed command = $cmd, pendingChoice=$isPendingChoice, " +

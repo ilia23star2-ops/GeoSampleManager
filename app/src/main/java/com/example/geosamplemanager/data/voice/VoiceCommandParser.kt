@@ -302,6 +302,102 @@ class VoiceCommandParser(
         }
     }
 
+    /**
+     * FIX 5.8.11-e2 (SEARCH_MODEL §3.3):
+     * Разбор с учётом состояния ГП. Что принимается — зависит от того,
+     * чего ГП ждёт прямо сейчас.
+     *
+     * Логика по состояниям:
+     *   IDLE               — ничего (ГП выключен).
+     *   LISTENING          — полный разбор (как parse(input, false)).
+     *   AWAITING_WEIGHT    — только вес, Undo, Stop.
+     *   AWAITING_CHOICE    — только выбор: снять / отложить / пропустить.
+     *   AWAITING_CONTINUE  — Resume, Pause, Stop или новый Search/Sort.
+     *   PAUSED             — только Resume и Stop.
+     *
+     * mode (SEARCH/SORT) пока не влияет на разбор: блокировка отметок
+     * в SORT реализована в voiceExecute (markGuard). Если потребуется —
+     * расширим здесь.
+     *
+     * Этот метод — закладка. Пока его никто не вызывает, кроме тестов.
+     * Переключение VoiceDialog на parseWithState — в 5.8.11-e3.
+     */
+    fun parseWithState(
+        input: String,
+        state: VoiceState,
+        mode: VoiceSessionMode
+    ): VoiceCommand {
+        return when (state) {
+            VoiceState.IDLE -> VoiceCommand.Unknown
+
+            VoiceState.LISTENING -> parse(input, pendingChoice = false)
+
+            VoiceState.AWAITING_WEIGHT -> parseForWeight(input)
+
+            VoiceState.AWAITING_CHOICE -> parse(input, pendingChoice = true)
+
+            VoiceState.AWAITING_CONTINUE -> parseForContinue(input)
+
+            VoiceState.PAUSED -> parseForPaused(input)
+        }
+    }
+
+    /**
+     * В состоянии AWAITING_WEIGHT парсер принимает только:
+     *   - число-вес («два», «два и шесть», «полтора», «2.6»);
+     *   - Undo («отмена», «отменить»);
+     *   - Stop («стоп», «хватит»).
+     * Всё остальное — Unknown. Никаких MarkOrdinal, Search, Sort.
+     */
+    private fun parseForWeight(input: String): VoiceCommand {
+        val norm = numberParser.normalize(input).trim()
+
+        when (norm) {
+            "стоп", "хватит" -> return VoiceCommand.Stop
+            "отмена", "отменить" -> return VoiceCommand.Undo
+        }
+
+        val weight = parseWeightAnswer(norm)
+        return if (weight != null) VoiceCommand.SetWeight(weight)
+        else VoiceCommand.Unknown
+    }
+
+    /**
+     * В AWAITING_CONTINUE парсер принимает:
+     *   - Resume («продолжить», «продолжай»);
+     *   - Pause («пауза», «паузу»);
+     *   - Stop («стоп», «хватит»);
+     *   - иначе — падаем на полный разбор (может вернуть Search/Sort,
+     *     это допустимо: пользователь переходит к следующему запросу).
+     */
+    private fun parseForContinue(input: String): VoiceCommand {
+        val norm = numberParser.normalize(input).trim()
+
+        return when (norm) {
+            "продолжить", "продолжай" -> VoiceCommand.Resume
+            "пауза", "паузу" -> VoiceCommand.Pause
+            "стоп", "хватит" -> VoiceCommand.Stop
+            else -> parse(input, pendingChoice = false)
+        }
+    }
+
+    /**
+     * В PAUSED парсер принимает только:
+     *   - Resume («продолжить», «продолжай»);
+     *   - Stop («стоп», «хватит»).
+     * Всё остальное — Unknown.
+     */
+    private fun parseForPaused(input: String): VoiceCommand {
+        val norm = numberParser.normalize(input).trim()
+
+        return when (norm) {
+            "продолжить", "продолжай" -> VoiceCommand.Resume
+            "стоп", "хватит" -> VoiceCommand.Stop
+            else -> VoiceCommand.Unknown
+        }
+    }
+
+
     private fun containsCommandWord(norm: String): Boolean {
         return norm.split(Regex("\\s+")).any { it in commandLikeWords }
     }
