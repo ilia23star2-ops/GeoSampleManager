@@ -9,6 +9,15 @@ import kotlin.math.roundToInt
  * - длинные номера диктуются парами цифр: «15 24 01»;
  * - веса произносятся по-человечески: «два и шесть», «два с половиной»;
  * - счётные фразы используют русские склонения: «1 проба», «2 пробы», «5 проб».
+ *
+ * FIX 5.8.11-c (SEARCH_MODEL §5.5):
+ * Добавлен spellOut(groups: List<DigitGroup>) — произношение номера
+ * по группам, как ввёл пользователь. Не рубит слитную строку на пары
+ * слева направо, а сохраняет структуру:
+ *   «109 00 31» → «сто девять, ноль ноль, тридцать один».
+ *
+ * Старый spellOut(text: String) сохранён — он разбивает строку на
+ * пары слева направо (для обратной совместимости).
  */
 object VoiceSpeaker {
 
@@ -55,69 +64,136 @@ object VoiceSpeaker {
     )
 
     private val unitsMasculine = arrayOf(
-        "ноль",
-        "один",
-        "два",
-        "три",
-        "четыре",
-        "пять",
-        "шесть",
-        "семь",
-        "восемь",
-        "девять"
+        "ноль", "один", "два", "три", "четыре",
+        "пять", "шесть", "семь", "восемь", "девять"
     )
 
     private val unitsFeminine = arrayOf(
-        "ноль",
-        "одна",
-        "две",
-        "три",
-        "четыре",
-        "пять",
-        "шесть",
-        "семь",
-        "восемь",
-        "девять"
+        "ноль", "одна", "две", "три", "четыре",
+        "пять", "шесть", "семь", "восемь", "девять"
     )
 
     private val teens = arrayOf(
-        "десять",
-        "одиннадцать",
-        "двенадцать",
-        "тринадцать",
-        "четырнадцать",
-        "пятнадцать",
-        "шестнадцать",
-        "семнадцать",
-        "восемнадцать",
-        "девятнадцать"
+        "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+        "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать"
     )
 
     private val tens = arrayOf(
-        "",
-        "",
-        "двадцать",
-        "тридцать",
-        "сорок",
-        "пятьдесят",
-        "шестьдесят",
-        "семьдесят",
-        "восемьдесят",
-        "девяносто"
+        "", "", "двадцать", "тридцать", "сорок",
+        "пятьдесят", "шестьдесят", "семьдесят", "восемьдесят", "девяносто"
     )
 
     private val hundreds = arrayOf(
-        "",
-        "сто",
-        "двести",
-        "триста",
-        "четыреста",
-        "пятьсот",
-        "шестьсот",
-        "семьсот",
-        "восемьсот",
-        "девятьсот"
+        "", "сто", "двести", "триста", "четыреста",
+        "пятьсот", "шестьсот", "семьсот", "восемьсот", "девятьсот"
     )
+
+    // ================================================================
+    // FIX 5.8.11-c: произношение по группам
+    // ================================================================
+
+    /**
+     * Произнести номер по группам ввода.
+     *
+     * Правила:
+     *   - PREFIX       → по буквам: «KPD» → «ка пэ дэ».
+     *   - PLAIN, 1–3   → число словами: «109» → «сто девять».
+     *   - PLAIN, 4+    → по парам слева: «1524» → «пятнадцать, двадцать четыре».
+     *   - LEADING_ZERO → по цифрам: «00» → «ноль ноль».
+     *   - SINGLE       → цифра словом: «7» → «семь».
+     *   - Между группами — запятая.
+     *
+     * Примеры:
+     *   [15, 24]                → «пятнадцать, двадцать четыре».
+     *   [109, 00, 31]           → «сто девять, ноль ноль, тридцать один».
+     *   [KPD, 109, 00, 31]      → «ка пэ дэ, сто девять, ноль ноль, тридцать один».
+     *   [7]                     → «семь».
+     */
+    fun spellOut(groups: List<DigitGroup>): String {
+        if (groups.isEmpty()) return ""
+
+        val parts = mutableListOf<String>()
+
+        for (group in groups) {
+            val text = when (group.kind) {
+                GroupKind.PREFIX -> spellLetters(group.value)
+                GroupKind.LEADING_ZERO -> spellDigitByDigit(group.value)
+                GroupKind.SINGLE -> spellByDigitWord(group.value)
+                GroupKind.PLAIN -> spellPlain(group.value)
+            }
+            if (text.isNotEmpty()) parts.add(text)
+        }
+
+        return parts.joinToString(", ")
+    }
+
+    private fun spellLetters(text: String): String {
+        val sb = StringBuilder()
+        for (c in text) {
+            val upper = c.uppercaseChar()
+            val name = letterNames[upper] ?: continue
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append(name)
+        }
+        return sb.toString()
+    }
+
+    private fun spellDigitByDigit(digits: String): String {
+        val words = mutableListOf<String>()
+        for (c in digits) {
+            val name = digitNames[c] ?: continue
+            words.add(name)
+        }
+        return words.joinToString(" ")
+    }
+
+    private fun spellByDigitWord(digit: String): String {
+        val d = digit.toIntOrNull() ?: return digit
+        return unitsMasculine[d]
+    }
+
+    /**
+     * PLAIN 1–3 цифры → число словами.
+     * PLAIN 4+ цифры → по парам слева.
+     *
+     * «109»  → «сто девять».
+     * «31»   → «тридцать один».
+     * «5»    → «пять».
+     * «1524» → «пятнадцать, двадцать четыре» (пары слева).
+     */
+    private fun spellPlain(value: String): String {
+        if (value.length in 1..3) {
+            val n = value.toIntOrNull() ?: return value
+            return numberWords(n)
+        }
+
+        // 4+ цифр — по парам слева.
+        return breakIntoPairs(value)
+    }
+
+    /**
+     * Разбить строку цифр на пары слева направо, разделяя пробелом.
+     * Используется для очень длинных групп без явного разделения.
+     *
+     * «1524» → «15 24».
+     */
+    private fun breakIntoPairs(digits: String): String {
+        if (digits.length <= 2) return digits
+
+        val sb = StringBuilder()
+        var i = 0
+        while (i < digits.length) {
+            val end = minOf(i + 2, digits.length)
+            sb.append(digits.substring(i, end))
+            i = end
+            if (i < digits.length) sb.append(' ')
+        }
+        return sb.toString()
+    }
+
+    // ================================================================
+    // Старый API: произношение строки
+    // ================================================================
 
     /**
      * Произнести номер: буквы — по буквам, цифры — парами через пробел.
@@ -125,6 +201,9 @@ object VoiceSpeaker {
      * «NV1524» → «эн вэ 15 24»
      * «KPD1090031» → «ка пэ дэ 10 90 03 1»
      * «1524» → «15 24»
+     *
+     * Оставлено для обратной совместимости. Для новых мест использовать
+     * spellOut(groups: List<DigitGroup>).
      */
     fun spellOut(text: String): String {
         if (text.isBlank()) return text
@@ -168,37 +247,10 @@ object VoiceSpeaker {
         return sb.toString().trim().replace(Regex(" +"), " ")
     }
 
-    /**
-     * Разбить строку цифр на пары слева направо, разделяя пробелом.
-     *
-     * «1524» → «15 24»
-     * «152401» → «15 24 01»
-     * «1090031» → «10 90 03 1»
-     * «5» → «5»
-     */
-    private fun breakIntoPairs(digits: String): String {
-        if (digits.length <= 2) return digits
+    // ================================================================
+    // Остальной API — без изменений
+    // ================================================================
 
-        val sb = StringBuilder()
-        var i = 0
-
-        while (i < digits.length) {
-            val end = minOf(i + 2, digits.length)
-            sb.append(digits.substring(i, end))
-            i = end
-
-            if (i < digits.length) sb.append(' ')
-        }
-
-        return sb.toString()
-    }
-
-    /**
-     * Произнести число.
-     *
-     * Короткие числа возвращаются как есть — TTS читает их словами.
-     * Длинные — по парам, как [spellOut].
-     */
     fun spellNumber(value: Int): String {
         return if (value in 0..9999) {
             value.toString()
@@ -207,10 +259,6 @@ object VoiceSpeaker {
         }
     }
 
-    /**
-     * Произнести по одной цифре.
-     * Запасной вариант, если пары не подходят.
-     */
     fun spellByDigits(text: String): String {
         if (text.isBlank()) return text
 
@@ -230,11 +278,6 @@ object VoiceSpeaker {
         return parts.joinToString(" ")
     }
 
-    /**
-     * Русское склонение существительного.
-     *
-     * 1 проба, 2 пробы, 5 проб.
-     */
     fun plural(
         n: Int,
         one: String,
@@ -252,15 +295,6 @@ object VoiceSpeaker {
         }
     }
 
-    /**
-     * Счётная фраза с правильным склонением.
-     *
-     * Примеры:
-     * - samples(1) → «одна проба»
-     * - samples(2) → «две пробы»
-     * - samples(5) → «пять проб»
-     * - orders(1) → «один наряд»
-     */
     fun countWithNoun(
         n: Int,
         one: String,
@@ -293,11 +327,6 @@ object VoiceSpeaker {
     fun errors(n: Int): String =
         countWithNoun(n, "ошибка", "ошибки", "ошибок", feminine = true)
 
-    /**
-     * Число словами для небольших значений.
-     *
-     * Для значений >= 1000 возвращает цифровую строку — TTS сам прочитает.
-     */
     fun numberWords(
         value: Int,
         feminineLast: Boolean = false
@@ -344,23 +373,6 @@ object VoiceSpeaker {
         return parts.joinToString(" ")
     }
 
-    /**
-     * Произнести вес по-человечески.
-     *
-     * Примеры:
-     * - 2.0 → «два»
-     * - 2.6 → «два и шесть»
-     * - 2.60 → «два и шесть»
-     * - 2.06 → «два и ноль шесть»
-     * - 2.5 → «два с половиной»
-     * - 1.5 → «полтора»
-     * - 2.25 → «два с четвертью»
-     * - 2.68 → «два и шестьдесят восемь»
-     * - 0.6 → «ноль и шесть»
-     * - 0.06 → «ноль и ноль шесть»
-     *
-     * Округление до сотых выполняется молча.
-     */
     fun spokenWeight(value: Double): String {
         if (!value.isFinite()) return "не понял вес"
 
