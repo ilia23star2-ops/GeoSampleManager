@@ -105,16 +105,24 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     init {
         subscribeToAreasAndOrders()
-        checkOnboarding()
+        loadVoiceUiSettings()
     }
 
-    private fun checkOnboarding() {
+    /**
+     * FIX 5.8.10-a (И-10):
+     * Раньше метод назывался checkOnboarding() и читал только флаг
+     * онбординга. Теперь читает и showCharacteristic — чтобы состояние
+     * колонки «Характеристика» переживало перезапуск приложения.
+     */
+    private fun loadVoiceUiSettings() {
         viewModelScope.launch {
             try {
                 val vs = voiceSettingsRepo.load()
 
-                if (vs.showOnboarding) {
-                    withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
+                    state.showCharacteristic = vs.showCharacteristic
+
+                    if (vs.showOnboarding) {
                         state.voiceOnboardingVisible = true
                     }
                 }
@@ -132,6 +140,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             try {
                 val vs = voiceSettingsRepo.load()
                 voiceSettingsRepo.save(vs.copy(showOnboarding = false))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * FIX 5.8.10-a (И-10):
+     * Единая точка изменения showCharacteristic. Вызывается из UI
+     * (тумблер «Характеристика» в верхней панели).
+     *
+     * Обновляет state мгновенно (UI не ждёт I/O), а сохранение в
+     * файл делается в фоне.
+     */
+    fun setShowCharacteristic(value: Boolean) {
+        state.showCharacteristic = value
+
+        viewModelScope.launch {
+            try {
+                val vs = voiceSettingsRepo.load()
+                voiceSettingsRepo.save(vs.copy(showCharacteristic = value))
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {

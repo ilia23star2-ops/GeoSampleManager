@@ -8,6 +8,11 @@ import java.io.File
 
 /**
  * Настройки голосового помощника (§14 VOICE.md).
+ *
+ * FIX 5.8.10-a (И-10):
+ * добавлено поле `showCharacteristic` — переключатель колонки
+ * «Характеристика» в таблице проб. Раньше состояние жило только в
+ * ReconciliationState и сбрасывалось при перезапуске.
  */
 data class VoiceSettings(
     val segmentPauseMs: Long = 800L,
@@ -20,7 +25,12 @@ data class VoiceSettings(
      * Использовать грамматику Vosk (ограниченный словарь).
      * Резко повышает точность распознавания чисел.
      */
-    val useGrammar: Boolean = true
+    val useGrammar: Boolean = true,
+    /**
+     * Показывать колонку «Характеристика» в таблице проб.
+     * FIX 5.8.10-a (И-10): сохраняется между перезапусками.
+     */
+    val showCharacteristic: Boolean = true
 )
 
 enum class TtsVolume { OFF, QUIET, NORMAL, LOUD }
@@ -44,14 +54,19 @@ class VoiceSettingsRepository(context: Context) {
             val f = file
             if (!f.exists()) return@withContext VoiceSettings()
             val json = f.readText()
-            val parsed = gson.fromJson(json, VoiceSettings::class.java) ?: VoiceSettings()
+            var parsed = gson.fromJson(json, VoiceSettings::class.java) ?: VoiceSettings()
+
             // Gson игнорирует Kotlin-дефолты: если поля не было в JSON,
-            // Boolean станет false. Восстанавливаем true.
+            // Boolean становится false. Восстанавливаем true для тех
+            // полей, где дефолт — true.
             if (!json.contains("\"useGrammar\"")) {
-                parsed.copy(useGrammar = true)
-            } else {
-                parsed
+                parsed = parsed.copy(useGrammar = true)
             }
+            if (!json.contains("\"showCharacteristic\"")) {
+                parsed = parsed.copy(showCharacteristic = true)
+            }
+
+            parsed
         } catch (e: Exception) {
             VoiceSettings()
         }
