@@ -186,10 +186,29 @@ class DatabaseRepository(context: Context) {
         PhotoStorage.deleteAll(imagePaths)
     }
 
+    /**
+     * FIX 5.8.10-d:
+     * Раньше метод шёл через areaDao.getAreaId(areaName) с LIMIT 1.
+     * Если в БД когда-либо появились два участка с одинаковым
+     * area_name (без UNIQUE на areas.area_name это возможно),
+     * возвращался только один — и наряд, записанный в «другой»
+     * дубликат, не находился.
+     *
+     * Теперь ищем наряды по ИМЕНИ участка напрямую через JOIN и
+     * складываем статистику по всем совпадениям. Обычно это один
+     * наряд; в патологическом случае — сумма по дубликатам.
+     */
     suspend fun getExistingOrderStats(areaName: String, orderNumber: String): OrderStats? {
-        val areaId = areaDao.getAreaId(areaName) ?: return null
-        val orderId = orderDao.getOrderId(areaId, orderNumber) ?: return null
-        return getOrderStats(orderId)
+        val orderIds = orderDao.getOrderIdsByName(areaName, orderNumber)
+        if (orderIds.isEmpty()) return null
+
+        var total = 0
+        var found = 0
+        for (id in orderIds) {
+            total += sampleDao.getCountForOrder(id)
+            found += sampleDao.getFoundCountForOrder(id)
+        }
+        return OrderStats(total = total, found = found)
     }
 
     // ============ ДЛЯ СВЕРКИ ============
