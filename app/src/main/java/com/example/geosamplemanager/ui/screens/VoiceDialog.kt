@@ -296,6 +296,8 @@ fun VoiceDialog(
  * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
  * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
  * FIX 5.8.6-5c: звук и озвучка для снятия / отмены / повтора.
+ * FIX 5.8.10-c: множественная отметка — озвучиваем список проб
+ *               порядковыми («Отмечено: первая, вторая, третья»).
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -348,7 +350,10 @@ private fun handleFeedback(
 
         is VoiceExecResult.MarkedMultiple -> {
             fb.soundOk()
-            controller?.speak(markedSamplesPhrase(result.sampleNumbers.size))
+            // FIX 5.8.10-c: озвучиваем конкретный список проб
+            // («Отмечено: первая, вторая, третья»), а не только N.
+            val ordinals = resolveOrdinals(result.sampleNumbers, viewModel)
+            controller?.speak(buildMarkedMultiplePhrase(ordinals, result.sampleNumbers.size))
         }
 
         is VoiceExecResult.MarkedAll -> {
@@ -417,6 +422,59 @@ private fun handleFeedback(
 
         else -> {}
     }
+}
+
+/**
+ * FIX 5.8.10-c: по sampleNumbers находим порядковые номера (numberInWell)
+ * в state. Используется для озвучки списка проб при множественной
+ * отметке. Возвращает только те, которые удалось найти.
+ */
+private fun resolveOrdinals(
+    sampleNumbers: List<String>,
+    viewModel: ReconciliationViewModel
+): List<Int> {
+    if (sampleNumbers.isEmpty()) return emptyList()
+
+    val index = HashMap<String, Int>(sampleNumbers.size * 2)
+    viewModel.state.groups.forEach { group ->
+        group.rows.forEach { row ->
+            if (row.sampleNumber in sampleNumbers && row.sampleNumber !in index) {
+                index[row.sampleNumber] = row.numberInWell
+            }
+        }
+    }
+
+    return sampleNumbers.mapNotNull { index[it] }
+}
+
+/**
+ * FIX 5.8.10-c: фраза для множественной отметки.
+ *
+ * - 0 проб → «Отмечено ни одной.»  (не должно случаться, но на всякий)
+ * - 1 проба → «Отмечена первая.»   (fallback — как обычная отметка)
+ * - 2+ проб и есть порядковые → «Отмечено: первая, вторая, третья.»
+ * - 2+ проб и порядковые не нашлись → «Отмечено три пробы.» (текущий формат)
+ */
+private fun buildMarkedMultiplePhrase(
+    ordinals: List<Int>,
+    fallbackCount: Int
+): String {
+    if (ordinals.isEmpty()) {
+        return if (fallbackCount <= 0) "Отмечено ни одной."
+        else markedSamplesPhrase(fallbackCount)
+    }
+
+    if (ordinals.size == 1) {
+        val word = VoiceOrdinals.word(ordinals[0])
+        return if (word != null) "Отмечена $word." else markedSamplesPhrase(fallbackCount)
+    }
+
+    val words = ordinals.mapNotNull { VoiceOrdinals.word(it) }
+    if (words.size != ordinals.size) {
+        return markedSamplesPhrase(fallbackCount)
+    }
+
+    return "Отмечено: ${words.joinToString(", ")}."
 }
 
 private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
