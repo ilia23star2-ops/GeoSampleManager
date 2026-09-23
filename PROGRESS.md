@@ -1,5 +1,24 @@
 # PROGRESS.md — история заходов
 
+## 5.8.10 серия — настройки UI и онбординг
+
+### `5.8.10-b` (закрыт unit, 🟡 device) — И-9: онбординг не показывается
+- `VoiceSettings.kt`: в `VoiceSettingsRepository.load()` добавлена защита
+  `if (!json.contains("\"showOnboarding\"")) parsed = parsed.copy(showOnboarding = true)`.
+- Причина: Gson игнорирует Kotlin-дефолты. Если в существующем
+  `voice_settings.json` поля не было — Gson ставил `false`, и онбординг
+  не показывался. Симметрично тому, как уже сделано для `useGrammar`
+  и `showCharacteristic`.
+
+### `5.8.10-a` (закрыт unit, 🟡 device) — И-10: showCharacteristic переживает перезапуск
+- `VoiceSettings.kt`: добавлено поле `showCharacteristic: Boolean = true`;
+  в `load()` — защита дефолта, если поля нет в JSON.
+- `ReconciliationViewModel.kt`: `checkOnboarding()` переименован в
+  `loadVoiceUiSettings()` — читает и `showOnboarding`, и `showCharacteristic`;
+  добавлен метод `setShowCharacteristic(value)`.
+- `SearchScreen.kt`: `onShowCharacteristicChange` теперь вызывает
+  `viewModel.setShowCharacteristic(it)` вместо прямого присваивания в state.
+
 ## 5.8.6 серия — Vosk-полировка и защита от ложных срабатываний
 
 ### `5.8.6-5g` (закрыт unit, 🟡 device) — «четвертых» → Unknown
