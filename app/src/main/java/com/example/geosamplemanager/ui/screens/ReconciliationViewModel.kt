@@ -31,6 +31,15 @@ import com.example.geosamplemanager.data.voice.VoiceSession
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
+import com.example.geosamplemanager.data.voice.DigitGroup
+import com.example.geosamplemanager.data.voice.DigitGrouper
+import com.example.geosamplemanager.data.voice.GroupToCandidates
+import com.example.geosamplemanager.data.voice.QueryNormalizer
+import com.example.geosamplemanager.data.voice.QueryToken
+import com.example.geosamplemanager.data.voice.QueryTokenizer
+import com.example.geosamplemanager.data.voice.SearchResult
+import com.example.geosamplemanager.data.voice.SearchService
+import com.example.geosamplemanager.data.voice.VoiceSampleHit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +63,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private val voiceParser = VoiceNumberParser()
     private val commandParser = VoiceCommandParser()
+
+    // FIX 5.8.11-e1: единый путь поиска через QueryTokenizer + SearchService.
+    private val queryTokenizer = QueryTokenizer()
+    private val searchService by lazy {
+        SearchService(VoiceSearchRepository(getApplication()))
+    }
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -372,22 +387,102 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         searchJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS)
 
-            val tokens = query.trim().split(Regex("\\s+"))
-                .filter { it.isNotBlank() }
+            // FIX 5.8.11-e1: единый путь.
+            // 1) Нормализация (lowercase, ё→е, дефисы, пунктуация).
+            // 2) Токенизация (типы: Prefix / Number / Ordinal / ...).
+            // 3) Разбиение на отдельные запросы по разделителям.
+            val normalized = QueryNormalizer.normalize(query)
+            val tokens = queryTokenizer.tokenize(normalized)
                 .take(MAX_QUERY_TOKENS)
 
-            state.queryTokens = tokens
+            val requests = splitIntoRequests(tokens)
 
-            when (tokens.size) {
-                0 -> state.clearQueryGroups()
-
-                1 -> {
+            when (requests.size) {
+                0 -> {
+                    state.queryTokens = emptyList()
                     state.clearQueryGroups()
-                    loadGroupsForQuery(tokens[0])
                 }
 
-                else -> buildMultiQueryGroups(tokens)
+                1 -> {
+                    // Одиночный запрос — новый путь через SearchService.
+                    val request = requests[0]
+                    val requestStr = request.joinToString(" ") { it.raw }
+                    state.queryTokens = listOf(requestStr)
+                    state.clearQueryGroups()
+                    loadGroupsForQueryNew(request)
+                }
+
+                else -> {
+                    // Мультипоиск — пока по старому пути (не трогаем в e1).
+                    val oldTokens = requests.map { req ->
+                        req.joinToString(" ") { it.raw }
+                    }
+                    state.queryTokens = oldTokens.take(MAX_QUERY_TOKENS)
+                    buildMultiQueryGroups(oldTokens)
+                }
             }
+        }
+    }
+
+    /**
+     * FIX 5.8.11-e1: разбить токены на отдельные запросы по разделителям.
+     *
+     * «1524 и 1525» → [[Number(1524)], [Number(1525)]]
+     * «KPD 109 00 31» → [[Prefix(KPD), Number(109), Number(00), Number(31)]]
+     */
+    private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> {
+        val result = mutableListOf<List<QueryToken>>()
+        val current = mutableListOf<QueryToken>()
+
+        for (t in tokens) {
+            if (t is QueryToken.Separator) {
+                if (current.isNotEmpty()) {
+                    result.add(current.toList())
+                    current.clear()
+                }
+            } else {
+                current.add(t)
+            }
+        }
+        if (current.isNotEmpty()) result.add(current.toList())
+        return result
+    }
+
+    /**
+     * FIX 5.8.11-e1: новый путь для одиночного запроса.
+     *
+     * QueryToken → DigitGrouper → GroupToCandidates → SearchService.
+     * SearchService возвращает SearchResult с hits, содержащими orderId.
+     * Загружаем группы нарядов — как делал старый loadGroupsForQuery.
+     *
+     * Старый loadGroupsForQuery оставлен — используется мультипоиском.
+     */
+    private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
+        try {
+            val groups: List<DigitGroup> = DigitGrouper.group(tokens)
+            if (groups.isEmpty()) return
+
+            val candidates: List<String> = GroupToCandidates.toCandidates(groups)
+            if (candidates.isEmpty()) return
+
+            val result = searchService.search(
+                candidates = candidates,
+                groups = groups,
+                queryTokens = tokens
+            )
+
+            if (result !is SearchResult.Found) return
+
+            val uniqueOrderIds: List<Long> = result.hits
+                .map { it.orderId }
+                .distinct()
+                .take(MAX_SEARCH_ORDERS)
+
+            uniqueOrderIds.forEach { ensureOrderSamplesLoaded(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _message.value = "Ошибка поиска: ${e.message}"
         }
     }
 
