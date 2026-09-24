@@ -631,6 +631,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSearch(cmd.query)
                 }
 
+                // FIX 5.8.11-e4g3: «найди X» в состоянии ожидания
+                // сбрасывает awaitingContinue и запускает поиск.
+                is VoiceCommand.Find -> {
+                    voiceSession.awaitingContinue = false
+                    voiceSession.mode = VoiceSessionMode.SEARCH
+
+                    if (cmd.query.isNullOrBlank()) {
+                        VoiceExecResult.Message("Поиск. Скажите номер.")
+                    } else {
+                        voiceSearch(cmd.query)
+                    }
+                }
+
+
                 is VoiceCommand.Sort -> {
                     voiceSession.awaitingContinue = false
                     voiceSort(cmd.queries)
@@ -704,6 +718,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         return when (cmd) {
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
+            
+            // FIX 5.8.11-e4g3: явный поиск «найди X».
+            // Всегда переключает в режим ПОИСК. С аргументом — ищет,
+            // без аргумента — просто ждёт номер.
+            is VoiceCommand.Find -> {
+                voiceSession.mode = VoiceSessionMode.SEARCH
+
+                if (cmd.query.isNullOrBlank()) {
+                    VoiceExecResult.Message("Поиск. Скажите номер.")
+                } else {
+                    handleSearchInSession(cmd.query)
+                }
+            }
 
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
