@@ -357,7 +357,10 @@ class VoiceController(
         private const val SAMPLE_RATE = 16000.0f
 
         private const val DEFAULT_SPEECH_RATE = 1.10f
-        private const val RESUME_DELAY_MS = 800L
+        // FIX 5.8.11-e4-fix-2: было 800 мс — пользователь не успевал
+        // сказать сразу после ответа ГП. Уменьшено до 250 мс.
+        // Эхо TTS отсекается suppressUntil (см. speak()).
+        private const val RESUME_DELAY_MS = 250L
 
         private const val SPEECH_BASE_MS = 600L
         private const val SPEECH_CHAR_MS = 70L
