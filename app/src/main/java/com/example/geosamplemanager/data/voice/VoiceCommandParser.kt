@@ -420,7 +420,7 @@ class VoiceCommandParser(
      * В состоянии AWAITING_WEIGHT парсер принимает только:
      *   - число-вес («два», «два и шесть», «полтора», «2.6»);
      *   - Undo («отмена», «отменить»);
-     *   - Stop («стоп», «хатит»).
+     *   - Stop («стоп», «хавтит»).
      * Всё остальное — Unknown. Никаких MarkOrdinal, Search, Sort.
      */
     private fun parseForWeight(input: String): VoiceCommand {
@@ -443,7 +443,7 @@ class VoiceCommandParser(
      * В AWAITING_CONTINUE парсер принимает:
      *   - Resume («продолжить», «продолжай»);
      *   - Pause («пауза», «паузу»);
-     *   - Stop («стоп», «хатит»);
+     *   - Stop («стоп», «хватит»);
      *   - иначе — падаем на полный разбор (может вернуть Search/Sort,
      *     это допустимо: пользователь переходит к следующему запросу).
      */
@@ -453,7 +453,7 @@ class VoiceCommandParser(
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
             "пауза", "паузу" -> VoiceCommand.Pause
-            "стоп", "хатит" -> VoiceCommand.Stop
+            "стоп", "хватит" -> VoiceCommand.Stop
             else -> parse(input, pendingChoice = false)
         }
     }
@@ -461,7 +461,7 @@ class VoiceCommandParser(
     /**
      * В PAUSED парсер принимает только:
      *   - Resume («продолжить», «продолжай»);
-     *   - Stop («стоп», «хатит»).
+     *   - Stop («стоп», «хватит»).
      * Всё остальное — Unknown.
      */
     private fun parseForPaused(input: String): VoiceCommand {
@@ -469,7 +469,7 @@ class VoiceCommandParser(
 
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
-            "стоп", "хатит" -> VoiceCommand.Stop
+            "стоп", "хватит" -> VoiceCommand.Stop
             else -> VoiceCommand.Unknown
         }
     }
