@@ -3,16 +3,22 @@ name: Build & Test
 # ============================================================
 # FIX 5.8.11-ci-automation:
 #
-# Юнит-тесты — АВТОМАТИЧЕСКИ на PR в main и feature/*.
-#   Если в PR только документация — тесты пропускаются,
-#   job всё равно проходит (зелёный), чтобы branch protection
-#   не висел в ожидании.
+# Юнит-тесты — АВТОМАТИЧЕСКИ на каждый PR в main и feature/*.
+#   Если в PR только документация — шаги пропускаются,
+#   job остаётся зелёным (для branch protection).
 #
-# APK — ПО ЛЕЙБЛУ `build-apk` на PR.
-#   Повесил лейбл на PR → собралось APK, попало в артефакты.
-#   Снял и снова повесил → пересборка.
+# APK — при наличии лейбла `build-apk` на PR.
+#   Повесил лейбл → собралось APK, попало в артефакты.
+#   Сделал новый коммит → APK пересобирается (лейбл висит).
+#   Снял лейбл → новых сборок не будет.
 #
 # Ручной запуск — сохранён (Actions → Run workflow).
+#
+# FIX 5.8.11-ci-automation/2:
+#   Раньше unit-tests пропускались при событии labeled —
+#   merge с лейблом build-apk блокировался branch protection
+#   («unit-tests skipped»). Теперь unit-tests идут всегда,
+#   а build-apk — по наличию лейбла, а не по событию labeled.
 #
 # FIX 5.8.9-infra-2d: ручной запуск вместо автоматического.
 # FIX 5.8.9-infra-2e: выкачка модели Vosk из релиза.
@@ -42,20 +48,14 @@ on:
 
 jobs:
   # ============================================================
-  # Юнит-тесты.
-  #
-  # Запускается:
-  #   • на PR (opened / synchronize / reopened) — автоматически,
-  #     кроме события labeled (чтобы лейбл build-apk не гонял тесты);
-  #   • вручную через workflow_dispatch при run_tests = true.
-  #
-  # Если в PR изменены только документы — gradle-шаги пропускаются,
-  # job остаётся зелёным. Это нужно для branch protection.
+  # Юнит-тесты. Запускается ВСЕГДА на PR.
+  # Если в PR нет изменений в коде — шаги пропускаются,
+  # job остаётся зелёным.
   # ============================================================
   unit-tests:
     if: |
       github.event_name == 'workflow_dispatch' && inputs.run_tests ||
-      github.event_name == 'pull_request' && github.event.action != 'labeled'
+      github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -114,8 +114,8 @@ jobs:
   # ============================================================
   # Сборка Debug APK.
   #
-  # Запускается:
-  #   • на PR при добавлении лейбла `build-apk`;
+  # Запускается, если:
+  #   • на PR висит лейбл `build-apk` (в любом событии);
   #   • вручную через workflow_dispatch при build_apk = true.
   #
   # Модель Vosk выкачивается из релиза models-v1,
@@ -123,7 +123,7 @@ jobs:
   # ============================================================
   build-apk:
     if: |
-      github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build-apk' ||
+      github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'build-apk') ||
       github.event_name == 'workflow_dispatch' && inputs.build_apk
     runs-on: ubuntu-latest
     steps:
