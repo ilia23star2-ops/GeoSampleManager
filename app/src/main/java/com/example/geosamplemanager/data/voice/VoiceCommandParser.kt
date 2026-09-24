@@ -403,7 +403,7 @@ class VoiceCommandParser(
         val norm = numberParser.normalize(input).trim()
 
         when (norm) {
-            "стоп", "хатит" -> return VoiceCommand.Stop
+            "стоп", "хватит" -> return VoiceCommand.Stop
             "отмена", "отменить" -> return VoiceCommand.Undo
         }
 
