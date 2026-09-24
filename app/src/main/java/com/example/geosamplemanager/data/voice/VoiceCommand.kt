@@ -93,6 +93,20 @@ sealed class VoiceCommand {
     data class SetMode(val mode: VoiceSessionMode) : VoiceCommand()
 
     /**
+     * FIX 5.8.11-e4g3: явный поиск по глаголу «найди».
+     *
+     * Отличие от [Search]: Search приходит из «голого» номера или кода
+     * («1524», «KPD1090031»), а [Find] — из явной команды намерения.
+     *
+     * Логика выполнения:
+     *  - query == null  → переключение в режим ПОИСК, ожидание номера.
+     *  - query != null  → переключение в ПОИСК + сразу поиск этого текста.
+     *
+     * Слова-маркеры: «найди», «найти», «ищи», «искать», «поищи».
+     */
+    data class Find(val query: String?) : VoiceCommand()
+
+    /**
      * FIX 5.8.9d-3c2b1: выбор действия для уже отмеченной / отложенной пробы.
      *
      * Используется только когда VoiceSession.pendingMarkChoice != null.
