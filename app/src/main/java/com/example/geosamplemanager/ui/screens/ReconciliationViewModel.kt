@@ -643,6 +643,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         if (voiceSession.awaitingWeight) {
+            // FIX 5.8.11-e4g: «пауза» в состоянии ожидания веса
+            // прерывает ввод — сессия уходит в PAUSED, вес забывается.
+            // Решение от 24.09.
+            if (cmd is VoiceCommand.Pause) {
+                voiceSession.awaitingWeight = false
+                voiceSession.isPaused = true
+                return VoiceExecResult.Message("Пауза")
+            }
+
             // FIX 5.8.11-e4a:
             // VoiceDialog (заход e3) уже собрал готовый SetWeight
             // (через parseWeightAnswer или parseWithState). Валидируем
