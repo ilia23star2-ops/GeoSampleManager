@@ -289,7 +289,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun setQuery(query: String) {
-        // Ручной ввод сбрасывает pin и очередь.
         if (voiceSession.isPinned || voiceSession.hasQueue) {
             voiceSession.unpin()
             voiceSession.clearQueue()
@@ -571,6 +570,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
 
             is VoiceCommand.Find -> {
+                // FIX 5.8.11-e4-pin-3: новый поиск сбрасывает pin и очередь.
+                voiceSession.unpin()
+                voiceSession.clearQueue()
                 voiceSession.mode = VoiceSessionMode.SEARCH
                 if (cmd.query.isNullOrBlank()) VoiceExecResult.Message("Поиск. Скажите номер.")
                 else handleSearchInSession(cmd.query)
@@ -595,7 +597,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Next -> voiceNext()
 
-            // FIX 5.8.11-e4-pin-2: переключение в очереди.
             VoiceCommand.NextInQueue -> voiceNextInQueue()
 
             VoiceCommand.Undo -> {
@@ -628,7 +629,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Help -> VoiceExecResult.Message(
                 "Скажи номер, «отметь», «первая», «снять первая», " +
-                        "«дальше», «следующая», «стоп», «пауза», " +
+                        "«дальше», «следующая 1525», «стоп», «пауза», " +
                         "«сколько осталось»."
             )
 
@@ -726,7 +727,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         )
                     }
 
-                    // Новый одиночный поиск — сбрасываем очередь.
                     voiceSession.clearQueue()
 
                     val oldWell = voiceSession.currentWellNumber
@@ -825,7 +825,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         attentionReason = attentionReason,
                         otherAreaTitle = hit.areaTitle,
                         otherOrderNumber = hit.orderNumber,
-                        groups = result.groups
+                        groups = result.groups,
+                        queueSize = 0
                     )
                 }
             }
@@ -868,13 +869,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return result
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-2:
-     * Переключение в очереди мультизапроса.
-     *
-     * Если queue пусто → сообщение, остаёмся где были.
-     * Иначе — берём следующего, pin, возвращаем FoundOne.
-     */
     private suspend fun voiceNextInQueue(): VoiceExecResult {
         if (!voiceSession.hasQueue) {
             return VoiceExecResult.Message("Очередь пуста. Скажите «следующая» для нового запроса.")
@@ -909,6 +903,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         voiceSession.currentQuery = next.wellNumber
 
+        val currentQueueSize = voiceSession.queue.size + 1
+
         return VoiceExecResult.FoundOne(
             query = next.wellNumber,
             orderTitle = next.orderTitle,
@@ -922,10 +918,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             attentionReason = null,
             otherAreaTitle = next.areaTitle,
             otherOrderNumber = next.orderTitle.removePrefix("Наряд №").trim(),
-            groups = emptyList()
+            groups = emptyList(),
+            queueSize = currentQueueSize
         )
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-4:
+     * Vosk путает «четвёртая» ↔ «четырнадцатая» (4 ↔ 14).
+     * Fallback: если проба `ordinal` не найдена, попробовать `ordinal ± 10`
+     * (только для диапазонов 1..9 и 10..19).
+     */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -933,9 +936,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
-        val row = group.rows.firstOrNull {
+
+        var row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
-        } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+        }
+
+        if (row == null) {
+            val alt = when (ordinal) {
+                in 10..19 -> ordinal - 10
+                in 1..9 -> ordinal + 10
+                else -> null
+            }
+            if (alt != null) {
+                row = group.rows.firstOrNull {
+                    it.wellNumber == wellNumber && it.numberInWell == alt
+                }
+                if (row != null) {
+                    Log.i(TAG, "voiceMarkOrdinal: fallback $ordinal → $alt")
+                }
+            }
+        }
+
+        row ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
         return applyMarkDecision(row)
     }
 
@@ -1295,27 +1317,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-2:
-     * Голосовой мультизапрос.
-     *
-     * Раньше — просто описывал все попадания, никакого pin.
-     * Теперь:
-     *   1. Каждый q → ищется.
-     *   2. Если все уникальные — строим очередь PinnedScope.
-     *   3. Первый становится pin, остальные в queue.
-     *   4. Возвращаем FoundOne для первого — VoiceDialog озвучит
-     *      полное описание и можно работать.
-     *   5. «Дальше» — переход к следующему в очереди.
-     *
-     * Если хоть один запрос дал много попаданий или не нашёлся —
-     * очередь не строим, работаем как раньше (Message).
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
 
-        // Сбрасываем прежнюю очередь.
         voiceSession.clearQueue()
 
         val source = VoiceSearchRepository(getApplication())
@@ -1323,7 +1328,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         val pinnedList = mutableListOf<PinnedScope>()
         var allUnique = true
-        var notFoundOrAmbiguous = false
 
         for (q in queries) {
             val clean = q.trim()
@@ -1335,7 +1339,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (candidates.isEmpty()) {
                 allUnique = false
-                notFoundOrAmbiguous = true
                 break
             }
 
@@ -1343,10 +1346,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 is UnifiedSearchResult.Found -> {
                     if (!r.isUnique) {
                         allUnique = false
-                        notFoundOrAmbiguous = true
                         break
                     }
-
                     val hit = r.hits.first()
                     pinnedList.add(
                         PinnedScope(
@@ -1359,18 +1360,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 UnifiedSearchResult.NotFound -> {
                     allUnique = false
-                    notFoundOrAmbiguous = true
                     break
                 }
             }
         }
 
         if (!allUnique || pinnedList.isEmpty()) {
-            // Старый путь — описательный Message, без очереди.
             return oldSortBehaviour(queries)
         }
 
-        // Строим очередь. Первый — pin.
         voiceSession.enqueue(pinnedList)
 
         val first = pinnedList.first()
@@ -1410,14 +1408,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             attentionReason = null,
             otherAreaTitle = first.areaTitle,
             otherOrderNumber = first.orderTitle.removePrefix("Наряд №").trim(),
-            groups = emptyList()
+            groups = emptyList(),
+            queueSize = pinnedList.size
         )
     }
 
-    /**
-     * Старое поведение мультизапроса: описательный Message.
-     * Используется, когда очередь не формируется.
-     */
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {
         val source = VoiceSearchRepository(getApplication())
         val all = source.loadAll()

@@ -3,13 +3,15 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-pin-1:
- * Добавлен метод parseForPinned — разбор в состоянии FOUND_PINNED.
- * Голое число 1..99 и слово-числительное → MarkOrdinal.
- *
- * FIX 5.8.11-e4-pin-2:
- * В parseForPinned добавлено слово «дальше» → NextInQueue
- * (переключение в очереди мультизапроса).
+ * FIX 5.8.11-e4-pin-4:
+ *  - В FOUND_PINNED фраза из числительных склеивается в одно число.
+ *    «тринадцать шестьдесят семь» → MarkOrdinal(1367).
+ *    «тысяча пятьсот двадцать четыре» → MarkOrdinal(1524).
+ *  - В FOUND_PINNED мусор («семь утра было холодно») → Unknown.
+ *    Search в pin запрещён — только через «найди X» / «следующая X».
+ *  - В FOUND_PINNED любое голое число → MarkOrdinal.
+ *  - «следующая X» → Find(X).
+ *  - Вес «два семьсот» → 2.7.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -52,7 +54,17 @@ class VoiceCommandParser(
 
     private val findVerbWords = setOf("найди", "найти", "ищи", "искать", "поищи")
 
+    private val nextVerbWords = setOf(
+        "следующая", "следующий", "следующую", "далее"
+    )
+
     private val ordinalJoinWords = setOf("и", "запятая", ",", ";")
+
+    private val hundredFormToValue: Map<String, Int> = mapOf(
+        "сто" to 1, "двести" to 2, "триста" to 3, "четыреста" to 4,
+        "пятьсот" to 5, "шестьсот" to 6, "семьсот" to 7,
+        "восемьсот" to 8, "девятьсот" to 9
+    )
 
     private val weightAllowedWords: Set<String> = buildSet {
         addAll(VoiceDictionary.singleDigits.keys)
@@ -72,6 +84,8 @@ class VoiceCommandParser(
         add("кг"); add("кило")
         add("килограмма"); add("килограмм"); add("килограммы")
         add("вес"); add("веса"); add("весу"); add("весом"); add("весе")
+
+        addAll(hundredFormToValue.keys)
     }
 
     fun parse(
@@ -94,6 +108,14 @@ class VoiceCommandParser(
                 in pendingPostponePhrases -> return VoiceCommand.ChoicePostpone
                 in pendingSkipPhrases -> return VoiceCommand.ChoiceSkip
                 in pendingMarkCurrentPhrases -> return VoiceCommand.MarkCurrent
+            }
+        }
+
+        run {
+            val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size >= 2 && words[0] in nextVerbWords) {
+                val tail = words.drop(1).joinToString(" ").trim()
+                if (tail.isNotEmpty()) return VoiceCommand.Find(tail)
             }
         }
 
@@ -218,16 +240,19 @@ class VoiceCommandParser(
     }
 
     /**
-     * FIX 5.8.11-e4-pin-1 / pin-2:
+     * FIX 5.8.11-e4-pin-4:
      * Разбор в FOUND_PINNED.
      *
-     * Сначала — точные команды, специфичные для этого состояния:
-     *   - «дальше»      → NextInQueue;
-     *   - «следующая»   → Next (выход из очереди и из pin).
-     *
-     * Потом — голое число или слово-числительное → MarkOrdinal.
-     *
-     * Всё остальное — обычный parse().
+     * Порядок:
+     *   1. «дальше» → NextInQueue.
+     *   2. «следующая X» → Find(X).
+     *   3. «следующая» / «далее» → Next.
+     *   4. Число цифрами («1524», «4») → MarkOrdinal.
+     *   5. Фраза из числительных (с учётом «тысяча», «миллион»)
+     *      → MarkOrdinal(склейка).
+     *   6. Одно слово-числительное → MarkOrdinal.
+     *   7. Обычный parse(). Если он вернул Search — Unknown
+     *      (в pin Search запрещён).
      */
     private fun parseForPinned(input: String): VoiceCommand {
         val raw = input.trim()
@@ -238,24 +263,59 @@ class VoiceCommandParser(
             .trim('.', ',', '!', '?', ';', ':')
             .trim()
 
-        // FIX 5.8.11-e4-pin-2: переключение в очереди.
-        when (norm) {
-            "дальше" -> return VoiceCommand.NextInQueue
-            "следующая", "следующий", "следующую", "далее" -> return VoiceCommand.Next
+        if (norm == "дальше") return VoiceCommand.NextInQueue
+
+        run {
+            val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size >= 2 && words[0] in nextVerbWords) {
+                val tail = words.drop(1).joinToString(" ").trim()
+                if (tail.isNotEmpty()) return VoiceCommand.Find(tail)
+            }
         }
+
+        if (norm in nextVerbWords) return VoiceCommand.Next
 
         norm.toIntOrNull()?.let { n ->
-            if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
+            if (n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
+        // FIX 5.8.11-e4-pin-4: фраза из числительных → MarkOrdinal.
+        // «тысяча», «миллион» — допустимы как множители.
+        run {
+            val tokens = numberParser.tokenize(norm)
+            if (tokens.isNotEmpty()) {
+                val hasNonNumber = tokens.any { t ->
+                    when (t) {
+                        is VoiceToken.Number -> false
+                        is VoiceToken.Separator -> false
+                        is VoiceToken.Unknown -> {
+                            !(t.raw in VoiceDictionary.thousandWords ||
+                                    t.raw in VoiceDictionary.millionWords)
+                        }
+                        else -> true
+                    }
+                }
+                if (!hasNonNumber) {
+                    val parsed = numberParser.parse(norm)
+                    val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
+                    if (combined != null && combined > 0) {
+                        return VoiceCommand.MarkOrdinal(combined)
+                    }
+                }
+            }
+        }
+
+        // Одно слово-числительное: «четыре».
         val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.size == 1) {
             val parsed = numberParser.parse(norm)
             val n = parsed.primary?.toIntOrNull()
-            if (n != null && n in 1..99) return VoiceCommand.MarkOrdinal(n)
+            if (n != null && n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
-        return parse(input, pendingChoice = false)
+        // Обычный parse(). В pin Search запрещён — заменяем на Unknown.
+        val result = parse(input, pendingChoice = false)
+        return if (result is VoiceCommand.Search) VoiceCommand.Unknown else result
     }
 
     private fun parseForWeight(input: String): VoiceCommand {
@@ -350,6 +410,18 @@ class VoiceCommandParser(
         when (norm) {
             "полтора", "полторы" -> return 1.5
             "полкило" -> return 0.5
+        }
+
+        run {
+            val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+            if (words.size == 2) {
+                val first = numberParser.parse(words[0]).primary?.toIntOrNull()
+                val second = hundredFormToValue[words[1]]
+                if (first != null && first in 0..99 && second != null) {
+                    val cents = second * 100
+                    return first + cents / 1000.0
+                }
+            }
         }
 
         norm = norm

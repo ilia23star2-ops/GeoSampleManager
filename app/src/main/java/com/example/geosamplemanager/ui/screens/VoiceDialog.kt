@@ -33,19 +33,6 @@ import kotlin.math.roundToInt
 
 private const val LOG_TAG = "VoiceDialog"
 
-/**
- * FIX 5.8.10-g1 (И-3):
- * Раньше это был AlertDialog — модальное окно, блокирующее весь экран.
- * Теперь это немодальная панель внизу экрана (VoicePanel).
- * Логика работы с VoiceController не изменилась.
- *
- * FIX 5.8.11-e4e-bundle/4 (мимикрия):
- * buildFoundOnePhrase, buildFoundOneShortPhrase и
- * buildAttentionFoundOnePhrase используют VoiceSpeaker.spellOut(groups),
- * если в результате есть структура ввода. Это даёт «капэдэ сто девять
- * ноль ноль тридцать один» вместо «ка пэ дэ 10 90 03 1».
- * Если groups пусто (старый путь) — fallback на spellOut(String).
- */
 @Composable
 fun VoiceDialog(
     viewModel: ReconciliationViewModel,
@@ -107,9 +94,6 @@ fun VoiceDialog(
 
                 viewModel.setVoiceStatus(VoiceStatus.Heard(text))
 
-                // FIX 5.8.9d-3c2b2:
-                // Если ГП ждёт выбор, парсер должен распознавать
-                // «снять», «отложить», «пропустить».
                 val isPendingChoice = viewModel.voiceSession.pendingMarkChoice != null
                 val awaitingWeight = viewModel.voiceSession.awaitingWeight
 
@@ -119,11 +103,6 @@ fun VoiceDialog(
                     null
                 }
 
-                // FIX 5.8.11-e3 (SEARCH_MODEL §3.3):
-                // Парсер получает текущее состояние ГП. В AWAITING_WEIGHT
-                // «семь» пойдёт в вес, а не в MarkOrdinal. В PAUSED —
-                // только «продолжить»/«стоп». В AWAITING_CHOICE — только
-                // выбор действия.
                 val cmd = weightCmd ?: commandParser.parseWithState(
                     text,
                     viewModel.voiceSession.state,
@@ -208,16 +187,6 @@ fun VoiceDialog(
     }
 }
 
-/**
- * FIX 5.8.9f-2a-fix-6: если режим SORT — короткая фраза без статистики.
- * FIX 5.8.9d-2b: подтверждение отметки — коротко, порядковым числом.
- * FIX 5.8.9d-3c2b2: если ГП ждёт выбор — звуковое внимание.
- * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
- * FIX 5.8.6-5c: звук и озвучка для снятия / отмены / повтора.
- * FIX 5.8.10-c: множественная отметка — озвучиваем список проб.
- *
- * FIX 5.8.11-e4e-bundle/4: убран лишний else (when исчерпывающий).
- */
 private fun handleFeedback(
     result: VoiceExecResult,
     fb: VoiceFeedback,
@@ -253,13 +222,10 @@ private fun handleFeedback(
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
                     "$subject — весовой контроль. Вес?"
-
                 result.needsWeight ->
                     "$subject — холостая. Вес?"
-
                 result.isWeightControl ->
                     "$subject — весовой контроль, отмечена."
-
                 else ->
                     "$subject отмечена."
             }
@@ -337,10 +303,6 @@ private fun handleFeedback(
     }
 }
 
-/**
- * FIX 5.8.10-c: по sampleNumbers находим порядковые номера (numberInWell)
- * в state. Используется для озвучки списка проб при множественной отметке.
- */
 private fun resolveOrdinals(
     sampleNumbers: List<String>,
     viewModel: ReconciliationViewModel
@@ -359,9 +321,6 @@ private fun resolveOrdinals(
     return sampleNumbers.mapNotNull { index[it] }
 }
 
-/**
- * FIX 5.8.10-c: фраза для множественной отметки.
- */
 private fun buildMarkedMultiplePhrase(
     ordinals: List<Int>,
     fallbackCount: Int
@@ -384,11 +343,6 @@ private fun buildMarkedMultiplePhrase(
     return "Отмечено: ${words.joinToString(", ")}."
 }
 
-/**
- * FIX 5.8.11-e4e-bundle/4:
- * Если есть структура ввода (r.groups) — озвучиваем по группам.
- * Иначе — старый spellOut по строке.
- */
 private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spoken = spokenNumberOf(r, r.wellNumber)
     val sb = StringBuilder()
@@ -402,12 +356,10 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
             if (ord.isNotEmpty()) sb.append(", наряд $ord")
             sb.append(". ")
         }
-
         AnswerReason.FOUND_OTHER_ORDER -> {
             val ord = r.otherOrderNumber ?: "другой"
             sb.append("Другой наряд — $ord. ")
         }
-
         else -> {}
     }
 
@@ -416,13 +368,16 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 }
 
 /**
- * Полная фраза (SEARCH): со статистикой.
- *
- * FIX 5.8.11-e4e-bundle/4: озвучка номера — через groups (если есть).
+ * FIX 5.8.11-e4-pin-3: если queueSize > 1 — префикс «Найдено N скважин.
+ * Слушайте первую.»
  */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = spokenNumberOf(r, r.query)
     val sb = StringBuilder()
+
+    if (r.queueSize > 1) {
+        sb.append("Найдено ${VoiceSpeaker.wells(r.queueSize)}. Слушайте первую. ")
+    }
 
     if (r.isSample) {
         sb.append("Проба $spokenNumber. ${r.orderTitle}. ")
@@ -449,29 +404,20 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val extras = mutableListOf<String>()
 
     if (r.blanks > 0) {
-        val blanksPhrase = if (r.blanks == 1) {
-            "Холостая одна."
-        } else {
-            "Холостых ${spokenCount(r.blanks, feminine = true)}."
-        }
+        val blanksPhrase = if (r.blanks == 1) "Холостая одна."
+        else "Холостых ${spokenCount(r.blanks, feminine = true)}."
         extras.add(blanksPhrase)
     }
 
     if (r.weightControls > 0) {
-        val vkPhrase = if (r.weightControls == 1) {
-            "Весовой контроль один."
-        } else {
-            "Весового контроля ${spokenCount(r.weightControls, feminine = false)}."
-        }
+        val vkPhrase = if (r.weightControls == 1) "Весовой контроль один."
+        else "Весового контроля ${spokenCount(r.weightControls, feminine = false)}."
         extras.add(vkPhrase)
     }
 
     if (r.postponed > 0) {
-        val postponedPhrase = if (r.postponed == 1) {
-            "Отложена одна."
-        } else {
-            "Отложено ${spokenCount(r.postponed, feminine = true)}."
-        }
+        val postponedPhrase = if (r.postponed == 1) "Отложена одна."
+        else "Отложено ${spokenCount(r.postponed, feminine = true)}."
         extras.add(postponedPhrase)
     }
 
@@ -482,11 +428,6 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     return sb.toString().replace(Regex(" +"), " ").trim()
 }
 
-/**
- * Короткая фраза (SORT): без статистики.
- *
- * FIX 5.8.11-e4e-bundle/4: озвучка номера — через groups (если есть).
- */
 private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = spokenNumberOf(r, r.query)
     return if (r.isSample) {
@@ -496,17 +437,6 @@ private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
     }
 }
 
-/**
- * FIX 5.8.11-e4e-bundle/4:
- * Единая точка произнесения номера.
- *
- * Если в результате есть структура ввода (groups) — используем
- * spellOut(groups): «капэдэ сто девять ноль ноль тридцать один».
- * Иначе — fallback на старый spellOut(String): «ка пэ дэ 10 90 03 1».
- *
- * @param r       результат, в котором может быть поле groups
- * @param fallback строка для старого spellOut, если groups пусто
- */
 private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
     if (r.groups.isNotEmpty()) {
         VoiceSpeaker.spellOut(r.groups)
@@ -550,15 +480,6 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
     VoiceExecResult.Redone -> VoiceStatus.Idle
 }
 
-/**
- * FIX 5.8.9f-2a-fix-6: карточка «Результат» — в SORT без статистики.
- * FIX 5.8.9d-2b: для Marked — короткая форма, порядковым числом.
- * FIX 5.8.9i-3: вес в UI — с запятой и без лишнего .0.
- *
- * FIX 5.8.11-e4e-bundle/4:
- * Текст панели остаётся с цифрами (result.query) — как и раньше.
- * Мимикрия — только для TTS, на панели пользователь видит цифры.
- */
 private fun describeResult(
     result: VoiceExecResult,
     viewModel: ReconciliationViewModel
@@ -579,12 +500,10 @@ private fun describeResult(
                         if (ord.isNotEmpty()) sb.append(", наряд $ord")
                         sb.append(". Выберите на экране.")
                     }
-
                     AnswerReason.FOUND_OTHER_ORDER -> {
                         val ord = result.otherOrderNumber ?: "другой"
                         sb.append("⚠ Другой наряд — $ord. Выберите на экране.")
                     }
-
                     else -> {}
                 }
 

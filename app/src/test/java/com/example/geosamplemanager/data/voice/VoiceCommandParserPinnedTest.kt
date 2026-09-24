@@ -4,16 +4,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * FIX 5.8.11-e4-pin-1:
+ * FIX 5.8.11-e4-pin-1 / pin-3:
  * Тесты состояния FOUND_PINNED (скважина закреплена).
  *
- * Проверяем:
- *  - голое число (цифрой) → MarkOrdinal;
- *  - голое слово-числительное → MarkOrdinal;
- *  - «следующая» → Next;
- *  - «отмена» → Undo;
- *  - «найди X» → Find;
- *  - обычные команды в этом состоянии — без изменений.
+ * FIX 5.8.11-e4-pin-3: изменено поведение —
+ * любое голое число (не только 1..99) → MarkOrdinal.
+ * Раньше >99 уходило в Search. Теперь — нет.
  */
 class VoiceCommandParserPinnedTest {
 
@@ -75,12 +71,16 @@ class VoiceCommandParserPinnedTest {
         assertEquals(VoiceCommand.Stop, cmd)
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-3:
+     * В FOUND_PINNED любое число → MarkOrdinal, а не Search.
+     * Выход из pin — только «следующая».
+     */
     @Test
-    fun pinnedBigNumberIsSearch() {
+    fun pinnedBigNumberIsMarkOrdinal() {
         val cmd = parser.parseWithState(
             "1524", VoiceState.FOUND_PINNED, VoiceSessionMode.SEARCH
         )
-        // 1524 не влезает в 1..99 → обычный Search.
-        assertEquals(VoiceCommand.Search("1524"), cmd)
+        assertEquals(VoiceCommand.MarkOrdinal(1524), cmd)
     }
 }

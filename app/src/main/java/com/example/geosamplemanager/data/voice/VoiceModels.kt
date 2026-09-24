@@ -25,20 +25,15 @@ sealed class VoiceExecResult {
         val attentionReason: AnswerReason? = null,
         val otherAreaTitle: String? = null,
         val otherOrderNumber: String? = null,
-        /**
-         * FIX 5.8.9f-2a-fix-6: true — ответ в режиме сортировки.
-         * VoiceDialog не выводит статистику (всего проб / отмечено /
-         * холостых / ВК / отложено) — только скважину и наряд.
-         */
         val isSortMode: Boolean = false,
+        val groups: List<DigitGroup> = emptyList(),
         /**
-         * FIX 5.8.11-e4e-bundle/2: структура ввода для мимикрии озвучки.
-         * Если заполнено — VoiceDialog использует VoiceSpeaker.spellOut(groups)
-         * вместо spellOut(query). Это даёт «капэдэ сто девять ноль ноль
-         * тридцать один» вместо «ка пэ дэ 10 90 03 1».
-         * Пустой список — старый путь (для обратной совместимости).
+         * FIX 5.8.11-e4-pin-3:
+         * Размер очереди мультизапроса, включая текущую скважину.
+         * 0 или 1 — обычный одиночный поиск. >1 — мультизапрос,
+         * VoiceDialog озвучит «Найдено N скважин» перед первым.
          */
-        val groups: List<DigitGroup> = emptyList()
+        val queueSize: Int = 0
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()
