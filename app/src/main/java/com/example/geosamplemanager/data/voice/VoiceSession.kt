@@ -32,16 +32,6 @@ data class PendingMarkChoice(
 /**
  * FIX 5.8.11-e4-pin-1:
  * Контекст закрепления скважины.
- *
- * После успешного одиночного поиска скважины она «закрепляется» —
- * ГП продолжает работать именно с ней. Голое число идёт в отметку,
- * а не в поиск новой скважины.
- *
- * Выход из закрепления:
- *   - «следующая»;
- *   - «отмена»;
- *   - ручной ввод в строке поиска UI;
- *   - новый успешный поиск (перезаписывает).
  */
 data class PinnedScope(
     val orderId: Long,
@@ -53,10 +43,12 @@ data class PinnedScope(
 /**
  * Контекст голосовой сессии.
  *
- * FIX 5.8.11-e4-pin-1:
- * - поле `pinned` — текущее закрепление;
- * - методы pin / unpin / isPinned;
- * - `state` → FOUND_PINNED при активном закреплении.
+ * FIX 5.8.11-e4-pin-2:
+ * - поле `queue` — очередь скважин мультизапроса;
+ * - метод `enqueue(scopes)` — установить очередь
+ *   (первый элемент становится pinned);
+ * - `nextInQueue()` — взять следующего;
+ * - `clearQueue()` — очистить очередь.
  */
 class VoiceSession {
 
@@ -82,10 +74,19 @@ class VoiceSession {
     var pendingMarkChoice: PendingMarkChoice? by mutableStateOf<PendingMarkChoice?>(null)
 
     /**
-     * FIX 5.8.11-e4-pin-1: текущее закрепление скважины.
-     * null — закрепления нет.
+     * Текущее закрепление скважины.
      */
     var pinned: PinnedScope? by mutableStateOf<PinnedScope?>(null)
+
+    /**
+     * FIX 5.8.11-e4-pin-2: очередь скважин мультизапроса.
+     * Первая всегда pinned, остальные лежат здесь и переключаются
+     * командой «дальше».
+     *
+     * Имя — `queue`. Метод установки — `enqueue` (не `setQueue`),
+     * чтобы не конфликтовать с генерируемым setter-ом поля.
+     */
+    var queue: List<PinnedScope> by mutableStateOf(emptyList())
 
     private var pausedBeforePending: Boolean = false
 
@@ -105,10 +106,9 @@ class VoiceSession {
     val isPinned: Boolean
         get() = pinned != null
 
-    /**
-     * FIX 5.8.11-e4-pin-1:
-     * Закрепить скважину. Перезаписывает текущее закрепление.
-     */
+    val hasQueue: Boolean
+        get() = queue.isNotEmpty()
+
     fun pin(
         orderId: Long,
         orderTitle: String,
@@ -123,12 +123,38 @@ class VoiceSession {
         )
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-1:
-     * Снять закрепление.
-     */
     fun unpin() {
         pinned = null
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-2:
+     * Установить очередь. Первая становится pinned, остальные — в queue.
+     */
+    fun enqueue(scopes: List<PinnedScope>) {
+        if (scopes.isEmpty()) {
+            queue = emptyList()
+            return
+        }
+        pinned = scopes.first()
+        queue = scopes.drop(1)
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-2:
+     * Взять следующего из очереди. Возвращает новый pin или null,
+     * если очередь пуста.
+     */
+    fun nextInQueue(): PinnedScope? {
+        if (queue.isEmpty()) return null
+        val next = queue.first()
+        queue = queue.drop(1)
+        pinned = next
+        return next
+    }
+
+    fun clearQueue() {
+        queue = emptyList()
     }
 
     fun startPendingMarkChoice(
@@ -152,10 +178,7 @@ class VoiceSession {
     }
 
     fun clearPendingMarkChoice() {
-        if (pendingMarkChoice == null) {
-            return
-        }
-
+        if (pendingMarkChoice == null) return
         pendingMarkChoice = null
         isPaused = pausedBeforePending
         pausedBeforePending = false
@@ -179,6 +202,7 @@ class VoiceSession {
         pendingMarkChoice = null
         pausedBeforePending = false
         pinned = null
+        queue = emptyList()
     }
 
     fun advanceToNext() {
@@ -196,5 +220,6 @@ class VoiceSession {
         pausedBeforePending = false
         isPaused = false
         pinned = null
+        queue = emptyList()
     }
 }

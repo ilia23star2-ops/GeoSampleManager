@@ -17,6 +17,7 @@ import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.MarkDecisionVoiceRenderer
 import com.example.geosamplemanager.data.voice.PendingMarkChoiceType
+import com.example.geosamplemanager.data.voice.PinnedScope
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.UnifiedSearch
 import com.example.geosamplemanager.data.voice.UnifiedSearchResult
@@ -288,9 +289,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     fun setQuery(query: String) {
-        // FIX 5.8.11-e4-pin-1: ручной ввод сбрасывает голосовое закрепление.
-        if (voiceSession.isPinned) {
+        // Ручной ввод сбрасывает pin и очередь.
+        if (voiceSession.isPinned || voiceSession.hasQueue) {
             voiceSession.unpin()
+            voiceSession.clearQueue()
         }
 
         state.query = query
@@ -456,7 +458,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     suspend fun voiceExecute(cmd: VoiceCommand): VoiceExecResult {
         Log.i(
             TAG,
-            "voiceExecute: $cmd (state=${voiceSession.state}, pinned=${voiceSession.isPinned})"
+            "voiceExecute: $cmd (state=${voiceSession.state}, " +
+                    "pinned=${voiceSession.isPinned}, queue=${voiceSession.queue.size})"
         )
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
@@ -564,10 +567,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             return VoiceExecResult.Message("Сначала скажите вес или «отмена».")
         }
 
-        // FIX 5.8.11-e4-pin-1: в состоянии FOUND_PINNED команда MarkOrdinal
-        // относится к закреплённой скважине, а не к только что найденной.
-        // voiceMarkOrdinal использует voiceSession.currentWellNumber — он
-        // совпадает с pinned.wellNumber.
         return when (cmd) {
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
 
@@ -596,9 +595,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Next -> voiceNext()
 
+            // FIX 5.8.11-e4-pin-2: переключение в очереди.
+            VoiceCommand.NextInQueue -> voiceNextInQueue()
+
             VoiceCommand.Undo -> {
-                // FIX 5.8.11-e4-pin-1: «отмена» снимает закрепление.
                 voiceSession.unpin()
+                voiceSession.clearQueue()
                 undo()
                 VoiceExecResult.Undone
             }
@@ -626,7 +628,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Help -> VoiceExecResult.Message(
                 "Скажи номер, «отметь», «первая», «снять первая», " +
-                        "«следующая», «стоп», «пауза», «сколько осталось»."
+                        "«дальше», «следующая», «стоп», «пауза», " +
+                        "«сколько осталось»."
             )
 
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
@@ -688,12 +691,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             when (result) {
                 SearchResult.NotFound -> {
-                    // FIX 5.8.11-e4-pin-1: если был pin — сохраняем его.
-                    // Только не сбрасываем контекст, если pin активен.
                     if (!voiceSession.isPinned) {
                         voiceSession.clear()
                     }
-
                     val displayQuery = candidates.firstOrNull() ?: query
                     if (isLikelyVoiceSearchQuery(displayQuery)) {
                         withContext(Dispatchers.Main) {
@@ -726,6 +726,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         )
                     }
 
+                    // Новый одиночный поиск — сбрасываем очередь.
+                    voiceSession.clearQueue()
+
                     val oldWell = voiceSession.currentWellNumber
                     val oldOrder = voiceSession.currentOrderId
                     val newWell = hit.wellNumber
@@ -744,27 +747,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSession.currentSampleNumber = null
                     voiceSession.currentSampleOrdinal = null
 
-                    // FIX 5.8.11-e4-pin-1: закрепляем только скважину
-                    // (не пробу). Пробу отдельным поиском можно найти
-                    // — тогда search вернёт sample, но pin всё равно
-                    // ставим на скважину, чтобы голое число шло в MarkOrdinal.
-                    if (!isSample) {
-                        voiceSession.pin(
-                            orderId = newOrder,
-                            orderTitle = "Наряд №${hit.orderNumber}",
-                            areaTitle = hit.areaTitle,
-                            wellNumber = newWell
-                        )
-                    } else {
-                        // Для пробы тоже закрепляем скважину, чтобы
-                        // последующие голые числа шли в MarkOrdinal.
-                        voiceSession.pin(
-                            orderId = newOrder,
-                            orderTitle = "Наряд №${hit.orderNumber}",
-                            areaTitle = hit.areaTitle,
-                            wellNumber = newWell
-                        )
-                    }
+                    voiceSession.pin(
+                        orderId = newOrder,
+                        orderTitle = "Наряд №${hit.orderNumber}",
+                        areaTitle = hit.areaTitle,
+                        wellNumber = newWell
+                    )
 
                     val selectedArea = state.selectedArea
                     val selectedOrder = state.selectedOrder
@@ -878,6 +866,64 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             result.add(DigitGroup(value = part, kind = kind))
         }
         return result
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-2:
+     * Переключение в очереди мультизапроса.
+     *
+     * Если queue пусто → сообщение, остаёмся где были.
+     * Иначе — берём следующего, pin, возвращаем FoundOne.
+     */
+    private suspend fun voiceNextInQueue(): VoiceExecResult {
+        if (!voiceSession.hasQueue) {
+            return VoiceExecResult.Message("Очередь пуста. Скажите «следующая» для нового запроса.")
+        }
+
+        val next = voiceSession.nextInQueue()
+            ?: return VoiceExecResult.Message("Очередь пуста.")
+
+        voiceSession.currentOrderId = next.orderId
+        voiceSession.currentOrderTitle = next.orderTitle
+        voiceSession.currentAreaTitle = next.areaTitle
+        voiceSession.currentWellNumber = next.wellNumber
+        voiceSession.currentSampleNumber = null
+        voiceSession.currentSampleOrdinal = null
+        voiceSession.lastMarkedRowId = null
+        voiceSession.lastMarkedSampleNumber = null
+
+        ensureOrderSamplesLoaded(next.orderId)
+
+        val group = state.groupById(next.orderId.toString())
+        val wellRows = group?.rows?.filter { it.wellNumber == next.wellNumber } ?: emptyList()
+
+        val totalSamples = wellRows.size
+        val foundSamples = wellRows.count { it.found }
+        val blanks = wellRows.count { it.isBlank }
+        val weightControls = wellRows.count { it.weightControl }
+        val postponed = wellRows.count { it.postponed }
+
+        withContext(Dispatchers.Main) {
+            state.query = next.wellNumber
+        }
+
+        voiceSession.currentQuery = next.wellNumber
+
+        return VoiceExecResult.FoundOne(
+            query = next.wellNumber,
+            orderTitle = next.orderTitle,
+            wellNumber = next.wellNumber,
+            totalSamples = totalSamples,
+            foundSamples = foundSamples,
+            isSample = false,
+            blanks = blanks,
+            weightControls = weightControls,
+            postponed = postponed,
+            attentionReason = null,
+            otherAreaTitle = next.areaTitle,
+            otherOrderNumber = next.orderTitle.removePrefix("Наряд №").trim(),
+            groups = emptyList()
+        )
     }
 
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
@@ -1249,12 +1295,130 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-2:
+     * Голосовой мультизапрос.
+     *
+     * Раньше — просто описывал все попадания, никакого pin.
+     * Теперь:
+     *   1. Каждый q → ищется.
+     *   2. Если все уникальные — строим очередь PinnedScope.
+     *   3. Первый становится pin, остальные в queue.
+     *   4. Возвращаем FoundOne для первого — VoiceDialog озвучит
+     *      полное описание и можно работать.
+     *   5. «Дальше» — переход к следующему в очереди.
+     *
+     * Если хоть один запрос дал много попаданий или не нашёлся —
+     * очередь не строим, работаем как раньше (Message).
+     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
-        val joined = queries.joinToString(" ")
-        setQuery(joined)
 
+        // Сбрасываем прежнюю очередь.
+        voiceSession.clearQueue()
+
+        val source = VoiceSearchRepository(getApplication())
+        val all = source.loadAll()
+
+        val pinnedList = mutableListOf<PinnedScope>()
+        var allUnique = true
+        var notFoundOrAmbiguous = false
+
+        for (q in queries) {
+            val clean = q.trim()
+            if (clean.isEmpty()) continue
+
+            val candidates: List<String> = if (clean.all { it.isDigit() }) listOf(clean)
+            else voiceParser.parse(clean).candidates.map { it.replace("|", "") }
+                .filter { it.isNotBlank() }
+
+            if (candidates.isEmpty()) {
+                allUnique = false
+                notFoundOrAmbiguous = true
+                break
+            }
+
+            when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
+                is UnifiedSearchResult.Found -> {
+                    if (!r.isUnique) {
+                        allUnique = false
+                        notFoundOrAmbiguous = true
+                        break
+                    }
+
+                    val hit = r.hits.first()
+                    pinnedList.add(
+                        PinnedScope(
+                            orderId = hit.orderId,
+                            orderTitle = "Наряд №${hit.orderNumber}",
+                            areaTitle = hit.areaTitle,
+                            wellNumber = hit.wellNumber
+                        )
+                    )
+                }
+                UnifiedSearchResult.NotFound -> {
+                    allUnique = false
+                    notFoundOrAmbiguous = true
+                    break
+                }
+            }
+        }
+
+        if (!allUnique || pinnedList.isEmpty()) {
+            // Старый путь — описательный Message, без очереди.
+            return oldSortBehaviour(queries)
+        }
+
+        // Строим очередь. Первый — pin.
+        voiceSession.enqueue(pinnedList)
+
+        val first = pinnedList.first()
+        voiceSession.currentOrderId = first.orderId
+        voiceSession.currentOrderTitle = first.orderTitle
+        voiceSession.currentAreaTitle = first.areaTitle
+        voiceSession.currentWellNumber = first.wellNumber
+        voiceSession.currentSampleNumber = null
+        voiceSession.currentSampleOrdinal = null
+        voiceSession.currentQuery = first.wellNumber
+
+        ensureOrderSamplesLoaded(first.orderId)
+
+        val group = state.groupById(first.orderId.toString())
+        val wellRows = group?.rows?.filter { it.wellNumber == first.wellNumber } ?: emptyList()
+
+        val totalSamples = wellRows.size
+        val foundSamples = wellRows.count { it.found }
+        val blanks = wellRows.count { it.isBlank }
+        val weightControls = wellRows.count { it.weightControl }
+        val postponed = wellRows.count { it.postponed }
+
+        withContext(Dispatchers.Main) {
+            state.query = first.wellNumber
+        }
+
+        return VoiceExecResult.FoundOne(
+            query = first.wellNumber,
+            orderTitle = first.orderTitle,
+            wellNumber = first.wellNumber,
+            totalSamples = totalSamples,
+            foundSamples = foundSamples,
+            isSample = false,
+            blanks = blanks,
+            weightControls = weightControls,
+            postponed = postponed,
+            attentionReason = null,
+            otherAreaTitle = first.areaTitle,
+            otherOrderNumber = first.orderTitle.removePrefix("Наряд №").trim(),
+            groups = emptyList()
+        )
+    }
+
+    /**
+     * Старое поведение мультизапроса: описательный Message.
+     * Используется, когда очередь не формируется.
+     */
+    private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {
         val source = VoiceSearchRepository(getApplication())
         val all = source.loadAll()
 
@@ -1264,13 +1428,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         for (q in queries) {
             val clean = q.trim()
             if (clean.isEmpty()) continue
+
             val candidates: List<String> = if (clean.all { it.isDigit() }) listOf(clean)
             else voiceParser.parse(clean).candidates.map { it.replace("|", "") }
                 .filter { it.isNotBlank() }
+
             if (candidates.isEmpty()) {
                 descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
                 continue
             }
+
             try {
                 when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
                     is UnifiedSearchResult.Found -> {
@@ -1298,6 +1465,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 descriptions.add("${VoiceSpeaker.spellOut(clean)} — ошибка")
             }
         }
+
         val hasAmbiguous = ambiguousQueries.isNotEmpty()
         val text = if (hasAmbiguous) {
             voiceSession.awaitingContinue = true

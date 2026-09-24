@@ -4,12 +4,12 @@ package com.example.geosamplemanager.data.voice
  * Разбор голосовой фразы в VoiceCommand.
  *
  * FIX 5.8.11-e4-pin-1:
- * Добавлен метод parseForPinned — разбор в состоянии FOUND_PINNED
- * (скважина закреплена). Голое число 1..99 и слово-числительное
- * (одиночное) идут в MarkOrdinal, не в Search.
+ * Добавлен метод parseForPinned — разбор в состоянии FOUND_PINNED.
+ * Голое число 1..99 и слово-числительное → MarkOrdinal.
  *
- * Прочие заходы — без изменений (см. историю FIX-ов в комментариях
- * ниже по файлу).
+ * FIX 5.8.11-e4-pin-2:
+ * В parseForPinned добавлено слово «дальше» → NextInQueue
+ * (переключение в очереди мультизапроса).
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -157,7 +157,6 @@ class VoiceCommandParser(
             return VoiceCommand.Unknown
         }
 
-        // FIX 5.8.11-e4g3: явный поиск «найди X».
         val findWords = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (findWords.isNotEmpty() && findWords[0] in findVerbWords) {
             val tail = findWords.drop(1).joinToString(" ").trim()
@@ -202,10 +201,6 @@ class VoiceCommandParser(
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
     }
 
-    /**
-     * FIX 5.8.11-e2 + FIX 5.8.11-e4-pin-1:
-     * Разбор с учётом состояния ГП.
-     */
     fun parseWithState(
         input: String,
         state: VoiceState,
@@ -223,17 +218,16 @@ class VoiceCommandParser(
     }
 
     /**
-     * FIX 5.8.11-e4-pin-1:
-     * Разбор в состоянии FOUND_PINNED (скважина закреплена).
+     * FIX 5.8.11-e4-pin-1 / pin-2:
+     * Разбор в FOUND_PINNED.
      *
-     * Правила:
-     *   - голое число 1..99 → MarkOrdinal;
-     *   - одиночное слово-числительное («семь») → MarkOrdinal;
-     *   - прочее — обычный parse() (там уже есть MarkOrdinal порядковых,
-     *     ClearOrdinal, Pause, Stop, Next, Undo, Find, Search).
+     * Сначала — точные команды, специфичные для этого состояния:
+     *   - «дальше»      → NextInQueue;
+     *   - «следующая»   → Next (выход из очереди и из pin).
      *
-     * Границу «есть ли такая проба в скважине» проверяет voiceExecute.
-     * Если нет — сообщение «Проба №N не найдена». Без отката в поиск.
+     * Потом — голое число или слово-числительное → MarkOrdinal.
+     *
+     * Всё остальное — обычный parse().
      */
     private fun parseForPinned(input: String): VoiceCommand {
         val raw = input.trim()
@@ -244,12 +238,16 @@ class VoiceCommandParser(
             .trim('.', ',', '!', '?', ';', ':')
             .trim()
 
-        // Голое число: «4», «42».
+        // FIX 5.8.11-e4-pin-2: переключение в очереди.
+        when (norm) {
+            "дальше" -> return VoiceCommand.NextInQueue
+            "следующая", "следующий", "следующую", "далее" -> return VoiceCommand.Next
+        }
+
         norm.toIntOrNull()?.let { n ->
             if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
-        // Одиночное слово-числительное: «семь».
         val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.size == 1) {
             val parsed = numberParser.parse(norm)
@@ -257,7 +255,6 @@ class VoiceCommandParser(
             if (n != null && n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
-        // Всё остальное — обычный разбор.
         return parse(input, pendingChoice = false)
     }
 
