@@ -405,6 +405,9 @@ class VoiceCommandParser(
         when (norm) {
             "стоп", "хватит" -> return VoiceCommand.Stop
             "отмена", "отменить" -> return VoiceCommand.Undo
+            // FIX 5.8.11-e4g: в состоянии ожидания веса «пауза» ставит
+            // сессию на паузу, вес забывается. Решение от 24.09.
+            "пауза", "паузу" -> return VoiceCommand.Pause
         }
 
         val weight = parseWeightAnswer(norm)
