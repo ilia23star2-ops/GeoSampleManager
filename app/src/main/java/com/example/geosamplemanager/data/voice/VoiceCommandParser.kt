@@ -133,6 +133,20 @@ class VoiceCommandParser(
         "удалить"
     )
 
+
+    /**
+     * FIX 5.8.11-e4g3: глаголы явного поиска.
+     * «Найди KPD1090031» — переключение в ПОИСК + поиск.
+     * «Найди» без аргумента — переключение в ПОИСК, ожидание номера.
+     */
+    private val findVerbWords = setOf(
+        "найди",
+        "найти",
+        "ищи",
+        "искать",
+        "поищи"
+    )
+
     /** Союзы/разделители, допустимые между порядковыми числительными. */
     private val ordinalJoinWords = setOf(
         "и",
@@ -292,6 +306,16 @@ class VoiceCommandParser(
 
             return VoiceCommand.Unknown
         }
+
+        // ---- FIX 5.8.11-e4g3: явный поиск «найди X» ----
+        // Глагол в начале фразы. Если после него пусто — Find(null).
+        // Иначе — Find(tail), VoiceExecute сам решит: переключить + искать.
+        val findWords = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (findWords.isNotEmpty() && findWords[0] in findVerbWords) {
+            val tail = findWords.drop(1).joinToString(" ").trim()
+            return VoiceCommand.Find(tail.ifEmpty { null })
+        }
+
 
         // ---- Служебное слово внутри фразы → не отметка и не поиск ----
         if (containsCommandWord(norm)) {
