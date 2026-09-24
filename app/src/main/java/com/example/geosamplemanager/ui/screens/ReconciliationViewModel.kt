@@ -33,6 +33,7 @@ import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import com.example.geosamplemanager.data.voice.DigitGroup
 import com.example.geosamplemanager.data.voice.DigitGrouper
+import com.example.geosamplemanager.data.voice.GroupKind
 import com.example.geosamplemanager.data.voice.GroupToCandidates
 import com.example.geosamplemanager.data.voice.QueryNormalizer
 import com.example.geosamplemanager.data.voice.QueryToken
@@ -178,11 +179,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * FIX 5.8.10-a (И-10):
-     * Единая точка изменения showCharacteristic. Вызывается из UI
-     * (тумблер «Характеристика» в верхней панели).
-     *
-     * Обновляет state мгновенно (UI не ждёт I/O), а сохранение в
-     * файл делается в фоне.
+     * Единая точка изменения showCharacteristic.
      */
     fun setShowCharacteristic(value: Boolean) {
         state.showCharacteristic = value
@@ -211,10 +208,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     for (order in orders) {
                         val area = areas.firstOrNull { it.id == order.areaId }
 
-                        // FIX 5.8.10-e: не пропускаем наряд молча.
-                        // Если area не найдена — оставляем наряд в списке
-                        // с areaTitle = "—". Лог помогает диагностике:
-                        // увидим, что в БД есть orders с битым area_id.
                         if (area == null) {
                             orphaned++
                             Log.w(
@@ -255,9 +248,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }.collect { (areaNames, orderInfos) ->
                     withContext(Dispatchers.Main) {
                         orderInfoById = orderInfos.associateBy { it.orderId }
-                        // Fallback — как раньше (первый по порядку в списке).
                         orderInfoByTitle = orderInfos.associateBy { it.orderTitle }
-                        // Точный индекс: «area|order».
                         orderInfoByComposite = orderInfos.associateBy {
                             compositeKey(it.areaTitle, it.orderTitle)
                         }
@@ -273,7 +264,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /** FIX 5.8.10-e: композитный ключ «area|order» для точного поиска. */
     private fun compositeKey(areaTitle: String, orderTitle: String): String =
         "$areaTitle|$orderTitle"
 
@@ -329,15 +319,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         refreshMultiQueryIfNeeded()
     }
 
-    /**
-     * FIX 5.8.10-e:
-     * Раньше искали только по orderTitle, и при коллизии
-     * «Наряд №10» в разных участках грузился не тот orderId.
-     *
-     * Теперь:
-     *  - если участок выбран — ищем по композитному ключу «area|order»;
-     *  - если нет — падаем на orderInfoByTitle (первый по id).
-     */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
 
@@ -387,10 +368,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         searchJob = viewModelScope.launch {
             delay(SEARCH_DEBOUNCE_MS)
 
-            // FIX 5.8.11-e1: единый путь.
-            // 1) Нормализация (lowercase, ё→е, дефисы, пунктуация).
-            // 2) Токенизация (типы: Prefix / Number / Ordinal / ...).
-            // 3) Разбиение на отдельные запросы по разделителям.
             val normalized = QueryNormalizer.normalize(query)
             val tokens = queryTokenizer.tokenize(normalized)
                 .take(MAX_QUERY_TOKENS)
@@ -404,7 +381,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
 
                 1 -> {
-                    // Одиночный запрос — новый путь через SearchService.
                     val request = requests[0]
                     val requestStr = request.joinToString(" ") { it.raw }
                     state.queryTokens = listOf(requestStr)
@@ -413,7 +389,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
 
                 else -> {
-                    // Мультипоиск — пока по старому пути (не трогаем в e1).
                     val oldTokens = requests.map { req ->
                         req.joinToString(" ") { it.raw }
                     }
@@ -424,12 +399,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.8.11-e1: разбить токены на отдельные запросы по разделителям.
-     *
-     * «1524 и 1525» → [[Number(1524)], [Number(1525)]]
-     * «KPD 109 00 31» → [[Prefix(KPD), Number(109), Number(00), Number(31)]]
-     */
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> {
         val result = mutableListOf<List<QueryToken>>()
         val current = mutableListOf<QueryToken>()
@@ -448,15 +417,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return result
     }
 
-    /**
-     * FIX 5.8.11-e1: новый путь для одиночного запроса.
-     *
-     * QueryToken → DigitGrouper → GroupToCandidates → SearchService.
-     * SearchService возвращает SearchResult с hits, содержащими orderId.
-     * Загружаем группы нарядов — как делал старый loadGroupsForQuery.
-     *
-     * Старый loadGroupsForQuery оставлен — используется мультипоиском.
-     */
     private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
         try {
             val groups: List<DigitGroup> = DigitGrouper.group(tokens)
@@ -631,6 +591,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     voiceSearch(cmd.query)
                 }
 
+                is VoiceCommand.Sort -> {
+                    voiceSession.awaitingContinue = false
+                    voiceSort(cmd.queries)
+                }
+
                 // FIX 5.8.11-e4g3: «найди X» в состоянии ожидания
                 // сбрасывает awaitingContinue и запускает поиск.
                 is VoiceCommand.Find -> {
@@ -644,12 +609,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
 
-
-                is VoiceCommand.Sort -> {
-                    voiceSession.awaitingContinue = false
-                    voiceSort(cmd.queries)
-                }
-
                 else -> VoiceExecResult.Message(
                     "Скажите «продолжить» или «стоп»."
                 )
@@ -659,7 +618,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (voiceSession.awaitingWeight) {
             // FIX 5.8.11-e4g: «пауза» в состоянии ожидания веса
             // прерывает ввод — сессия уходит в PAUSED, вес забывается.
-            // Решение от 24.09.
             if (cmd is VoiceCommand.Pause) {
                 voiceSession.awaitingWeight = false
                 voiceSession.isPaused = true
@@ -669,9 +627,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             // FIX 5.8.11-e4a:
             // VoiceDialog (заход e3) уже собрал готовый SetWeight
             // (через parseWeightAnswer или parseWithState). Валидируем
-            // и применяем здесь. Раньше SetWeight проваливался мимо
-            // всех веток и пользователь слышал «Сначала скажите вес
-            // или отмена».
+            // и применяем здесь.
             if (cmd is VoiceCommand.SetWeight) {
                 return when (val v = validateWeight(cmd.value)) {
                     is WeightValidation.Ok -> {
@@ -718,10 +674,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         return when (cmd) {
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
-            
+
             // FIX 5.8.11-e4g3: явный поиск «найди X».
-            // Всегда переключает в режим ПОИСК. С аргументом — ищет,
-            // без аргумента — просто ждёт номер.
             is VoiceCommand.Find -> {
                 voiceSession.mode = VoiceSessionMode.SEARCH
 
@@ -777,7 +731,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ShowPostponed -> voiceShowFilter(ResultFilter.POSTPONED, "Отложенные")
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
 
-            // FIX 5.8.6-5a: не врём про открытие справки — озвучиваем команды.
             VoiceCommand.Help -> VoiceExecResult.Message(
                 "Скажи номер, «отметь», «первая», «снять первая», " +
                         "«следующая», «стоп», «пауза», «сколько осталось»."
@@ -803,12 +756,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.ModeChanged(mode)
     }
 
-    /**
-     * FIX 5.8.6-5a:
-     * Убрана опасная автоматика «любое число 1..30 → отметить пробу».
-     * «семья» → «семь» больше не отмечает. Отметка только по явным
-     * MarkOrdinal / MarkCurrent из парсера.
-     */
     private suspend fun handleSearchInSession(query: String): VoiceExecResult {
         if (!isLikelyVoiceSearchQuery(query)) {
             return VoiceExecResult.Message("Не понял команду")
@@ -817,6 +764,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return voiceSearch(query)
     }
 
+    /**
+     * FIX 5.8.11-e4e-bundle/3:
+     * Голосовой поиск переведён на единый путь через SearchService.
+     *
+     * Было: VoiceNumberParser → UnifiedSearch.search напрямую.
+     * Стало: VoicePrefixResolver + VoiceNumberParser → DigitGroup →
+     * SearchService.search. Это даёт:
+     *  - единый путь с UI-поиском;
+     *  - groups для мимикрии (передаются в VoiceExecResult.FoundOne);
+     *  - потенциальный учёт контекста наряда/участка (в SearchService).
+     */
     private suspend fun voiceSearch(query: String): VoiceExecResult {
         Log.i(TAG, "voiceSearch: query=«$query»")
 
@@ -834,22 +792,27 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             val numberText = extraction.remainder.ifEmpty { query }
 
             val parsed = voiceParser.parse(numberText)
-            val candidates = parsed.candidates.map { c ->
-                val clean = c.replace("|", "")
+            val rawCandidates = parsed.candidates
 
+            val groups = buildGroupsForVoice(extraction.prefix, rawCandidates)
+
+            val candidates = rawCandidates.map { c ->
+                val clean = c.replace("|", "")
                 if (extraction.prefix != null) extraction.prefix + clean else clean
             }
 
-            Log.i(TAG, "voiceSearch: candidates=$candidates")
+            Log.i(TAG, "voiceSearch: candidates=$candidates, groups=$groups")
 
-            val source = VoiceSearchRepository(getApplication())
-            val all = source.loadAll()
-            val result = UnifiedSearch.search(all, candidates, filterMode = false)
+            val result = searchService.search(
+                candidates = candidates,
+                groups = groups,
+                queryTokens = emptyList()
+            )
 
             Log.i(TAG, "voiceSearch: result=$result")
 
             when (result) {
-                UnifiedSearchResult.NotFound -> {
+                SearchResult.NotFound -> {
                     voiceSession.clear()
 
                     val displayQuery = candidates.firstOrNull() ?: query
@@ -863,7 +826,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     VoiceExecResult.NotFound
                 }
 
-                is UnifiedSearchResult.Found -> {
+                is SearchResult.Failed -> {
+                    Log.e(TAG, "voiceSearch: SearchService failed: ${result.error}")
+                    VoiceExecResult.Message("Ошибка поиска: ${result.error}")
+                }
+
+                is SearchResult.Found -> {
                     val hit = result.hits.first()
                     val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
 
@@ -977,7 +945,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         postponed = postponed,
                         attentionReason = attentionReason,
                         otherAreaTitle = hit.areaTitle,
-                        otherOrderNumber = hit.orderNumber
+                        otherOrderNumber = hit.orderNumber,
+                        groups = result.groups
                     )
                 }
             }
@@ -987,6 +956,47 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             Log.e(TAG, "voiceSearch: упал", e)
             VoiceExecResult.Message("Ошибка поиска: ${e.message}")
         }
+    }
+
+    /**
+     * FIX 5.8.11-e4e-bundle/3:
+     * Построить List<DigitGroup> из кандидатов VoiceNumberParser.
+     *
+     * Приоритет: кандидат с «|» (сохраняет структуру ввода).
+     * Если такой есть — разбиваем по «|» и определяем тип каждой части.
+     * Префикс (если был) — первой группой.
+     */
+    private fun buildGroupsForVoice(
+        prefix: String?,
+        candidates: List<String>
+    ): List<DigitGroup> {
+        if (prefix == null && candidates.isEmpty()) return emptyList()
+
+        val withSep = candidates.firstOrNull { it.contains("|") }
+        val chosen = withSep ?: candidates.firstOrNull() ?: return emptyList()
+
+        val result = mutableListOf<DigitGroup>()
+
+        if (prefix != null) {
+            result.add(DigitGroup(value = prefix, kind = GroupKind.PREFIX))
+        }
+
+        val parts = if (chosen.contains("|")) {
+            chosen.split("|").filter { it.isNotBlank() }
+        } else {
+            listOf(chosen)
+        }
+
+        for (part in parts) {
+            val kind = when {
+                part.length >= 2 && part.all { it == '0' } -> GroupKind.LEADING_ZERO
+                part.length == 1 -> GroupKind.SINGLE
+                else -> GroupKind.PLAIN
+            }
+            result.add(DigitGroup(value = part, kind = kind))
+        }
+
+        return result
     }
 
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
@@ -1153,12 +1163,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.MarkedMultiple(markedNumbers)
     }
 
-    /**
-     * FIX 5.8.6-5a:
-     * «Все» больше не отмечает слепо. Сначала прогоняем analyzeMark.
-     * Если есть пробы, которым нужен вес (ВК/холостая) или ошибка импорта —
-     * массовая отметка блокируется.
-     */
     private fun voiceMarkAll(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1233,8 +1237,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         // FIX 5.8.11-e4a:
         // Раньше для холостой пробы ставился только вес, а отметка
-        // «найдена» не выставлялась. ГП говорил «Проба отмечена»,
-        // а галки в списке не было. Теперь холостая идёт через
+        // «найдена» не выставлялась. Теперь холостая идёт через
         // setBlankWeightAndMarkFound (вес + отметка), как в UI-пути.
         when {
             row.weightControl -> setControlWeightAndFound(rowId, value)

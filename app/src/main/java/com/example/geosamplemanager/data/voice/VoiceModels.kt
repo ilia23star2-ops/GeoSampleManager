@@ -30,7 +30,15 @@ sealed class VoiceExecResult {
          * VoiceDialog не выводит статистику (всего проб / отмечено /
          * холостых / ВК / отложено) — только скважину и наряд.
          */
-        val isSortMode: Boolean = false
+        val isSortMode: Boolean = false,
+        /**
+         * FIX 5.8.11-e4e-bundle/2: структура ввода для мимикрии озвучки.
+         * Если заполнено — VoiceDialog использует VoiceSpeaker.spellOut(groups)
+         * вместо spellOut(query). Это даёт «капэдэ сто девять ноль ноль
+         * тридцать один» вместо «ка пэ дэ 10 90 03 1».
+         * Пустой список — старый путь (для обратной совместимости).
+         */
+        val groups: List<DigitGroup> = emptyList()
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()
