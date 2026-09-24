@@ -12,9 +12,7 @@ import kotlin.math.roundToInt
  *
  * FIX 5.8.11-c (SEARCH_MODEL §5.5):
  * Добавлен spellOut(groups: List<DigitGroup>) — произношение номера
- * по группам, как ввёл пользователь. Не рубит слитную строку на пары
- * слева направо, а сохраняет структуру:
- *   «109 00 31» → «сто девять ноль ноль тридцать один».
+ * по группам, как ввёл пользователь.
  *
  * Старый spellOut(text: String) сохранён — он разбивает строку на
  * пары слева направо (для обратной совместимости).
@@ -24,15 +22,20 @@ import kotlin.math.roundToInt
  * - spellLetters — одним словом: «KPD» → «капэдэ» (не «ка пэ дэ»).
  * - Канонический маппинг буква → звук в letterToSound.
  * - W → «даблю».
+ *
+ * FIX 5.8.11-e4e-bundle (после падения unit-теста):
+ * - spellPlain для 4+ цифр возвращает словами, а не «15 24»:
+ *   «1524» → «пятнадцать двадцать четыре» (было «15 24»).
+ * - spellPlain с ведущим нулём (PLAIN «01») → по цифрам:
+ *   «ноль один» (было «один»).
+ * - Пары внутри spellPairsAsWords: если пара начинается с нуля,
+ *   тоже по цифрам: «152401» → «пятнадцать двадцать четыре ноль один».
  */
 object VoiceSpeaker {
 
     /**
      * FIX 5.8.11-e4e-a: канонический маппинг «буква → звук»
      * для мимикрии префикса.
-     *
-     * KPD → «капэдэ» (одно слово).
-     * Не по буквам, а целиком — TTS сам разобьёт по слогам.
      */
     private val letterToSound: Map<Char, String> = mapOf(
         'A' to "а",
@@ -131,7 +134,7 @@ object VoiceSpeaker {
     )
 
     // ================================================================
-    // FIX 5.8.11-c / e4e-a: произношение по группам
+    // Произношение по группам
     // ================================================================
 
     /**
@@ -140,7 +143,9 @@ object VoiceSpeaker {
      * Правила:
      *   - PREFIX       → одним словом: «KPD» → «капэдэ».
      *   - PLAIN, 1–3   → число словами: «109» → «сто девять».
-     *   - PLAIN, 4+    → по парам слева: «1524» → «пятнадцать двадцать четыре».
+     *   - PLAIN, 4+    → по парам слева, каждая пара словами:
+     *                    «1524» → «пятнадцать двадцать четыре».
+     *   - PLAIN с ведущим нулём → по цифрам: «01» → «ноль один».
      *   - LEADING_ZERO → по цифрам: «00» → «ноль ноль».
      *   - SINGLE       → цифра словом: «7» → «семь».
      *   - Между группами — пробел (без запятых).
@@ -149,6 +154,7 @@ object VoiceSpeaker {
      *   [15, 24]                → «пятнадцать двадцать четыре».
      *   [109, 00, 31]           → «сто девять ноль ноль тридцать один».
      *   [KPD, 109, 00, 31]      → «капэдэ сто девять ноль ноль тридцать один».
+     *   [NV, 1524, 01]          → «энвэ пятнадцать двадцать четыре ноль один».
      *   [7]                     → «семь».
      */
     fun spellOut(groups: List<DigitGroup>): String {
@@ -173,12 +179,6 @@ object VoiceSpeaker {
     /**
      * FIX 5.8.11-e4e-a: префикс одним словом.
      * KPD → «капэдэ». Не по буквам.
-     *
-     * Если пользователь настраивал произношение префикса
-     * (customPrefixPronunciations) — здесь это не учитывается,
-     * потому что в DigitGroup только само значение «KPD».
-     * Кастомизация должна применяться до вызова spellOut — в месте,
-     * где формируется группа.
      */
     private fun spellLetters(text: String): String {
         val sb = StringBuilder()
@@ -205,34 +205,54 @@ object VoiceSpeaker {
     }
 
     /**
-     * PLAIN 1–3 цифры → число словами.
-     * PLAIN 4+ цифры → по парам слева.
+     * PLAIN группа:
+     *   1–3 цифры без ведущего нуля → число словами: «109» → «сто девять».
+     *   С ведущим нулём → по цифрам: «01» → «ноль один».
+     *   4+ цифр → по парам слева, каждая пара словами:
+     *     «1524» → «пятнадцать двадцать четыре».
      */
     private fun spellPlain(value: String): String {
+        if (value.isEmpty()) return ""
+
+        // FIX 5.8.11-e4e-bundle: ведущий ноль → по цифрам.
+        if (value.length > 1 && value.startsWith("0")) {
+            return spellDigitByDigit(value)
+        }
+
         if (value.length in 1..3) {
             val n = value.toIntOrNull() ?: return value
             return numberWords(n)
         }
 
-        return breakIntoPairs(value)
+        return spellPairsAsWords(value)
     }
 
     /**
-     * Разбить строку цифр на пары слева направо, разделяя пробелом.
-     * Используется для очень длинных групп без явного разделения.
+     * FIX 5.8.11-e4e-bundle:
+     * Разбить строку цифр на пары слева, каждую пару произнести словами.
+     * Если пара начинается с нуля — по цифрам.
+     *
+     * «1524»   → «пятнадцать двадцать четыре».
+     * «152401» → «пятнадцать двадцать четыре ноль один».
+     * «123»    → 3 цифры → «12» «3» → «двенадцать три».
      */
-    private fun breakIntoPairs(digits: String): String {
-        if (digits.length <= 2) return digits
-
-        val sb = StringBuilder()
+    private fun spellPairsAsWords(digits: String): String {
+        val words = mutableListOf<String>()
         var i = 0
         while (i < digits.length) {
             val end = minOf(i + 2, digits.length)
-            sb.append(digits.substring(i, end))
+            val pair = digits.substring(i, end)
+
+            val text = if (pair.length > 1 && pair.startsWith("0")) {
+                spellDigitByDigit(pair)
+            } else {
+                val n = pair.toIntOrNull() ?: return digits
+                numberWords(n)
+            }
+            words.add(text)
             i = end
-            if (i < digits.length) sb.append(' ')
         }
-        return sb.toString()
+        return words.joinToString(" ")
     }
 
     // ================================================================
@@ -246,8 +266,7 @@ object VoiceSpeaker {
      * «KPD1090031» → «ка пэ дэ 10 90 03 1»
      * «1524» → «15 24»
      *
-     * Оставлено для обратной совместимости. Для новых мест использовать
-     * spellOut(groups: List<DigitGroup>).
+     * Оставлено для обратной совместимости.
      */
     fun spellOut(text: String): String {
         if (text.isBlank()) return text
@@ -289,6 +308,25 @@ object VoiceSpeaker {
         }
 
         return sb.toString().trim().replace(Regex(" +"), " ")
+    }
+
+    /**
+     * Разбить строку цифр на пары слева направо, разделяя пробелом.
+     * Используется ТОЛЬКО для старого spellOut(String).
+     * Для групп — spellPairsAsWords (словами).
+     */
+    private fun breakIntoPairs(digits: String): String {
+        if (digits.length <= 2) return digits
+
+        val sb = StringBuilder()
+        var i = 0
+        while (i < digits.length) {
+            val end = minOf(i + 2, digits.length)
+            sb.append(digits.substring(i, end))
+            i = end
+            if (i < digits.length) sb.append(' ')
+        }
+        return sb.toString()
     }
 
     // ================================================================
