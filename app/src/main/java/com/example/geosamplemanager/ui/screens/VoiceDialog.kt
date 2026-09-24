@@ -38,6 +38,13 @@ private const val LOG_TAG = "VoiceDialog"
  * Раньше это был AlertDialog — модальное окно, блокирующее весь экран.
  * Теперь это немодальная панель внизу экрана (VoicePanel).
  * Логика работы с VoiceController не изменилась.
+ *
+ * FIX 5.8.11-e4e-bundle/4 (мимикрия):
+ * buildFoundOnePhrase, buildFoundOneShortPhrase и
+ * buildAttentionFoundOnePhrase используют VoiceSpeaker.spellOut(groups),
+ * если в результате есть структура ввода. Это даёт «капэдэ сто девять
+ * ноль ноль тридцать один» вместо «ка пэ дэ 10 90 03 1».
+ * Если groups пусто (старый путь) — fallback на spellOut(String).
  */
 @Composable
 fun VoiceDialog(
@@ -208,6 +215,8 @@ fun VoiceDialog(
  * FIX 5.8.9i-3: русские склонения и человеческое произношение веса.
  * FIX 5.8.6-5c: звук и озвучка для снятия / отмены / повтора.
  * FIX 5.8.10-c: множественная отметка — озвучиваем список проб.
+ *
+ * FIX 5.8.11-e4e-bundle/4: убран лишний else (when исчерпывающий).
  */
 private fun handleFeedback(
     result: VoiceExecResult,
@@ -325,8 +334,6 @@ private fun handleFeedback(
         }
 
         VoiceExecResult.Stopped -> {}
-
-        else -> {}
     }
 }
 
@@ -377,8 +384,13 @@ private fun buildMarkedMultiplePhrase(
     return "Отмечено: ${words.joinToString(", ")}."
 }
 
+/**
+ * FIX 5.8.11-e4e-bundle/4:
+ * Если есть структура ввода (r.groups) — озвучиваем по группам.
+ * Иначе — старый spellOut по строке.
+ */
 private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
-    val spoken = VoiceSpeaker.spellOut(r.wellNumber)
+    val spoken = spokenNumberOf(r, r.wellNumber)
     val sb = StringBuilder()
     sb.append("Скважина $spoken. ")
 
@@ -405,9 +417,11 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 
 /**
  * Полная фраза (SEARCH): со статистикой.
+ *
+ * FIX 5.8.11-e4e-bundle/4: озвучка номера — через groups (если есть).
  */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
-    val spokenNumber = VoiceSpeaker.spellOut(r.query)
+    val spokenNumber = spokenNumberOf(r, r.query)
     val sb = StringBuilder()
 
     if (r.isSample) {
@@ -470,15 +484,35 @@ private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
 
 /**
  * Короткая фраза (SORT): без статистики.
+ *
+ * FIX 5.8.11-e4e-bundle/4: озвучка номера — через groups (если есть).
  */
 private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
-    val spokenNumber = VoiceSpeaker.spellOut(r.query)
+    val spokenNumber = spokenNumberOf(r, r.query)
     return if (r.isSample) {
         "Проба $spokenNumber. ${r.orderTitle}."
     } else {
         "Скважина $spokenNumber. ${r.orderTitle}."
     }
 }
+
+/**
+ * FIX 5.8.11-e4e-bundle/4:
+ * Единая точка произнесения номера.
+ *
+ * Если в результате есть структура ввода (groups) — используем
+ * spellOut(groups): «капэдэ сто девять ноль ноль тридцать один».
+ * Иначе — fallback на старый spellOut(String): «ка пэ дэ 10 90 03 1».
+ *
+ * @param r       результат, в котором может быть поле groups
+ * @param fallback строка для старого spellOut, если groups пусто
+ */
+private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
+    if (r.groups.isNotEmpty()) {
+        VoiceSpeaker.spellOut(r.groups)
+    } else {
+        VoiceSpeaker.spellOut(fallback)
+    }
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
     is VoiceExecResult.FoundOne -> {
@@ -512,13 +546,18 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
     VoiceExecResult.Next -> VoiceStatus.Idle
     VoiceExecResult.NotFound -> VoiceStatus.Error("Не нашёл")
     VoiceExecResult.Stopped -> VoiceStatus.Idle
-    else -> VoiceStatus.Idle
+    VoiceExecResult.Undone -> VoiceStatus.Idle
+    VoiceExecResult.Redone -> VoiceStatus.Idle
 }
 
 /**
  * FIX 5.8.9f-2a-fix-6: карточка «Результат» — в SORT без статистики.
  * FIX 5.8.9d-2b: для Marked — короткая форма, порядковым числом.
  * FIX 5.8.9i-3: вес в UI — с запятой и без лишнего .0.
+ *
+ * FIX 5.8.11-e4e-bundle/4:
+ * Текст панели остаётся с цифрами (result.query) — как и раньше.
+ * Мимикрия — только для TTS, на панели пользователь видит цифры.
  */
 private fun describeResult(
     result: VoiceExecResult,
