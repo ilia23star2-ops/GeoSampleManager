@@ -7,47 +7,52 @@ package com.example.geosamplemanager.data.voice
  * Ортогонально [VoiceSessionMode] (SEARCH / SORT): режим может быть
  * любым при любом состоянии.
  *
- * Источник правды — существующие флаги в VoiceSession:
- *   isPaused           → PAUSED
- *   pendingMarkChoice  → AWAITING_CHOICE
- *   awaitingWeight     → AWAITING_WEIGHT
- *   awaitingContinue   → AWAITING_CONTINUE
- *   иначе              → LISTENING
+ * FIX 5.8.11-e4-pin-1:
+ * Добавлено FOUND_PINNED — скважина закреплена после поиска.
+ * В этом состоянии голое число 1..99 идёт в MarkOrdinal, не в Search.
  *
- * На этом шаге state — вычисляемый (см. VoiceSession.state).
- * Явные переходы через enum — отдельным заходом, если потребуется.
+ * Источник правды — флаги в VoiceSession:
+ *   pendingMarkChoice != null → AWAITING_CHOICE
+ *   isPaused                  → PAUSED
+ *   awaitingWeight            → AWAITING_WEIGHT
+ *   awaitingContinue          → AWAITING_CONTINUE
+ *   pinnedWellNumber != null  → FOUND_PINNED
+ *   иначе                     → LISTENING
  */
 enum class VoiceState {
 
-    /** ГП не запущен. Ничего не слушает. */
+    /** ГП не запущен. */
     IDLE,
 
-    /** Слушает. Принимает команды и поиск. */
+    /** Слушает. Полный словарь. */
     LISTENING,
 
-    /** Спросил «Вес?» и ждёт число. */
+    /**
+     * Скважина найдена и закреплена.
+     * Голое число → отметка в этой скважине.
+     */
+    FOUND_PINNED,
+
+    /** Ждёт вес. */
     AWAITING_WEIGHT,
 
-    /** Спросил «Выберите на экране» и ждёт. */
+    /** «Найден в нескольких нарядах», ждёт продолжения. */
     AWAITING_CONTINUE,
 
-    /** Спросил «Снять, отложить или пропустить?». */
+    /** Ждёт выбор: снять / отложить / пропустить. */
     AWAITING_CHOICE,
 
-    /** Пауза. Активны только «продолжить» и «стоп». */
+    /** Пауза. */
     PAUSED;
 
-    /** Ждём ответа пользователя — панель показывает вопрос. */
     val isAwaiting: Boolean
         get() = this == AWAITING_WEIGHT
                 || this == AWAITING_CONTINUE
                 || this == AWAITING_CHOICE
 
-    /** Активная сессия — ГП слушает или ждёт ответа. */
     val isActive: Boolean
         get() = this != IDLE
 
-    /** Показывает ли панель ГП. */
     val showsPanel: Boolean
         get() = this != IDLE
 }

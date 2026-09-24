@@ -6,14 +6,6 @@ import androidx.compose.runtime.setValue
 
 /**
  * Режим голосовой сессии.
- *
- *   SEARCH — поиск со статистикой и отметками (по умолчанию).
- *   SORT   — сортировка: только «X — наряд Y», без отметок.
- *
- * FIX 5.8.11-a (SEARCH_MODEL §3):
- * Режим ортогонален состоянию (VoiceState). Может быть SEARCH при
- * любом состоянии и SORT при любом. Переключение режима не меняет
- * состояние. Отметки блокируются только в SORT.
  */
 enum class VoiceSessionMode {
     SEARCH,
@@ -21,10 +13,7 @@ enum class VoiceSessionMode {
 }
 
 /**
- * FIX 5.8.9d-3c2b1: тип ожидаемого выбора для проблемной пробы.
- *
- * ALREADY_FOUND — проба уже отмечена.
- * POSTPONED     — проба отложена.
+ * Тип ожидаемого выбора для проблемной пробы.
  */
 enum class PendingMarkChoiceType {
     ALREADY_FOUND,
@@ -32,7 +21,7 @@ enum class PendingMarkChoiceType {
 }
 
 /**
- * FIX 5.8.9d-3c2b1: контекст ожидаемого выбора.
+ * Контекст ожидаемого выбора.
  */
 data class PendingMarkChoice(
     val type: PendingMarkChoiceType,
@@ -41,26 +30,33 @@ data class PendingMarkChoice(
 )
 
 /**
+ * FIX 5.8.11-e4-pin-1:
+ * Контекст закрепления скважины.
+ *
+ * После успешного одиночного поиска скважины она «закрепляется» —
+ * ГП продолжает работать именно с ней. Голое число идёт в отметку,
+ * а не в поиск новой скважины.
+ *
+ * Выход из закрепления:
+ *   - «следующая»;
+ *   - «отмена»;
+ *   - ручной ввод в строке поиска UI;
+ *   - новый успешный поиск (перезаписывает).
+ */
+data class PinnedScope(
+    val orderId: Long,
+    val orderTitle: String,
+    val areaTitle: String,
+    val wellNumber: String
+)
+
+/**
  * Контекст голосовой сессии.
  *
- * FIX 5.8.11-a (SEARCH_MODEL §3):
- * Добавлено вычисляемое свойство `state: VoiceState`. Источник правды —
- * существующие флаги (`isPaused`, `awaitingWeight`, `awaitingContinue`,
- * `pendingMarkChoice`). Enum VoiceState добавлен как read-only view —
- * парсер и презентер смогут читать состояние одним полем.
- *
- * Порядок приоритетов (сверху вниз):
- *   1. pendingMarkChoice != null → AWAITING_CHOICE
- *   2. isPaused                  → PAUSED
- *   3. awaitingWeight            → AWAITING_WEIGHT
- *   4. awaitingContinue          → AWAITING_CONTINUE
- *   5. иначе                     → LISTENING
- *
- * FIX 5.8.9f-2b: поле `mode` — Compose mutableStateOf.
- *
- * FIX 5.8.9d-2a: currentSampleNumber / currentSampleOrdinal.
- *
- * FIX 5.8.9d-3c2b1: pendingMarkChoice.
+ * FIX 5.8.11-e4-pin-1:
+ * - поле `pinned` — текущее закрепление;
+ * - методы pin / unpin / isPinned;
+ * - `state` → FOUND_PINNED при активном закреплении.
  */
 class VoiceSession {
 
@@ -78,65 +74,63 @@ class VoiceSession {
     var isAutoMode: Boolean = false
     var isPaused: Boolean = false
 
-    /**
-     * Режим. По умолчанию — SEARCH.
-     * Ортогонален состоянию [state].
-     */
     var mode: VoiceSessionMode by mutableStateOf(VoiceSessionMode.SEARCH)
 
-    /**
-     * true — ГП только что спросил «Вес?» и ждёт ответа.
-     */
     var awaitingWeight: Boolean = false
-
-    /**
-     * true — ГП только что ответил «Найден в нескольких нарядах».
-     */
     var awaitingContinue: Boolean = false
 
-    /**
-     * FIX 5.8.9d-3c2b1:
-     * true — ГП ждёт выбор действия для уже отмеченной / отложенной пробы.
-     */
     var pendingMarkChoice: PendingMarkChoice? by mutableStateOf<PendingMarkChoice?>(null)
 
     /**
-     * Было ли сессионное ожидание выбора запущено поверх ручной паузы.
+     * FIX 5.8.11-e4-pin-1: текущее закрепление скважины.
+     * null — закрепления нет.
      */
+    var pinned: PinnedScope? by mutableStateOf<PinnedScope?>(null)
+
     private var pausedBeforePending: Boolean = false
 
-    // ================================================================
-    // FIX 5.8.11-a: состояние ГП
-    // ================================================================
-
-    /**
-     * Вычисляемое состояние. Источник правды — существующие флаги.
-     *
-     * Порядок важен: AWAITING_CHOICE перекрывает PAUSED, потому что
-     * `startPendingMarkChoice` сам ставит `isPaused = true` (см. ниже).
-     * Если проверять `isPaused` первым, мы потеряем состояние выбора.
-     */
     val state: VoiceState
         get() = when {
             pendingMarkChoice != null -> VoiceState.AWAITING_CHOICE
             isPaused -> VoiceState.PAUSED
             awaitingWeight -> VoiceState.AWAITING_WEIGHT
             awaitingContinue -> VoiceState.AWAITING_CONTINUE
+            pinned != null -> VoiceState.FOUND_PINNED
             else -> VoiceState.LISTENING
         }
-
-    // ================================================================
 
     val hasContext: Boolean
         get() = currentOrderId != null && currentQuery != null
 
+    val isPinned: Boolean
+        get() = pinned != null
+
     /**
-     * FIX 5.8.9d-3c2b1:
-     * Запустить ожидание выбора и автоматически поставить сессию на паузу.
-     *
-     * Пауза нужна, чтобы ГП не продолжал слушать фоновые команды,
-     * пока пользователь не ответил на уточняющий вопрос.
+     * FIX 5.8.11-e4-pin-1:
+     * Закрепить скважину. Перезаписывает текущее закрепление.
      */
+    fun pin(
+        orderId: Long,
+        orderTitle: String,
+        areaTitle: String,
+        wellNumber: String
+    ) {
+        pinned = PinnedScope(
+            orderId = orderId,
+            orderTitle = orderTitle,
+            areaTitle = areaTitle,
+            wellNumber = wellNumber
+        )
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-1:
+     * Снять закрепление.
+     */
+    fun unpin() {
+        pinned = null
+    }
+
     fun startPendingMarkChoice(
         type: PendingMarkChoiceType,
         ordinal: Int,
@@ -157,10 +151,6 @@ class VoiceSession {
         isPaused = true
     }
 
-    /**
-     * FIX 5.8.9d-3c2b1:
-     * Очистить ожидание выбора и восстановить прежний флаг паузы.
-     */
     fun clearPendingMarkChoice() {
         if (pendingMarkChoice == null) {
             return
@@ -188,6 +178,7 @@ class VoiceSession {
         awaitingContinue = false
         pendingMarkChoice = null
         pausedBeforePending = false
+        pinned = null
     }
 
     fun advanceToNext() {
@@ -204,5 +195,6 @@ class VoiceSession {
         pendingMarkChoice = null
         pausedBeforePending = false
         isPaused = false
+        pinned = null
     }
 }
