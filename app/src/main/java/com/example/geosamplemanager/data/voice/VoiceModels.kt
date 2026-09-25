@@ -11,6 +11,32 @@ sealed class VoiceStatus {
     data object Paused : VoiceStatus()
 }
 
+/**
+ * FIX 5.8.11-e4-weight-queue:
+ * Тип пробы в очереди веса.
+ *
+ * BLANK          — холостая (status == blank), нужен weight.
+ * WEIGHT_CONTROL — весовая (weightControl), нужен controlWeight.
+ */
+enum class WeightQueueKind {
+    BLANK,
+    WEIGHT_CONTROL
+}
+
+/**
+ * FIX 5.8.11-e4-weight-queue:
+ * Одна проба в очереди веса.
+ *
+ * @param sampleNumber номер пробы (полный, как в БД).
+ * @param ordinal      порядковый номер в скважине.
+ * @param kind         тип (холостая / ВК) — для озвучки.
+ */
+data class WeightQueueItem(
+    val sampleNumber: String,
+    val ordinal: Int,
+    val kind: WeightQueueKind
+)
+
 sealed class VoiceExecResult {
     data class FoundOne(
         val query: String,
@@ -42,21 +68,6 @@ sealed class VoiceExecResult {
     /**
      * FIX 5.8.11-e4-pin-7:
      * В FOUND_PINNED распознали номер пробы, но такой пробы в скважине нет.
-     *
-     * Раньше (pin-5/pin-6) здесь работал fallback: 14 → 4, 40 → 4 и т.д.
-     * Но Vosk путает «четвёртая» ↔ «четырнадцатая» в обе стороны, и
-     * отличить намерение нельзя. Fallback молча делал предположение —
-     * и иногда ошибался (юзер сказал «четырнадцатая», хотел 14, а
-     * отметилась 4).
-     *
-     * Теперь вместо подмены — честная ошибка + подсказка:
-     *   ordinal     — что распознали («14»).
-     *   hintOrdinal — какое число пользователь, вероятно, имел в виду
-     *                 («4»), если распознанное — «спорное» число
-     *                 (4..9 × 10/100/1000). Иначе — null.
-     *
-     * UI и озвучка говорят: «Пробы №14 нет. Если нужна №4 — скажите
-     * „четыре"». Пользователь уточняет числом — Vosk числа не путает.
      */
     data class MarkOrdinalNotFound(
         val ordinal: Int,
@@ -66,6 +77,35 @@ sealed class VoiceExecResult {
     data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
 
     data class MarkedAll(val count: Int) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * После «отметь все» — часть отмечена, для остальных нужен вес.
+     * ГП задаёт вопрос по одной пробе из очереди.
+     *
+     * @param item     текущая проба (номер, порядковый, тип).
+     * @param index    1-based позиция в очереди.
+     * @param total    всего в очереди.
+     * @param marked   сколько уже отмечено (включая текущую, если она
+     *                 отмечена частично — не считаем, пока не получим вес).
+     * @param skipped  сколько уже пропущено.
+     */
+    data class WeightQueueAsked(
+        val item: WeightQueueItem,
+        val index: Int,
+        val total: Int,
+        val marked: Int = 0,
+        val skipped: Int = 0
+    ) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Очередь веса завершена (все отметили или пропустили).
+     */
+    data class WeightQueueDone(
+        val marked: Int,
+        val skipped: Int
+    ) : VoiceExecResult()
 
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
