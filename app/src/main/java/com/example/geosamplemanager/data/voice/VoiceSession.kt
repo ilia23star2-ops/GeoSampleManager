@@ -30,7 +30,6 @@ data class PendingMarkChoice(
 )
 
 /**
- * FIX 5.8.11-e4-pin-1:
  * Контекст закрепления скважины.
  */
 data class PinnedScope(
@@ -41,12 +40,7 @@ data class PinnedScope(
 )
 
 /**
- * FIX 5.8.11-e4-markers:
  * Тип маркера намерения — какого действия ждём от пользователя.
- *
- * MARK     — «отметь» → ждём номер пробы для отметки.
- * CLEAR    — «снять» → ждём номер для снятия.
- * POSTPONE — «отложить» → ждём номер для отложения.
  */
 enum class PendingMarkIntentType {
     MARK,
@@ -55,11 +49,7 @@ enum class PendingMarkIntentType {
 }
 
 /**
- * FIX 5.8.11-e4-markers:
  * Контекст ожидания номера пробы после маркера намерения.
- *
- * @param type       какое действие выполним
- * @param startedAt  время старта ожидания (для тайм-аута)
  */
 data class PendingMarkIntent(
     val type: PendingMarkIntentType,
@@ -67,12 +57,7 @@ data class PendingMarkIntent(
 )
 
 /**
- * FIX 5.8.11-e4-markers:
  * Контекст ожидания подтверждения массового действия.
- *
- * @param action     какое действие подтверждаем
- * @param count      сколько проб затронет (для озвучки)
- * @param startedAt  время старта ожидания (для тайм-аута)
  */
 data class PendingConfirm(
     val action: ConfirmedAction,
@@ -81,11 +66,7 @@ data class PendingConfirm(
 )
 
 /**
- * FIX 5.8.11-e4-markers:
  * Виды массовых действий, требующих подтверждения.
- *
- * DELETE намеренно отсутствует: удаление голосом не делаем — слишком
- * опасно. Только UI с чек-боксом «Пересчитать №».
  */
 enum class ConfirmedAction {
     MARK_ALL,
@@ -95,12 +76,11 @@ enum class ConfirmedAction {
 /**
  * Контекст голосовой сессии.
  *
- * FIX 5.8.11-e4-pin-2:
- * - поле `queue` — очередь скважин мультизапроса.
- *
- * FIX 5.8.11-e4-markers:
- * - поле `pendingMarkIntent` — маркер намерения (MARK/CLEAR/POSTPONE);
- * - поле `pendingConfirm` — ожидание подтверждения массового действия.
+ * FIX 5.8.11-e4-weight-queue:
+ * - поля `weightQueue`, `weightQueueIndex`, `weightQueueStartedAt`
+ *   — очередь веса после массовой отметки;
+ * - методы `startWeightQueue`, `currentWeightItem`,
+ *   `advanceWeightQueue`, `clearWeightQueue`, `hasWeightQueue`.
  */
 class VoiceSession {
 
@@ -124,18 +104,34 @@ class VoiceSession {
     var awaitingContinue: Boolean = false
 
     var pendingMarkChoice: PendingMarkChoice? by mutableStateOf<PendingMarkChoice?>(null)
-
-    /**
-     * FIX 5.8.11-e4-markers:
-     * Ожидание номера пробы после маркера намерения.
-     */
     var pendingMarkIntent: PendingMarkIntent? by mutableStateOf<PendingMarkIntent?>(null)
+    var pendingConfirm: PendingConfirm? by mutableStateOf<PendingConfirm?>(null)
 
     /**
-     * FIX 5.8.11-e4-markers:
-     * Ожидание подтверждения массового действия.
+     * FIX 5.8.11-e4-weight-queue:
+     * Очередь веса. Появляется после «отметь все» + подтверждения,
+     * если остались пробы, которым нужен вес.
      */
-    var pendingConfirm: PendingConfirm? by mutableStateOf<PendingConfirm?>(null)
+    var weightQueue: List<WeightQueueItem> by mutableStateOf(emptyList())
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Индекс текущей пробы в очереди (0-based).
+     */
+    var weightQueueIndex: Int by mutableStateOf(0)
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Время старта вопроса по текущей пробе — для тайм-аута.
+     */
+    var weightQueueStartedAt: Long by mutableStateOf(0L)
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Сколько уже отмечено / пропущено в текущей очереди.
+     */
+    var weightQueueMarked: Int by mutableStateOf(0)
+    var weightQueueSkipped: Int by mutableStateOf(0)
 
     /**
      * Текущее закрепление скважины.
@@ -144,27 +140,20 @@ class VoiceSession {
 
     /**
      * Очередь скважин мультизапроса.
-     * Первая всегда pinned, остальные здесь.
      */
     var queue: List<PinnedScope> by mutableStateOf(emptyList())
 
     private var pausedBeforePending: Boolean = false
 
     /**
-     * Вычисляемое состояние. Источник правды — флаги.
+     * Вычисляемое состояние.
      *
-     * Порядок важен (сверху вниз приоритет):
-     *   1. pendingConfirm    → AWAITING_CONFIRM
-     *   2. pendingMarkIntent → AWAITING_MARK/CLEAR/POSTPONE
-     *   3. pendingMarkChoice → AWAITING_CHOICE
-     *   4. isPaused          → PAUSED
-     *   5. awaitingWeight    → AWAITING_WEIGHT
-     *   6. awaitingContinue  → AWAITING_CONTINUE
-     *   7. pinned != null    → FOUND_PINNED
-     *   8. иначе             → LISTENING
+     * FIX 5.8.11-e4-weight-queue:
+     * AWAITING_WEIGHT_QUEUE идёт сразу после pendingConfirm.
      */
     val state: VoiceState
         get() = when {
+            weightQueue.isNotEmpty() -> VoiceState.AWAITING_WEIGHT_QUEUE
             pendingConfirm != null -> VoiceState.AWAITING_CONFIRM
 
             pendingMarkIntent != null -> when (pendingMarkIntent!!.type) {
@@ -234,7 +223,66 @@ class VoiceSession {
     }
 
     // ================================================================
-    // PendingMarkChoice (старое)
+    // FIX 5.8.11-e4-weight-queue: очередь веса
+    // ================================================================
+
+    val hasWeightQueue: Boolean
+        get() = weightQueue.isNotEmpty()
+
+    val currentWeightItem: WeightQueueItem?
+        get() = weightQueue.getOrNull(weightQueueIndex)
+
+    val weightQueueTotal: Int
+        get() = weightQueue.size
+
+    val weightQueuePosition: Int
+        get() = weightQueueIndex + 1
+
+    /**
+     * Запустить очередь веса.
+     * Сбрасывает счётчики, ставит таймер.
+     */
+    fun startWeightQueue(items: List<WeightQueueItem>) {
+        weightQueue = items
+        weightQueueIndex = 0
+        weightQueueMarked = 0
+        weightQueueSkipped = 0
+        weightQueueStartedAt = System.currentTimeMillis()
+    }
+
+    /**
+     * Перейти к следующей пробе. Возвращает true, если ещё есть.
+     */
+    fun advanceWeightQueue(): Boolean {
+        val next = weightQueueIndex + 1
+        if (next >= weightQueue.size) {
+            return false
+        }
+        weightQueueIndex = next
+        weightQueueStartedAt = System.currentTimeMillis()
+        return true
+    }
+
+    /**
+     * Обновить таймер текущей пробы (после предупреждения).
+     */
+    fun touchWeightQueueTimer() {
+        weightQueueStartedAt = System.currentTimeMillis()
+    }
+
+    /**
+     * Очистить очередь полностью.
+     */
+    fun clearWeightQueue() {
+        weightQueue = emptyList()
+        weightQueueIndex = 0
+        weightQueueMarked = 0
+        weightQueueSkipped = 0
+        weightQueueStartedAt = 0L
+    }
+
+    // ================================================================
+    // PendingMarkChoice
     // ================================================================
 
     fun startPendingMarkChoice(
@@ -265,38 +313,25 @@ class VoiceSession {
     }
 
     // ================================================================
-    // FIX 5.8.11-e4-markers: маркеры намерения
+    // Маркеры намерения
     // ================================================================
 
-    /**
-     * Запустить маркер намерения. ГП переходит в AWAITING_MARK /
-     * AWAITING_CLEAR / AWAITING_POSTPONE и ждёт номер пробы.
-     */
     fun startMarkIntent(type: PendingMarkIntentType) {
         pendingMarkIntent = PendingMarkIntent(type = type)
     }
 
-    /**
-     * Сбросить маркер намерения (после выполнения или отмены).
-     */
     fun clearMarkIntent() {
         pendingMarkIntent = null
     }
 
     // ================================================================
-    // FIX 5.8.11-e4-markers: подтверждение массовых
+    // Подтверждение массовых
     // ================================================================
 
-    /**
-     * Запустить ожидание подтверждения. ГП переходит в AWAITING_CONFIRM.
-     */
     fun startPendingConfirm(action: ConfirmedAction, count: Int) {
         pendingConfirm = PendingConfirm(action = action, count = count)
     }
 
-    /**
-     * Сбросить ожидание подтверждения.
-     */
     fun clearPendingConfirm() {
         pendingConfirm = null
     }
@@ -324,6 +359,7 @@ class VoiceSession {
         pausedBeforePending = false
         pinned = null
         queue = emptyList()
+        clearWeightQueue()
     }
 
     fun advanceToNext() {
@@ -344,5 +380,6 @@ class VoiceSession {
         isPaused = false
         pinned = null
         queue = emptyList()
+        clearWeightQueue()
     }
 }
