@@ -3,10 +3,9 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-pin-multi/10:
- *  - isOnlyNumbersPhrase пропускает слова-разделители («и», «запятая»,
- *    «,», «;»). Раньше «тринадцать и шестьдесят семь» не проходило
- *    проверку, и уходило в Sort([13, 67]) вместо MarkOrdinal(1367).
+ * FIX 5.8.11-e4-weight-queue:
+ *  - Ветка AWAITING_WEIGHT_QUEUE в parseWithState.
+ *  - parseForWeightQueue принимает вес, «пропустить», управление.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -68,13 +67,11 @@ class VoiceCommandParser(
     )
     private val markIntentWords = setOf("отметь", "отметить", "отметьте")
 
+    /** FIX 5.8.11-e4-weight-queue: слова-пропуск в очереди веса. */
+    private val skipWeightWords = setOf("пропустить", "пропусти", "дальше")
+
     private val stopWords = setOf("стоп", "хатит", "хватит")
 
-    /**
-     * FIX 5.8.11-e4-pin-multi/10:
-     * Слова-разделители, допустимые внутри числовой фразы.
-     * «тринадцать и шестьдесят семь» → число 1367.
-     */
     private val numberPhraseSeparators = setOf("и", "запятая", ",", ";")
 
     private val hundredFormToValue: Map<String, Int> = mapOf(
@@ -294,10 +291,6 @@ class VoiceCommandParser(
         return VoiceCommand.Unknown
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-multi/8:
-     * Перечисление коротких одиночных чисел: «два три», «пять шесть семь».
-     */
     private fun tokenizeToNumberTokens(text: String): List<Int> {
         return try {
             val tokens = numberParser.tokenize(text)
@@ -315,15 +308,6 @@ class VoiceCommandParser(
         }
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-multi/10:
-     * Все ли слова фразы — числительные (или числа цифрами) или
-     * разрешённые разделители.
-     *
-     * Защита от мусора в pin: «семь утра было холодно» → false.
-     * Но «тринадцать и шестьдесят семь» → true (разделитель «и»
-     * допустим).
-     */
     private fun isOnlyNumbersPhrase(text: String): Boolean {
         val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (words.isEmpty()) return false
@@ -356,6 +340,8 @@ class VoiceCommandParser(
                 }
             }
             VoiceState.AWAITING_WEIGHT -> parseForWeight(input)
+            // FIX 5.8.11-e4-weight-queue: очередь веса после массовой отметки.
+            VoiceState.AWAITING_WEIGHT_QUEUE -> parseForWeightQueue(input)
             VoiceState.AWAITING_CHOICE -> parse(input, pendingChoice = true)
             VoiceState.AWAITING_CONTINUE -> parseForContinue(input)
             VoiceState.PAUSED -> parseForPaused(input)
@@ -364,6 +350,32 @@ class VoiceCommandParser(
             VoiceState.AWAITING_POSTPONE -> parseForNumberIntent(input)
             VoiceState.AWAITING_CONFIRM -> parseForConfirm(input)
         }
+    }
+
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Разбор в AWAITING_WEIGHT_QUEUE.
+     *
+     * Принимаем:
+     *   - число-вес: «два пять» → SetWeight(2.5);
+     *   - «пропустить» / «пропусти» / «дальше» → SkipWeightItem;
+     *   - «стоп» → Stop;
+     *   - «пауза» → Pause;
+     *   - «отмена» → Undo.
+     */
+    private fun parseForWeightQueue(input: String): VoiceCommand {
+        val norm = numberParser.normalize(input).trim()
+
+        when (norm) {
+            in stopWords -> return VoiceCommand.Stop
+            "отмена", "отменить" -> return VoiceCommand.Undo
+            "пауза", "паузу" -> return VoiceCommand.Pause
+            in skipWeightWords -> return VoiceCommand.SkipWeightItem
+        }
+
+        val weight = parseWeightAnswer(norm)
+        return if (weight != null) VoiceCommand.SetWeight(weight)
+        else VoiceCommand.Unknown
     }
 
     private fun parseForNumberIntent(input: String): VoiceCommand {

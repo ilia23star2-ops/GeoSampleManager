@@ -28,6 +28,7 @@ import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
+import com.example.geosamplemanager.data.voice.WeightQueueKind
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -173,6 +174,7 @@ fun VoiceDialog(
             if (code == 1) {
                 val startedAt = viewModel.voiceSession.pendingMarkIntent?.startedAt
                     ?: viewModel.voiceSession.pendingConfirm?.startedAt
+                    ?: viewModel.voiceSession.weightQueueStartedAt
 
                 if (startedAt != null && startedAt != warnedStartedAt) {
                     warnedStartedAt = startedAt
@@ -293,6 +295,20 @@ private fun handleFeedback(
             controller?.speak("$base Все пробы скважины.")
         }
 
+        // FIX 5.8.11-e4-weight-queue
+        is VoiceExecResult.WeightQueueAsked -> {
+            fb.soundAttention()
+            val phrase = buildWeightQueueQuestionPhrase(result)
+            controller?.speak(phrase)
+        }
+
+        // FIX 5.8.11-e4-weight-queue
+        is VoiceExecResult.WeightQueueDone -> {
+            fb.soundOk()
+            val phrase = buildWeightQueueDonePhrase(result)
+            controller?.speak(phrase)
+        }
+
         is VoiceExecResult.WeightSet -> {
             fb.soundOk()
             val spokenWeight = VoiceSpeaker.spokenWeight(result.weight)
@@ -337,7 +353,8 @@ private fun handleFeedback(
             if (viewModel.voiceSession.awaitingContinue ||
                 viewModel.voiceSession.pendingMarkChoice != null ||
                 viewModel.voiceSession.pendingMarkIntent != null ||
-                viewModel.voiceSession.pendingConfirm != null
+                viewModel.voiceSession.pendingConfirm != null ||
+                viewModel.voiceSession.hasWeightQueue
             ) {
                 fb.soundAttention()
             }
@@ -351,6 +368,47 @@ private fun handleFeedback(
 
         VoiceExecResult.Stopped -> {}
     }
+}
+
+/**
+ * FIX 5.8.11-e4-weight-queue:
+ * Фраза вопроса по текущей пробе в очереди.
+ * Префикс «Отмечено N проб.» добавляется один раз — при первом
+ * вопросе, если ранее что-то было отмечено.
+ */
+private fun buildWeightQueueQuestionPhrase(r: VoiceExecResult.WeightQueueAsked): String {
+    val type = when (r.item.kind) {
+        WeightQueueKind.BLANK -> "Холостая"
+        WeightQueueKind.WEIGHT_CONTROL -> "Весовой контроль"
+    }
+    val word = VoiceOrdinals.word(r.item.ordinal) ?: "номер ${r.item.ordinal}"
+
+    val prefix = if (r.marked > 0) {
+        "Отмечено ${VoiceSpeaker.samples(r.marked)}. "
+    } else ""
+
+    return "$prefix$type, $word. Вес?"
+}
+
+/**
+ * FIX 5.8.11-e4-weight-queue:
+ * Фраза завершения очереди веса.
+ */
+private fun buildWeightQueueDonePhrase(r: VoiceExecResult.WeightQueueDone): String {
+    val parts = mutableListOf<String>()
+
+    if (r.marked > 0) {
+        parts.add("Отмечено ${VoiceSpeaker.samples(r.marked)}.")
+    }
+    if (r.skipped > 0) {
+        parts.add("Пропущено ${r.skipped}.")
+    }
+    if (parts.isEmpty()) {
+        parts.add("Готово.")
+    }
+    parts.add("Очередь веса завершена.")
+
+    return parts.joinToString(" ")
 }
 
 private fun resolveOrdinals(
@@ -486,11 +544,6 @@ private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
 /**
  * FIX 5.8.11-e4-pin-multi:
  * Всегда озвучиваем полный номер из БД (r.query = matchedValue).
- * Не берём r.groups — там только то, что сказал Vosk. Если человек
- * не назвал префикс — в groups его нет.
- *
- * r.query для скважины = NV1366, для пробы = NV136602 — полный.
- * spellMimicry разобьёт «как человек»: «энвэ 13 66».
  */
 private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
     VoiceSpeaker.spellMimicry(fallback)
@@ -515,6 +568,14 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
 
     is VoiceExecResult.MarkedAll ->
         VoiceStatus.Marked("Все отмечены: ${result.count}")
+
+    // FIX 5.8.11-e4-weight-queue
+    is VoiceExecResult.WeightQueueAsked ->
+        VoiceStatus.Marked("Вес: ${result.item.sampleNumber}")
+
+    // FIX 5.8.11-e4-weight-queue
+    is VoiceExecResult.WeightQueueDone ->
+        VoiceStatus.Marked("Очередь веса: ${result.marked} отм.")
 
     is VoiceExecResult.WeightSet -> VoiceStatus.Marked("Вес: ${formatWeightUi(result.weight)}")
     is VoiceExecResult.Unmarked -> VoiceStatus.Marked("Снято: ${result.sampleNumber}")
@@ -625,6 +686,21 @@ private fun describeResult(
 
         is VoiceExecResult.MarkedAll ->
             "Отмечено всех проб: ${result.count}"
+
+        // FIX 5.8.11-e4-weight-queue
+        is VoiceExecResult.WeightQueueAsked -> {
+            val type = when (result.item.kind) {
+                WeightQueueKind.BLANK -> "Холостая"
+                WeightQueueKind.WEIGHT_CONTROL -> "Весовой контроль"
+            }
+            val word = VoiceOrdinals.word(result.item.ordinal) ?: "№${result.item.ordinal}"
+            "Очередь ${result.index}/${result.total}: $type, $word. Вес?"
+        }
+
+        // FIX 5.8.11-e4-weight-queue
+        is VoiceExecResult.WeightQueueDone ->
+            "Очередь веса завершена. Отмечено: ${result.marked}, " +
+                    "пропущено: ${result.skipped}."
 
         is VoiceExecResult.WeightSet ->
             "Вес: ${formatWeightUi(result.weight)} кг. Проба отмечена."
