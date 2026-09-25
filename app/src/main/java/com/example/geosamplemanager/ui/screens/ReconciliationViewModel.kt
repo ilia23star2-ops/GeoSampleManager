@@ -459,17 +459,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         state.voiceStatus = status
     }
 
-    /**
-     * FIX 5.8.11-e4-weight-queue:
-     * Тайм-аут очереди веса: 30 сек, предупреждение на 20-й.
-     * Возвращает: 0 — ок, 1 — предупреждение, 2 — сброс всей очереди.
-     *
-     * Логика для маркеров и подтверждения — прежняя.
-     */
     fun checkWaitTimeout(): Int {
         val now = System.currentTimeMillis()
 
-        // Очередь веса
         if (voiceSession.hasWeightQueue) {
             val elapsed = now - voiceSession.weightQueueStartedAt
             val warnMs = 20_000L
@@ -526,7 +518,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             else -> Unit
         }
 
-        // FIX 5.8.11-e4-weight-queue: очередь веса — приоритетно.
         if (voiceSession.hasWeightQueue) {
             return handleWeightQueue(cmd)
         }
@@ -764,7 +755,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     // ================================================================
-    // FIX 5.8.11-e4-weight-queue: обработка очереди
+    // Очередь веса
     // ================================================================
 
     private suspend fun handleWeightQueue(cmd: VoiceCommand): VoiceExecResult {
@@ -1226,6 +1217,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return result
     }
 
+    /**
+     * FIX 5.8.11-e4-fix-voice-1:
+     * attentionReason — как в voiceSearch. Проверяем выбранные
+     * участок и наряд, чтобы в SORT-режиме тоже срабатывало
+     * «Другой участок / Другой наряд».
+     */
     private suspend fun voiceNextInQueue(): VoiceExecResult {
         if (!voiceSession.hasQueue) {
             return VoiceExecResult.Message("Очередь пуста. Скажите «следующая» для нового запроса.")
@@ -1262,6 +1259,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         val currentQueueSize = voiceSession.queue.size + 1
 
+        val selectedArea = state.selectedArea
+        val selectedOrder = state.selectedOrder
+        val attentionReason: AnswerReason? = when {
+            selectedArea != null && next.areaTitle != selectedArea ->
+                AnswerReason.FOUND_OTHER_AREA
+            selectedOrder != null && next.orderTitle != selectedOrder ->
+                AnswerReason.FOUND_OTHER_ORDER
+            else -> null
+        }
+
         return VoiceExecResult.FoundOne(
             query = next.wellNumber,
             orderTitle = next.orderTitle,
@@ -1272,7 +1279,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             blanks = blanks,
             weightControls = weightControls,
             postponed = postponed,
-            attentionReason = null,
+            attentionReason = attentionReason,
             otherAreaTitle = next.areaTitle,
             otherOrderNumber = next.orderTitle.removePrefix("Наряд №").trim(),
             groups = emptyList(),
@@ -1489,12 +1496,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Отложено проб: $count")
     }
 
-    /**
-     * FIX 5.8.11-e4-weight-queue:
-     * Массовая отметка. Отмечаем всё, что можно отметить сразу;
-     * если остались холостые/ВК без веса — строим очередь и
-     * задаём первый вопрос. Иначе — MarkedAll.
-     */
     private fun voiceMarkAll(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1567,6 +1568,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
+    /**
+     * FIX 5.8.11-e4-fix-voice-1:
+     * Если проба не найдена — возвращаем MarkOrdinalNotFound с
+     * подсказкой. Раньше было просто Message, подсказка не срабатывала.
+     */
     private fun voiceClearOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1576,7 +1582,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             ?: return VoiceExecResult.Message("Наряд не загружен")
         val row = group.rows.firstOrNull {
             it.wellNumber == wellNumber && it.numberInWell == ordinal
-        } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+        }
+
+        if (row == null) {
+            val hint = VoiceMarkOrdinalFallback.hintFor(ordinal)
+            return VoiceExecResult.MarkOrdinalNotFound(ordinal, hint)
+        }
+
         if (!row.found) {
             val spoken = VoiceSpeaker.spellMimicry(row.sampleNumber)
             return VoiceExecResult.Message("Проба $spoken не отмечена")
@@ -1744,6 +1756,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
+    /**
+     * FIX 5.8.11-e4-fix-voice-1:
+     * attentionReason — если выбранный участок/наряд не совпадает
+     * с найденным. Раньше в SORT было жёстко null.
+     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -1822,6 +1839,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             state.query = first.wellNumber
         }
 
+        val selectedArea = state.selectedArea
+        val selectedOrder = state.selectedOrder
+        val attentionReason: AnswerReason? = when {
+            selectedArea != null && first.areaTitle != selectedArea ->
+                AnswerReason.FOUND_OTHER_AREA
+            selectedOrder != null && first.orderTitle != selectedOrder ->
+                AnswerReason.FOUND_OTHER_ORDER
+            else -> null
+        }
+
         return VoiceExecResult.FoundOne(
             query = first.wellNumber,
             orderTitle = first.orderTitle,
@@ -1832,7 +1859,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             blanks = blanks,
             weightControls = weightControls,
             postponed = postponed,
-            attentionReason = null,
+            attentionReason = attentionReason,
             otherAreaTitle = first.areaTitle,
             otherOrderNumber = first.orderTitle.removePrefix("Наряд №").trim(),
             groups = emptyList(),

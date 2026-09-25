@@ -48,7 +48,9 @@ fun VoiceDialog(
 
     var status by remember { mutableStateOf("Инициализация...") }
     var partialText by remember { mutableStateOf("") }
-    var finalText by remember { mutableStateOf("") }
+    // FIX 5.8.11-e4-fix-voice-1: заменяем finalText (сырой Vosk)
+    // на recognizedText (канонический номер из БД, если нашли).
+    var recognizedText by remember { mutableStateOf("") }
     var resultText by remember { mutableStateOf("") }
     var controller by remember { mutableStateOf<VoiceController?>(null) }
     var feedback by remember { mutableStateOf<VoiceFeedback?>(null) }
@@ -87,7 +89,6 @@ fun VoiceDialog(
             override fun onResult(text: String) {
                 Log.e(LOG_TAG, "CALLBACK onResult: text=«$text»")
 
-                finalText = text
                 partialText = ""
 
                 if (text.isBlank()) {
@@ -122,6 +123,9 @@ fun VoiceDialog(
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
 
+                        // FIX 5.8.11-e4-fix-voice-1: канонический номер,
+                        // если найдено однозначно. Иначе — сырой Vosk.
+                        recognizedText = displayRecognized(text, result)
                         resultText = describeResult(result, viewModel)
                         status = "Готово"
                         viewModel.setVoiceStatus(statusFromResult(result))
@@ -187,7 +191,7 @@ fun VoiceDialog(
                 controller?.speak("Отменено. Слушаю.")
                 status = "Слушаю..."
                 partialText = ""
-                finalText = ""
+                recognizedText = ""
                 resultText = "Отменено по тайм-ауту."
                 viewModel.setVoiceStatus(VoiceStatus.Listening)
             }
@@ -201,13 +205,13 @@ fun VoiceDialog(
         VoicePanel(
             status = status,
             partialText = partialText,
-            finalText = finalText,
+            finalText = recognizedText,
             resultText = resultText,
             voiceStatus = viewModel.state.voiceStatus,
             expanded = expanded,
             onToggleExpand = { expanded = !expanded },
             onRetry = {
-                finalText = ""
+                recognizedText = ""
                 resultText = ""
                 controller?.let { ctrl ->
                     scope.launch {
@@ -219,6 +223,19 @@ fun VoiceDialog(
             },
             onDismiss = onDismiss
         )
+    }
+}
+
+/**
+ * FIX 5.8.11-e4-fix-voice-1:
+ * В поле «Распознано» показываем канонический номер из БД,
+ * если удалось однозначно найти скважину/пробу (FoundOne).
+ * Иначе — сырой текст Vosk.
+ */
+private fun displayRecognized(rawText: String, result: VoiceExecResult): String {
+    return when (result) {
+        is VoiceExecResult.FoundOne -> result.query
+        else -> rawText
     }
 }
 
@@ -295,14 +312,12 @@ private fun handleFeedback(
             controller?.speak("$base Все пробы скважины.")
         }
 
-        // FIX 5.8.11-e4-weight-queue
         is VoiceExecResult.WeightQueueAsked -> {
             fb.soundAttention()
             val phrase = buildWeightQueueQuestionPhrase(result)
             controller?.speak(phrase)
         }
 
-        // FIX 5.8.11-e4-weight-queue
         is VoiceExecResult.WeightQueueDone -> {
             fb.soundOk()
             val phrase = buildWeightQueueDonePhrase(result)
@@ -370,12 +385,6 @@ private fun handleFeedback(
     }
 }
 
-/**
- * FIX 5.8.11-e4-weight-queue:
- * Фраза вопроса по текущей пробе в очереди.
- * Префикс «Отмечено N проб.» добавляется один раз — при первом
- * вопросе, если ранее что-то было отмечено.
- */
 private fun buildWeightQueueQuestionPhrase(r: VoiceExecResult.WeightQueueAsked): String {
     val type = when (r.item.kind) {
         WeightQueueKind.BLANK -> "Холостая"
@@ -391,8 +400,9 @@ private fun buildWeightQueueQuestionPhrase(r: VoiceExecResult.WeightQueueAsked):
 }
 
 /**
- * FIX 5.8.11-e4-weight-queue:
+ * FIX 5.8.11-e4-fix-voice-1:
  * Фраза завершения очереди веса.
+ * Если ничего не пропущено — «Все пробы скважины отмечены.»
  */
 private fun buildWeightQueueDonePhrase(r: VoiceExecResult.WeightQueueDone): String {
     val parts = mutableListOf<String>()
@@ -400,13 +410,14 @@ private fun buildWeightQueueDonePhrase(r: VoiceExecResult.WeightQueueDone): Stri
     if (r.marked > 0) {
         parts.add("Отмечено ${VoiceSpeaker.samples(r.marked)}.")
     }
-    if (r.skipped > 0) {
+
+    if (r.skipped == 0) {
+        parts.add("Все пробы скважины отмечены.")
+    } else {
         parts.add("Пропущено ${r.skipped}.")
+        if (parts.isEmpty()) parts.add("Готово.")
+        parts.add("Очередь веса завершена.")
     }
-    if (parts.isEmpty()) {
-        parts.add("Готово.")
-    }
-    parts.add("Очередь веса завершена.")
 
     return parts.joinToString(" ")
 }
@@ -541,10 +552,6 @@ private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
     }
 }
 
-/**
- * FIX 5.8.11-e4-pin-multi:
- * Всегда озвучиваем полный номер из БД (r.query = matchedValue).
- */
 private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
     VoiceSpeaker.spellMimicry(fallback)
 
@@ -569,11 +576,9 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
     is VoiceExecResult.MarkedAll ->
         VoiceStatus.Marked("Все отмечены: ${result.count}")
 
-    // FIX 5.8.11-e4-weight-queue
     is VoiceExecResult.WeightQueueAsked ->
         VoiceStatus.Marked("Вес: ${result.item.sampleNumber}")
 
-    // FIX 5.8.11-e4-weight-queue
     is VoiceExecResult.WeightQueueDone ->
         VoiceStatus.Marked("Очередь веса: ${result.marked} отм.")
 
@@ -687,7 +692,6 @@ private fun describeResult(
         is VoiceExecResult.MarkedAll ->
             "Отмечено всех проб: ${result.count}"
 
-        // FIX 5.8.11-e4-weight-queue
         is VoiceExecResult.WeightQueueAsked -> {
             val type = when (result.item.kind) {
                 WeightQueueKind.BLANK -> "Холостая"
@@ -697,7 +701,6 @@ private fun describeResult(
             "Очередь ${result.index}/${result.total}: $type, $word. Вес?"
         }
 
-        // FIX 5.8.11-e4-weight-queue
         is VoiceExecResult.WeightQueueDone ->
             "Очередь веса завершена. Отмечено: ${result.marked}, " +
                     "пропущено: ${result.skipped}."
