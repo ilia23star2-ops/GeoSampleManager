@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -32,6 +33,19 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private const val LOG_TAG = "VoiceDialog"
+
+/**
+ * FIX 5.8.11-e4-markers:
+ * Тайм-аут ожидания. Проверяется каждые 250 мс через
+ * viewModel.checkWaitTimeout(). Возвращаемое значение:
+ *   0 — ничего
+ *   1 — предупреждение (20 сек прошло)
+ *   2 — сброс (30 сек прошло)
+ *
+ * Цикл 250 мс — гарантированно попадает в окно предупреждения
+ * (500 мс), поэтому каждый тайм-аут озвучивается один раз.
+ */
+private const val TIMEOUT_TICK_MS = 250L
 
 @Composable
 fun VoiceDialog(
@@ -159,6 +173,40 @@ fun VoiceDialog(
         }
     }
 
+    // FIX 5.8.11-e4-markers: цикл тайм-аута ожидания.
+    // Каждые 250 мс проверяем, не прошло ли 30 сек с момента,
+    // когда ГП задал вопрос (Какую пробу? / Отметить все?).
+    LaunchedEffect(Unit) {
+        var warnedStartedAt: Long? = null
+
+        while (true) {
+            delay(TIMEOUT_TICK_MS)
+
+            val code = viewModel.checkWaitTimeout()
+
+            if (code == 1) {
+                // Предупреждение. Озвучиваем один раз на сессию ожидания.
+                val startedAt = viewModel.voiceSession.pendingMarkIntent?.startedAt
+                    ?: viewModel.voiceSession.pendingConfirm?.startedAt
+
+                if (startedAt != null && startedAt != warnedStartedAt) {
+                    warnedStartedAt = startedAt
+                    Log.e(LOG_TAG, "timeout: предупреждение (20 сек)")
+                    controller?.speak("Через 10 секунд отменю.")
+                }
+            } else if (code == 2) {
+                Log.e(LOG_TAG, "timeout: сброс (30 сек)")
+                warnedStartedAt = null
+                controller?.speak("Отменено. Слушаю.")
+                status = "Слушаю..."
+                partialText = ""
+                finalText = ""
+                resultText = "Отменено по тайм-ауту."
+                viewModel.setVoiceStatus(VoiceStatus.Listening)
+            }
+        }
+    }
+
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.BottomCenter
@@ -237,11 +285,6 @@ private fun handleFeedback(
          * FIX 5.8.11-e4-pin-7:
          * Проба с распознанным номером не найдена. Честная ошибка +
          * подсказка числом для «спорных» пар (14 → 4, 40 → 4, 400 → 4).
-         *
-         * Пример:
-         *   Сказали «четырнадцатая», в скважине есть №4, нет №14.
-         *   Голос: «Пробы четырнадцатой нет. Если нужна четвёртая —
-         *   скажите четыре.»
          */
         is VoiceExecResult.MarkOrdinalNotFound -> {
             fb.soundError()
@@ -311,7 +354,9 @@ private fun handleFeedback(
 
         is VoiceExecResult.Message -> {
             if (viewModel.voiceSession.awaitingContinue ||
-                viewModel.voiceSession.pendingMarkChoice != null
+                viewModel.voiceSession.pendingMarkChoice != null ||
+                viewModel.voiceSession.pendingMarkIntent != null ||
+                viewModel.voiceSession.pendingConfirm != null
             ) {
                 fb.soundAttention()
             }
@@ -576,13 +621,6 @@ private fun describeResult(
             "$subject отмечена: ${result.sampleNumber}$extra"
         }
 
-        /**
-         * FIX 5.8.11-e4-pin-7:
-         * Проба с распознанным номером не найдена. Если распознанный
-         * номер — «спорный» (Vosk путает «четвёртая» ↔ «четырнадцатая»),
-         * даём подсказку: «Скажите „четыре"». Количественные Vosk
-         * распознаёт чётко.
-         */
         is VoiceExecResult.MarkOrdinalNotFound -> {
             val hint = result.hintOrdinal
             if (hint != null) {
