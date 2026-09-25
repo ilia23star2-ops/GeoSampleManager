@@ -5,42 +5,83 @@ import kotlin.math.roundToInt
 /**
  * Произношение номеров, весов и счётных фраз для TTS.
  *
- * FIX 5.8.11-e4-speak-1:
- * - splitLikeHuman(digits) — разбивает слитную строку цифр так,
- *   как сказал бы человек: 1366 → 13|66, 1090031 → 109|00|31,
- *   109003101 → 109|00|31|01.
- * - spellMimicry(text) переписан: сначала простая ветка
- *   «префикс + цифры» без разделителей, потом fallback через
- *   QueryTokenizer + DigitGrouper.
- *
- * Симметрия: VoiceNumberParser собирает «сто девять ноль ноль
- * тридцать один» → 109|00|31; splitLikeHuman делает обратное —
- * 1090031 → 109|00|31. ГП отвечает той же формой, что услышал.
+ * FIX 5.8.11-e4-prefix-1:
+ * - spellLetters разделяет буквы пробелом: «KPD» → «ка пэ дэ».
+ *   Vosk в грамматике учит эти же звуки по отдельности, поэтому
+ *   речь TTS и распознавание симметричны.
+ * - Одна буква пробелом не округляется: «W» → «даблю».
  */
 object VoiceSpeaker {
 
     private val letterToSound: Map<Char, String> = mapOf(
-        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
-        'F' to "эф", 'G' to "гэ", 'H' to "аш", 'I' to "и", 'J' to "жэ",
-        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
-        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
-        'U' to "у", 'V' to "вэ", 'W' to "даблю", 'X' to "икс",
-        'Y' to "игрек", 'Z' to "зэт"
+        'A' to "а",
+        'B' to "бэ",
+        'C' to "цэ",
+        'D' to "дэ",
+        'E' to "е",
+        'F' to "эф",
+        'G' to "гэ",
+        'H' to "аш",
+        'I' to "и",
+        'J' to "жэ",
+        'K' to "ка",
+        'L' to "эль",
+        'M' to "эм",
+        'N' to "эн",
+        'O' to "о",
+        'P' to "пэ",
+        'Q' to "ку",
+        'R' to "эр",
+        'S' to "эс",
+        'T' to "тэ",
+        'U' to "у",
+        'V' to "вэ",
+        'W' to "даблю",
+        'X' to "икс",
+        'Y' to "игрек",
+        'Z' to "зэт"
     )
 
     private val letterNames: Map<Char, String> = mapOf(
-        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
-        'F' to "эф", 'G' to "жэ", 'H' to "аш", 'I' to "и", 'J' to "йот",
-        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
-        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
-        'U' to "у", 'V' to "вэ", 'W' to "дубль-вэ", 'X' to "икс",
-        'Y' to "игрек", 'Z' to "зэт"
+        'A' to "а",
+        'B' to "бэ",
+        'C' to "цэ",
+        'D' to "дэ",
+        'E' to "е",
+        'F' to "эф",
+        'G' to "жэ",
+        'H' to "аш",
+        'I' to "и",
+        'J' to "йот",
+        'K' to "ка",
+        'L' to "эль",
+        'M' to "эм",
+        'N' to "эн",
+        'O' to "о",
+        'P' to "пэ",
+        'Q' to "ку",
+        'R' to "эр",
+        'S' to "эс",
+        'T' to "тэ",
+        'U' to "у",
+        'V' to "вэ",
+        'W' to "дубль-вэ",
+        'X' to "икс",
+        'Y' to "игрек",
+        'Z' to "зэт"
     )
 
     private val digitNames: Map<Char, String> = mapOf(
-        '0' to "ноль", '1' to "один", '2' to "два", '3' to "три",
-        '4' to "четыре", '5' to "пять", '6' to "шесть", '7' to "семь",
-        '8' to "восемь", '9' to "девять"
+        '0' to "ноль",
+        '1' to "один",
+        '2' to "два",
+        '3' to "три",
+        '4' to "четыре",
+        '5' to "пять",
+        '6' to "шесть",
+        '7' to "семь",
+        '8' to "восемь",
+        '9' to "девять"
     )
 
     private val unitsMasculine = arrayOf(
@@ -69,29 +110,11 @@ object VoiceSpeaker {
     )
 
     // ================================================================
-    // FIX 5.8.11-e4-speak-1: мимикрия для строки-номера
+    // Мимикрия для строки-номера
     // ================================================================
 
-    /**
-     * Простая ветка: строка = [буквы]? + цифры.
-     * Разделители (пробелы, дефисы) не допускаются.
-     */
     private val SIMPLE_NUMBER = Regex("^([A-Za-z]+)?\\s*(\\d+)$")
 
-    /**
-     * Произнести номер скважины или пробы «как человек».
-     *
-     * Примеры:
-     *   "NV1366"     → «энвэ тринадцать шестьдесят шесть»
-     *   "NV136601"   → «энвэ тринадцать шестьдесят шесть ноль один»
-     *   "KPD1090031" → «капэдэ сто девять ноль ноль тридцать один»
-     *   "1524"       → «пятнадцать двадцать четыре»
-     *   "109003101"  → «сто девять ноль ноль тридцать один ноль один»
-     *
-     * Алгоритм разбиения цифр — splitLikeHuman:
-     *   чётная длина → пары слева;
-     *   нечётная → первая тройка, потом пары.
-     */
     fun spellMimicry(text: String): String {
         if (text.isBlank()) return text
 
@@ -103,7 +126,6 @@ object VoiceSpeaker {
             return spellPrefixAndDigits(prefix, digits)
         }
 
-        // Fallback: старый путь через токенизацию.
         return try {
             val tokens = QueryTokenizer().tokenize(text)
             if (tokens.isEmpty()) return spellOut(text)
@@ -137,22 +159,8 @@ object VoiceSpeaker {
     }
 
     /**
-     * FIX 5.8.11-e4-speak-1:
      * Разбить слитную строку цифр так, как сказал бы человек.
-     *
-     * Правило:
-     *   длина ≤ 3   → как есть.
-     *   чётная      → пары слева: 2+2+2+...
-     *   нечётная    → первая 3, потом пары: 3+2+2+...
-     *
-     * Примеры:
-     *   "1366"      → ["13", "66"]
-     *   "136601"    → ["13", "66", "01"]
-     *   "1090031"   → ["109", "00", "31"]
-     *   "109003101" → ["109", "00", "31", "01"]
-     *   "1524"      → ["15", "24"]
-     *   "7"         → ["7"]
-     *   "109"       → ["109"]
+     * Чётная длина — по пары. Нечётная — первая 3, потом по 2.
      */
     fun splitLikeHuman(digits: String): List<String> {
         if (digits.isEmpty()) return emptyList()
@@ -194,14 +202,22 @@ object VoiceSpeaker {
         return parts.joinToString(" ")
     }
 
+    /**
+     * FIX 5.8.11-e4-prefix-1:
+     * Буквы — пробел между ними: «KPD» → «ка пэ дэ».
+     * Одна буква — без пробела: «W» → «даблю».
+     *
+     * Vosk в грамматике учит эти же звуки отдельными словами,
+     * поэтому TTS и распознавание работают симметрично.
+     */
     private fun spellLetters(text: String): String {
-        val sb = StringBuilder()
+        val parts = mutableListOf<String>()
         for (c in text) {
             val upper = c.uppercaseChar()
             val sound = letterToSound[upper] ?: continue
-            sb.append(sound)
+            parts.add(sound)
         }
-        return sb.toString()
+        return parts.joinToString(" ")
     }
 
     private fun spellDigitByDigit(digits: String): String {
