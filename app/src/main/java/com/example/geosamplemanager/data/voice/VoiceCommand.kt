@@ -5,6 +5,9 @@ package com.example.geosamplemanager.data.voice
  *
  * Разбор и выполнение разделены: парсер даёт VoiceCommand,
  * ViewModel решает, что с ним делать.
+ *
+ * FIX 5.8.11-e4-markers:
+ * Добавлены команды маркеров намерения и подтверждения.
  */
 sealed class VoiceCommand {
 
@@ -41,11 +44,7 @@ sealed class VoiceCommand {
     /** Перейти к следующей скважине (очистить запрос). */
     data object Next : VoiceCommand()
 
-    /**
-     * FIX 5.8.11-e4-pin-2: переключиться к следующей скважине
-     * в очереди мультизапроса. Только в состоянии FOUND_PINNED,
-     * когда queue не пусто.
-     */
+    /** Перейти к следующей скважине в очереди мультизапроса. */
     data object NextInQueue : VoiceCommand()
 
     /** Отмена. */
@@ -81,8 +80,51 @@ sealed class VoiceCommand {
     /** Переключение режима голосом. */
     data class SetMode(val mode: VoiceSessionMode) : VoiceCommand()
 
-    /** FIX 5.8.11-e4g3: явный поиск по глаголу «найди». */
+    /** Явный поиск по глаголу «найди». */
     data class Find(val query: String?) : VoiceCommand()
+
+    // ================================================================
+    // FIX 5.8.11-e4-markers
+    // ================================================================
+
+    /**
+     * Голый глагол «отметь» без номера.
+     *
+     * ГП переходит в AWAITING_MARK и спрашивает «Какую пробу?».
+     * Следующая фраза (номер или порядковое) → MarkOrdinal.
+     */
+    data object MarkIntent : VoiceCommand()
+
+    /**
+     * Голый глагол «снять» без номера.
+     * ГП переходит в AWAITING_CLEAR, спрашивает «Какую снять?».
+     */
+    data object ClearIntent : VoiceCommand()
+
+    /**
+     * Голый глагол «отложить» без номера.
+     * ГП переходит в AWAITING_POSTPONE, спрашивает «Какую отложить?».
+     */
+    data object PostponeIntent : VoiceCommand()
+
+    /**
+     * Подтверждение массового действия.
+     * Слова: «подтверждаю», «подтвердить».
+     * Выполняет pendingConfirm.
+     */
+    data object Confirm : VoiceCommand()
+
+    /**
+     * Отказ от массового действия.
+     * Слова: «отменяю», «отменить».
+     * Отменяет pendingConfirm.
+     *
+     * ВАЖНО: «отменяю» (1-е лицо) ≠ «отмена» (Undo).
+     * Фонетически разные окончания, Vosk не путает.
+     */
+    data object Decline : VoiceCommand()
+
+    // ================================================================
 
     /** Выбор действия для уже отмеченной / отложенной пробы. */
     data object ChoiceRemove : VoiceCommand()

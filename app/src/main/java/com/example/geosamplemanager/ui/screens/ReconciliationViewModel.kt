@@ -15,8 +15,10 @@ import com.example.geosamplemanager.data.reconciliation.validateWeight
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
+import com.example.geosamplemanager.data.voice.ConfirmedAction
 import com.example.geosamplemanager.data.voice.MarkDecisionVoiceRenderer
 import com.example.geosamplemanager.data.voice.PendingMarkChoiceType
+import com.example.geosamplemanager.data.voice.PendingMarkIntentType
 import com.example.geosamplemanager.data.voice.PinnedScope
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.UnifiedSearch
@@ -455,6 +457,40 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         state.voiceStatus = status
     }
 
+    /**
+     * FIX 5.8.11-e4-markers:
+     * Проверка тайм-аута ожидания. Вызывается из VoiceDialog
+     * периодически. Если pendingMarkIntent / pendingConfirm висит
+     * дольше 30 сек — сбрасываем.
+     *
+     * Возвращает: 0 — ничего не делаем; 1 — предупреждение (20 сек);
+     * 2 — сброс (30 сек). VoiceDialog использует это для озвучки.
+     */
+    fun checkWaitTimeout(): Int {
+        val now = System.currentTimeMillis()
+
+        val startedAt = voiceSession.pendingMarkIntent?.startedAt
+            ?: voiceSession.pendingConfirm?.startedAt
+
+        if (startedAt == null) return 0
+
+        val elapsed = now - startedAt
+        val warnMs = 20_000L
+        val expireMs = 30_000L
+
+        if (elapsed >= expireMs) {
+            voiceSession.clearMarkIntent()
+            voiceSession.clearPendingConfirm()
+            return 2
+        }
+
+        if (elapsed >= warnMs && elapsed < warnMs + 500) {
+            return 1
+        }
+
+        return 0
+    }
+
     suspend fun voiceExecute(cmd: VoiceCommand): VoiceExecResult {
         Log.i(
             TAG,
@@ -469,6 +505,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoicePostpone -> return voiceChoicePostpone()
             VoiceCommand.ChoiceSkip -> return voiceChoiceSkip()
             else -> Unit
+        }
+
+        // FIX 5.8.11-e4-markers: подтверждение массовых.
+        if (voiceSession.pendingConfirm != null) {
+            return handlePendingConfirm(cmd)
+        }
+
+        // FIX 5.8.11-e4-markers: маркер намерения — ждём номер.
+        if (voiceSession.pendingMarkIntent != null) {
+            return handlePendingMarkIntent(cmd)
         }
 
         if (cmd is VoiceCommand.MarkCurrent && voiceSession.pendingMarkChoice != null) {
@@ -580,14 +626,39 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
-            VoiceCommand.MarkAll -> markGuard { voiceMarkAll() }
+
+            // FIX 5.8.11-e4-markers: массовые → подтверждение.
+            VoiceCommand.MarkAll -> markGuard {
+                voiceRequestConfirm(ConfirmedAction.MARK_ALL)
+            }
+            VoiceCommand.ClearAll -> markGuard {
+                voiceRequestConfirm(ConfirmedAction.CLEAR_ALL)
+            }
+
             VoiceCommand.MarkCurrent -> markGuard { voiceMarkCurrent() }
+
+            // FIX 5.8.11-e4-markers: маркеры намерения.
+            VoiceCommand.MarkIntent -> markGuard {
+                voiceStartMarkIntent(PendingMarkIntentType.MARK)
+            }
+            VoiceCommand.ClearIntent -> markGuard {
+                voiceStartMarkIntent(PendingMarkIntentType.CLEAR)
+            }
+            VoiceCommand.PostponeIntent -> markGuard {
+                voiceStartMarkIntent(PendingMarkIntentType.POSTPONE)
+            }
+
+            VoiceCommand.Confirm -> VoiceExecResult.Message(
+                "Нечего подтверждать."
+            )
+            VoiceCommand.Decline -> VoiceExecResult.Message(
+                "Нечего отменять."
+            )
 
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
 
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
             VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
-            VoiceCommand.ClearAll -> markGuard { voiceClearAll() }
 
             VoiceCommand.Unpostpone -> voiceUnpostpone()
 
@@ -596,7 +667,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
 
             VoiceCommand.Next -> voiceNext()
-
             VoiceCommand.NextInQueue -> voiceNextInQueue()
 
             VoiceCommand.Undo -> {
@@ -628,9 +698,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ShowFound -> voiceShowFilter(ResultFilter.FOUND, "Найденные")
 
             VoiceCommand.Help -> VoiceExecResult.Message(
-                "Скажи номер, «отметь», «первая», «снять первая», " +
-                        "«дальше», «следующая 1525», «стоп», «пауза», " +
-                        "«сколько осталось»."
+                "Скажи номер, «отметь», «отметь все», «снять», «снять все», " +
+                        "«отложить», «следующая», «стоп», «пауза»."
             )
 
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
@@ -639,6 +708,172 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
     }
+
+    // ================================================================
+    // FIX 5.8.11-e4-markers: маркеры намерения
+    // ================================================================
+
+    /**
+     * Запустить маркер намерения. Проверяем, что есть активная скважина.
+     */
+    private fun voiceStartMarkIntent(type: PendingMarkIntentType): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+
+        if (state.groupById(orderId.toString()) == null) {
+            return VoiceExecResult.Message("Наряд не загружен")
+        }
+
+        voiceSession.startMarkIntent(type)
+
+        val question = when (type) {
+            PendingMarkIntentType.MARK -> "Какую пробу отметить?"
+            PendingMarkIntentType.CLEAR -> "Какую снять?"
+            PendingMarkIntentType.POSTPONE -> "Какую отложить?"
+        }
+
+        return VoiceExecResult.Message(question)
+    }
+
+    /**
+     * Обработать команду внутри маркера намерения.
+     * Ждём MarkOrdinal / MarkByNumbers.
+     */
+    private fun handlePendingMarkIntent(cmd: VoiceCommand): VoiceExecResult {
+        val intent = voiceSession.pendingMarkIntent
+            ?: return VoiceExecResult.Message("Ошибка состояния")
+
+        when (cmd) {
+            is VoiceCommand.MarkOrdinal -> {
+                voiceSession.clearMarkIntent()
+                return when (intent.type) {
+                    PendingMarkIntentType.MARK -> voiceMarkOrdinal(cmd.ordinal)
+                    PendingMarkIntentType.CLEAR -> voiceClearOrdinal(cmd.ordinal)
+                    PendingMarkIntentType.POSTPONE -> voicePostponeOrdinal(cmd.ordinal)
+                }
+            }
+
+            is VoiceCommand.MarkByNumbers -> {
+                voiceSession.clearMarkIntent()
+                return when (intent.type) {
+                    PendingMarkIntentType.MARK -> voiceMarkByNumbers(cmd.ordinals)
+                    PendingMarkIntentType.CLEAR -> voiceClearByNumbers(cmd.ordinals)
+                    PendingMarkIntentType.POSTPONE -> voicePostponeByNumbers(cmd.ordinals)
+                }
+            }
+
+            VoiceCommand.Undo -> {
+                voiceSession.clearMarkIntent()
+                return VoiceExecResult.Message("Отменено.")
+            }
+
+            VoiceCommand.Pause -> {
+                voiceSession.clearMarkIntent()
+                voiceSession.isPaused = true
+                return VoiceExecResult.Message("Пауза")
+            }
+
+            VoiceCommand.Stop -> return VoiceExecResult.Stopped
+
+            else -> {
+                val question = when (intent.type) {
+                    PendingMarkIntentType.MARK -> "Скажите номер пробы."
+                    PendingMarkIntentType.CLEAR -> "Скажите номер пробы для снятия."
+                    PendingMarkIntentType.POSTPONE -> "Скажите номер для отложения."
+                }
+                return VoiceExecResult.Message(question)
+            }
+        }
+    }
+
+    // ================================================================
+    // FIX 5.8.11-e4-markers: подтверждение массовых
+    // ================================================================
+
+    /**
+     * Запросить подтверждение массового действия. Считаем, сколько
+     * проб будет затронуто, и озвучиваем.
+     */
+    private fun voiceRequestConfirm(action: ConfirmedAction): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+
+        val wellRows = group.rows.filter { it.wellNumber == wellNumber }
+
+        val count = when (action) {
+            ConfirmedAction.MARK_ALL -> wellRows.count { !it.found }
+            ConfirmedAction.CLEAR_ALL -> wellRows.count { it.found }
+        }
+
+        if (count == 0) {
+            return when (action) {
+                ConfirmedAction.MARK_ALL -> VoiceExecResult.Message("Все пробы уже отмечены")
+                ConfirmedAction.CLEAR_ALL -> VoiceExecResult.Message("Нет отмеченных проб")
+            }
+        }
+
+        voiceSession.startPendingConfirm(action, count)
+
+        val phrase = when (action) {
+            ConfirmedAction.MARK_ALL ->
+                "Отметить все ${count} ${samplesWord(count)}? " +
+                        "Скажите «подтверждаю» или «отменяю»."
+            ConfirmedAction.CLEAR_ALL ->
+                "Снять отметки со всех ${count} ${samplesWord(count)}? " +
+                        "Скажите «подтверждаю» или «отменяю»."
+        }
+
+        return VoiceExecResult.Message(phrase)
+    }
+
+    private fun samplesWord(n: Int): String = when {
+        n % 10 == 1 && n % 100 != 11 -> "пробы"
+        n % 10 in 2..4 && n % 100 !in 12..14 -> "проб"
+        else -> "проб"
+    }
+
+    /**
+     * Обработать команду в состоянии AWAITING_CONFIRM.
+     */
+    private suspend fun handlePendingConfirm(cmd: VoiceCommand): VoiceExecResult {
+        val pending = voiceSession.pendingConfirm
+            ?: return VoiceExecResult.Message("Ошибка состояния")
+
+        when (cmd) {
+            VoiceCommand.Confirm -> {
+                voiceSession.clearPendingConfirm()
+                return when (pending.action) {
+                    ConfirmedAction.MARK_ALL -> voiceMarkAll()
+                    ConfirmedAction.CLEAR_ALL -> voiceClearAll()
+                }
+            }
+
+            VoiceCommand.Decline -> {
+                voiceSession.clearPendingConfirm()
+                return VoiceExecResult.Message("Отменено.")
+            }
+
+            VoiceCommand.Stop -> return VoiceExecResult.Stopped
+
+            VoiceCommand.Pause -> {
+                voiceSession.clearPendingConfirm()
+                voiceSession.isPaused = true
+                return VoiceExecResult.Message("Пауза")
+            }
+
+            else -> return VoiceExecResult.Message(
+                "Скажите «подтверждаю» или «отменяю»."
+            )
+        }
+    }
+
+    // ================================================================
 
     private inline fun markGuard(action: () -> VoiceExecResult): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
@@ -923,21 +1158,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-7:
-     * Раньше здесь был fallback: «14» → 4, «40» → 4 и т.д. Оказалось
-     * опасно — Vosk путает «четвёртая» ↔ «четырнадцатая» в обе стороны,
-     * и отличить намерение нельзя. Если юзер сказал «четырнадцатая»
-     * и хотел 14, а её нет — fallback молча отмечал 4. Неправильно.
-     *
-     * Теперь:
-     *   - проба с распознанным ordinal есть → отмечаем;
-     *   - пробы нет → MarkOrdinalNotFound(ordinal, hintOrdinal).
-     *     hintOrdinal — «спорный» двойник (14 → 4), если такой есть.
-     *     UI и озвучка покажут: «Пробы №14 нет. Если нужна 4 —
-     *     скажите „четыре"». Пользователь уточняет числом —
-     *     количественные Vosk не путает.
-     */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1080,6 +1300,77 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             return VoiceExecResult.Message("Пробы не найдены или уже отмечены")
         }
         return VoiceExecResult.MarkedMultiple(markedNumbers)
+    }
+
+    /**
+     * FIX 5.8.11-e4-markers:
+     * Снятие отметки с нескольких проб: «снять → пять шесть».
+     */
+    private fun voiceClearByNumbers(ordinals: List<Int>): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+
+        var count = 0
+        for (ord in ordinals) {
+            val row = group.rows.firstOrNull {
+                it.wellNumber == wellNumber && it.numberInWell == ord
+            } ?: continue
+            if (row.found) {
+                setFound(row.id, false)
+                count++
+            }
+        }
+
+        if (count == 0) return VoiceExecResult.Message("Нечего снимать")
+        return VoiceExecResult.Message("Снято отметок: $count")
+    }
+
+    /**
+     * FIX 5.8.11-e4-markers:
+     * Отложить пробу по порядковому номеру.
+     */
+    private fun voicePostponeOrdinal(ordinal: Int): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+        val row = group.rows.firstOrNull {
+            it.wellNumber == wellNumber && it.numberInWell == ordinal
+        } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+
+        if (row.postponed) return VoiceExecResult.Message("Проба уже отложена")
+
+        setPostponed(row.id, true)
+        return VoiceExecResult.Message("Отложена: ${row.sampleNumber}")
+    }
+
+    private fun voicePostponeByNumbers(ordinals: List<Int>): VoiceExecResult {
+        val orderId = voiceSession.currentOrderId
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val wellNumber = voiceSession.currentWellNumber
+            ?: return VoiceExecResult.Message("Сначала найдите скважину")
+        val group = state.groupById(orderId.toString())
+            ?: return VoiceExecResult.Message("Наряд не загружен")
+
+        var count = 0
+        for (ord in ordinals) {
+            val row = group.rows.firstOrNull {
+                it.wellNumber == wellNumber && it.numberInWell == ord
+            } ?: continue
+            if (!row.postponed) {
+                setPostponed(row.id, true)
+                count++
+            }
+        }
+
+        if (count == 0) return VoiceExecResult.Message("Нечего откладывать")
+        return VoiceExecResult.Message("Отложено проб: $count")
     }
 
     private fun voiceMarkAll(): VoiceExecResult {
