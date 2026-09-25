@@ -3,90 +3,132 @@
 ## 5.8.11-e4 серия — рефакторинг ГП
 
 **Контекст:** аудит голосового пути, сведение UI и ГП в один путь,
-закрепление скважины, очередь мультизапроса.
+закрепление скважины, очередь мультизапроса, честная обработка ошибок,
+маркеры намерения, подтверждение массовых, мимикрия везде.
 
-### `5.8.11-e4-pin-4` (закрыт unit) — числительные в pin + fallback 14→4
-- `VoiceCommandParser.parseForPinned`: фраза из числительных склеивается
-  в одно число («тринадцать шестьдесят семь» → `MarkOrdinal(1367)`,
-  «тысяча пятьсот двадцать четыре» → `MarkOrdinal(1524)`).
-- `ReconciliationViewModel.voiceMarkOrdinal`: fallback 14↔4.
-- **Открыто:** fallback 400→4 — пачка `e4-pin-5`.
+### `5.8.11-e4-fix-voice-1` (закрыт, device ✅) — 4 фикса голоса
+- `VoiceDialog`: поле «Распознано» = канонический номер из БД
+  (`FoundOne.query`), а не сырой текст Vosk.
+- `ReconciliationViewModel.voiceClearOrdinal`: если проба не найдена —
+  `MarkOrdinalNotFound` с подсказкой (было просто `Message`).
+- `VoiceDialog.buildWeightQueueDonePhrase`: если `skipped == 0` —
+  «Все пробы скважины отмечены.» вместо «Очередь веса завершена.».
+- `voiceSort` и `voiceNextInQueue`: `attentionReason` для участка/наряда
+  (было жёстко `null`).
+- SORT-режим теперь корректно предупреждает о другом участке/наряде.
 
-### `5.8.11-e4-pin-3` (закрыт unit) — вес «X сотни», «следующая X»
+### `5.8.11-e4-ui-1` (закрыт) — кнопка «Наверх»
+- `SearchScreen`: `listState`, `derivedStateOf { shouldShowScrollTop(...) }`,
+  `SmallFloatingActionButton` внизу справа.
+- Порог показа: `firstVisibleItemIndex > 10`.
+- Скролл — мгновенный (`scrollToItem(0)`).
+- `SearchScrollTopTest` — 5 тестов.
+
+### `5.8.11-e4-weight-queue` (закрыт) — очередь веса
+- `VoiceState.AWAITING_WEIGHT_QUEUE`.
+- `VoiceModels.WeightQueueKind`, `WeightQueueItem`, `WeightQueueAsked`,
+  `WeightQueueDone`.
+- `VoiceSession`: `weightQueue`, `currentWeightItem`, `advanceWeightQueue`.
+- `ReconciliationWeightQueue.buildWeightQueue(rows)` — чистая функция.
+- `ReconciliationViewModel.voiceMarkAll`: отметить всё, что можно,
+  потом очередь веса для холостых/ВК без веса.
+- `VoiceCommandParser.parseForWeightQueue` + `VoiceCommand.SkipWeightItem`.
+- `VoiceDialog`: фразы вопросов и завершения очереди.
+- Тесты: `ReconciliationWeightQueueTest` — 11 тестов.
+
+### `5.8.11-e4-prefix-1` (закрыт, device ✅) — префиксы по буквам
+- `VoiceSpeaker.spellLetters`: буквы через пробел — «KPD» → «ка пэ дэ».
+- `VoiceGrammar`: добавлены звуки букв (`VoiceLetterSounds.sounds.keys`).
+- `VoiceLetterSounds`: «дабл-ю» → «даблю» (синхронизация с TTS).
+- Тесты: `VoiceSpeakerTest` — префиксы раздельно.
+- **Итог:** TTS и Vosk симметричны. Речь и распознавание — один набор.
+
+### `5.8.11-e4-speak-1` (закрыт, device ✅) — разбиение длинных номеров
+- `VoiceSpeaker.splitLikeHuman(digits)`: чётная длина — пары, нечётная —
+  первая 3, потом пары. `1090031` → `109|00|31`.
+- `spellMimicry` переписан: сначала простая ветка «префикс + цифры»,
+  потом fallback через `QueryTokenizer + DigitGrouper`.
+- Симметрия: что человек сказал, то и услышит от TTS.
+- Тесты: `VoiceSpeakerTest` — 19 тестов.
+
+### `5.8.11-e4-markers-2` (закрыт, device ✅) — отложение одной фразой
+- `VoiceCommand.PostponeOrdinal(ordinal)`.
+- `VoiceCommandParser`: глаголы отложения + номер одной фразой
+  («отложить вторую», «отложи 7»).
+- `VoiceDialog.substitutedPhrase`: TTS говорит номер пробы через
+  `spellMimicry` (было «сто тридцать шесть тысяч шестьсот два»).
+- `ReconciliationViewModel`: fallback-подсказка в `voiceClearOrdinal`
+  (баг, закрыт в `e4-fix-voice-1`).
+- Тесты: `VoiceMarkersTest` — расширены.
+
+### `5.8.11-e4-markers` (закрыт, device ✅) — маркеры намерения
+- `VoiceState.AWAITING_MARK`, `AWAITING_CLEAR`, `AWAITING_POSTPONE`,
+  `AWAITING_CONFIRM`.
+- `VoiceCommand.MarkIntent`, `ClearIntent`, `PostponeIntent`, `Confirm`,
+  `Decline`.
+- `VoiceSession.pendingMarkIntent`, `pendingConfirm`.
+- Тайм-аут 30 сек с предупреждением на 20-й (в `checkWaitTimeout`).
+- Подтверждение массовых: «подтверждаю» / «отменяю».
+- `VoiceDialog`: `LaunchedEffect` с тиком 250 мс для тайм-аута.
+- Тесты: `VoiceMarkersTest` — 17 тестов.
+
+### `5.8.11-e4-pin-7` (закрыт, device ✅) — честная ошибка вместо fallback
+- Отказ от fallback: Vosk путает «четвёртая» ↔ «четырнадцатая» в обе
+  стороны. Молчаливая подмена опасна.
+- `VoiceMarkOrdinalFallback`: `resolve` и `isSubstituted` удалены.
+  Осталась `candidatesFor` / `hintFor`.
+- `VoiceExecResult.MarkOrdinalNotFound(ordinal, hintOrdinal)`.
+- UI: «Пробы №14 нет. Если нужна №4 — произнесите „четыре".»
+- Accent fix: «Распознано» убрано из голоса.
+- **И-35** — зафиксировано как ограничение Vosk. Лечится в `e4d`.
+
+### `5.8.11-e4-pin-6` (закрыт, откачен в pin-7) — показ подмены
+- `Marked.recognizedOrdinal`, `isSubstituted()`.
+- Признано ошибочным: показ подмены не решает главную проблему —
+  молчаливое неверное действие. Откачено.
+
+### `5.8.11-e4-pin-5` (закрыт) — расширение fallback
+- `VoiceMarkOrdinalFallback` — новый файл. 14↔4, 40↔4, 400↔4, 4000↔4.
+
+### `5.8.11-e4-pin-4` (закрыт) — числительные в pin + fallback 14→4
+- `VoiceCommandParser.parseForPinned`: фраза из числительных
+  склеивается в одно число.
+- `voiceMarkOrdinal`: fallback 14↔4.
+
+### `5.8.11-e4-pin-3` (закрыт) — вес «X сотни», «следующая X»
 - `VoiceCommandParser.parseWeightAnswer`: «два семьсот» → 2,7.
-- `VoiceCommandParser.parse`: «следующая X» → `Find(X)`.
-- `VoiceCommandParser.parseForPinned`: любое число → `MarkOrdinal`
-  (без Search).
+- «следующая X» → `Find(X)`.
 - `VoiceModels.FoundOne.queueSize`: префикс «Найдено N скважин».
-- `VoiceDialog.buildFoundOnePhrase`: показывает префикс при `queueSize > 1`.
 
-### `5.8.11-e4-pin-2` (закрыт unit) — очередь мультизапроса
+### `5.8.11-e4-pin-2` (закрыт) — очередь мультизапроса
 - `VoiceCommand.NextInQueue`.
 - `VoiceSession.queue`, `enqueue`, `nextInQueue`, `clearQueue`, `hasQueue`.
-- `ReconciliationViewModel.voiceSort`: строит очередь, первый — pin,
-  остальные в `queue`.
-- `voiceNextInQueue`: переключение в очереди.
-- **Ручной ввод UI сбрасывает** pin и очередь.
 
-### `5.8.11-e4-pin-1` (закрыт unit) — закрепление скважины
-- `VoiceState.FOUND_PINNED`.
-- `PinnedScope` — orderId, orderTitle, areaTitle, wellNumber.
+### `5.8.11-e4-pin-1` (закрыт) — закрепление скважины
+- `VoiceState.FOUND_PINNED`, `PinnedScope`.
 - `VoiceSession.pin/unpin/isPinned`.
-- `VoiceCommandParser.parseForPinned`: в pin голое число → `MarkOrdinal`.
-- `ReconciliationViewModel.voiceSearch`: после `FoundOne` — pin.
-- `voiceNext` / `Undo` / ручной ввод — сбрасывают pin.
+- `VoiceCommandParser.parseForPinned`: голое число → `MarkOrdinal`.
 
-### `5.8.11-e4e-bundle` (закрыт unit) — мимикрия + единый путь
-- `VoiceSpeaker.spellOut(groups)`: без запятых, префикс одним словом
-  («капэдэ»), W → «даблю».
-- `VoiceModels.FoundOne.groups` — структура ввода.
-- `ReconciliationViewModel.voiceSearch`: переход на `SearchService`
-  (`QueryTokenizer` → `DigitGrouper` → `SearchService`).
-- `VoiceDialog`: `spellOut(groups)` при `groups.isNotEmpty()`.
-- **Фикс после падения теста:** `spellPlain` для 4+ цифр → словами,
-  ведущий ноль → по цифрам.
+### `5.8.11-e4e-bundle` (закрыт) — мимикрия + единый путь
+- `VoiceSpeaker.spellOut(groups)`: без запятых, префикс одним словом.
+- `ReconciliationViewModel.voiceSearch`: через `SearchService`.
 
-### `5.8.11-e4-tests` (закрыт unit) — покрытие парсера
-- `VoiceCommandParserWeightsTest` — 17 тестов (вес, мусор, состояния).
-- `VoiceCommandParserFindTest` — 8 тестов («найди», формы).
-- `VoiceCommandParserPausedTest` — 6 тестов (PAUSED).
-- Фикс опечатки «хатит» → «хватит» в `parse()`, `parseForContinue()`.
-
-### `5.8.11-e4a` (закрыт unit) — вес в `AWAITING_WEIGHT`
-- `VoiceExecResult.WeightSet` и обработка `VoiceCommand.SetWeight`.
-- `voiceSetWeight`: холостая идёт через `setBlankWeightAndMarkFound`.
-
-### `5.8.11-e4b` (закрыт unit) — фильтр мусора в весе
-- `VoiceCommandParser.isCleanWeightPhrase` — отсекает фразы с
-  посторонними словами.
-- `weightAllowedWords` — белый список.
-
-### `5.8.11-e4g` (закрыт unit) — Pause в `AWAITING_WEIGHT`
-- `parseForWeight`: «пауза»/«паузу» → `Pause`.
-- Опечатка «хатит» → «хватит» в трёх методах.
-
-### `5.8.11-e4g3` (закрыт unit) — команда «Найди»
-- `VoiceCommand.Find(query: String?)`.
-- `VoiceGrammar`: глаголы «найди», «найти», «ищи», «искать», «поищи».
-- `ReconciliationViewModel`: обработка в `voiceExecute`.
-
-### `5.8.11-e4-fix-2` (закрыт unit) — кулдаун TTS
-- `VoiceController.RESUME_DELAY_MS`: 800 → 250 мс.
-
-### `5.8.11-e4-fix-1` (закрыт unit) — «четвертью» из грамматики
-- `VoiceGrammar.explicitCommandWords`: убрано «четвертью».
-
-### `5.8.11-e4c` (откачен)
-- Числительные в `QueryTokenizer`. Менял UI-путь. Откатили.
+### `5.8.11-e4-tests` (закрыт) — покрытие парсера
+- `VoiceCommandParserWeightsTest` — 17 тестов.
+- `VoiceCommandParserFindTest` — 8 тестов.
+- `VoiceCommandParserPausedTest` — 6 тестов.
 
 ### Архитектурные решения серии
 
 - **Pin скважины** — `FOUND_PINNED`, `PinnedScope`. Реализовано.
-- **Очередь мультизапроса** — `queue`, `NextInQueue`. Реализовано.
-- **Мимикрия TTS** — `spellOut(groups)`. Реализовано.
-- **Маркеры намерения** — `AWAITING_MARK` и др. Запланировано.
-- **Динамические словари Vosk** — по состояниям. Запланировано.
-- **Приоритет левой части** — `e4-search-context`. Запланировано.
+- **Очередь мультизапроса** — реализовано.
+- **Мимикрия TTS везде** — `spellMimicry`. Реализовано.
+- **Честная ошибка вместо fallback** — реализовано (pin-7).
+- **Маркеры намерения** — реализовано (`e4-markers`).
+- **Подтверждение массовых** — реализовано (`e4-markers`).
+- **Очередь веса** — реализовано (`e4-weight-queue`).
+- **Префиксы по буквам** — реализовано (`e4-prefix-1`).
+- **Динамические словари Vosk** — `e4-dicts` (следующая серия).
 
 ## 5.8.11 серия — унификация поиска и ответа (SEARCH_MODEL)
 
