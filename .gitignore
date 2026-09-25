@@ -9,3 +9,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Vosk-модель (~50 МБ, не коммитим — качается в CI отдельно)
+/app/src/main/assets/
+
+# Локальный конфиг Gradle Daemon JVM
+/gradle/gradle-daemon-jvm.properties

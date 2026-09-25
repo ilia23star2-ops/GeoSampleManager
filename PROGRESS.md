@@ -3,62 +3,117 @@
 ## 5.8.11-e4 серия — рефакторинг ГП
 
 **Контекст:** аудит голосового пути, сведение UI и ГП в один путь,
-закрепление скважины, очередь мультизапроса, честная обработка ошибок.
+закрепление скважины, очередь мультизапроса, честная обработка ошибок,
+маркеры намерения, подтверждение массовых, мимикрия везде.
 
-### `5.8.11-e4-pin-7` (закрыт unit) — честная ошибка вместо fallback
+### `5.8.11-e4-fix-voice-1` (закрыт, device ✅) — 4 фикса голоса
+- `VoiceDialog`: поле «Распознано» = канонический номер из БД
+  (`FoundOne.query`), а не сырой текст Vosk.
+- `ReconciliationViewModel.voiceClearOrdinal`: если проба не найдена —
+  `MarkOrdinalNotFound` с подсказкой (было просто `Message`).
+- `VoiceDialog.buildWeightQueueDonePhrase`: если `skipped == 0` —
+  «Все пробы скважины отмечены.» вместо «Очередь веса завершена.».
+- `voiceSort` и `voiceNextInQueue`: `attentionReason` для участка/наряда
+  (было жёстко `null`).
+- SORT-режим теперь корректно предупреждает о другом участке/наряде.
+
+### `5.8.11-e4-ui-1` (закрыт) — кнопка «Наверх»
+- `SearchScreen`: `listState`, `derivedStateOf { shouldShowScrollTop(...) }`,
+  `SmallFloatingActionButton` внизу справа.
+- Порог показа: `firstVisibleItemIndex > 10`.
+- Скролл — мгновенный (`scrollToItem(0)`).
+- `SearchScrollTopTest` — 5 тестов.
+
+### `5.8.11-e4-weight-queue` (закрыт) — очередь веса
+- `VoiceState.AWAITING_WEIGHT_QUEUE`.
+- `VoiceModels.WeightQueueKind`, `WeightQueueItem`, `WeightQueueAsked`,
+  `WeightQueueDone`.
+- `VoiceSession`: `weightQueue`, `currentWeightItem`, `advanceWeightQueue`.
+- `ReconciliationWeightQueue.buildWeightQueue(rows)` — чистая функция.
+- `ReconciliationViewModel.voiceMarkAll`: отметить всё, что можно,
+  потом очередь веса для холостых/ВК без веса.
+- `VoiceCommandParser.parseForWeightQueue` + `VoiceCommand.SkipWeightItem`.
+- `VoiceDialog`: фразы вопросов и завершения очереди.
+- Тесты: `ReconciliationWeightQueueTest` — 11 тестов.
+
+### `5.8.11-e4-prefix-1` (закрыт, device ✅) — префиксы по буквам
+- `VoiceSpeaker.spellLetters`: буквы через пробел — «KPD» → «ка пэ дэ».
+- `VoiceGrammar`: добавлены звуки букв (`VoiceLetterSounds.sounds.keys`).
+- `VoiceLetterSounds`: «дабл-ю» → «даблю» (синхронизация с TTS).
+- Тесты: `VoiceSpeakerTest` — префиксы раздельно.
+- **Итог:** TTS и Vosk симметричны. Речь и распознавание — один набор.
+
+### `5.8.11-e4-speak-1` (закрыт, device ✅) — разбиение длинных номеров
+- `VoiceSpeaker.splitLikeHuman(digits)`: чётная длина — пары, нечётная —
+  первая 3, потом пары. `1090031` → `109|00|31`.
+- `spellMimicry` переписан: сначала простая ветка «префикс + цифры»,
+  потом fallback через `QueryTokenizer + DigitGrouper`.
+- Симметрия: что человек сказал, то и услышит от TTS.
+- Тесты: `VoiceSpeakerTest` — 19 тестов.
+
+### `5.8.11-e4-markers-2` (закрыт, device ✅) — отложение одной фразой
+- `VoiceCommand.PostponeOrdinal(ordinal)`.
+- `VoiceCommandParser`: глаголы отложения + номер одной фразой
+  («отложить вторую», «отложи 7»).
+- `VoiceDialog.substitutedPhrase`: TTS говорит номер пробы через
+  `spellMimicry` (было «сто тридцать шесть тысяч шестьсот два»).
+- `ReconciliationViewModel`: fallback-подсказка в `voiceClearOrdinal`
+  (баг, закрыт в `e4-fix-voice-1`).
+- Тесты: `VoiceMarkersTest` — расширены.
+
+### `5.8.11-e4-markers` (закрыт, device ✅) — маркеры намерения
+- `VoiceState.AWAITING_MARK`, `AWAITING_CLEAR`, `AWAITING_POSTPONE`,
+  `AWAITING_CONFIRM`.
+- `VoiceCommand.MarkIntent`, `ClearIntent`, `PostponeIntent`, `Confirm`,
+  `Decline`.
+- `VoiceSession.pendingMarkIntent`, `pendingConfirm`.
+- Тайм-аут 30 сек с предупреждением на 20-й (в `checkWaitTimeout`).
+- Подтверждение массовых: «подтверждаю» / «отменяю».
+- `VoiceDialog`: `LaunchedEffect` с тиком 250 мс для тайм-аута.
+- Тесты: `VoiceMarkersTest` — 17 тестов.
+
+### `5.8.11-e4-pin-7` (закрыт, device ✅) — честная ошибка вместо fallback
 - Отказ от fallback: Vosk путает «четвёртая» ↔ «четырнадцатая» в обе
-  стороны, отличить намерение нельзя. Молчаливая подмена опасна.
+  стороны. Молчаливая подмена опасна.
 - `VoiceMarkOrdinalFallback`: `resolve` и `isSubstituted` удалены.
-  Осталась `candidatesFor` / `hintFor` — какие числа «спорные».
-- `ReconciliationViewModel.voiceMarkOrdinal`: если пробы с распознанным
-  номером нет — `MarkOrdinalNotFound(ordinal, hintOrdinal)`.
-- `VoiceExecResult.MarkOrdinalNotFound` — новое. UI и озвучка показывают:
-  «Пробы №14 нет. Если нужна №4 — произнесите «четыре».»
-- Accent fix: слово «Распознано» убрано из голоса (резало слух).
-- Тесты: `VoiceMarkOrdinalFallbackTest` — 26 тестов на `hintFor`
-  и `candidatesFor`.
-- **Фикс после падения теста:** для 1..3 кандидатов нет — Vosk не
-  путает «перв/втор/трет» с 10/100/1000.
+  Осталась `candidatesFor` / `hintFor`.
+- `VoiceExecResult.MarkOrdinalNotFound(ordinal, hintOrdinal)`.
+- UI: «Пробы №14 нет. Если нужна №4 — произнесите „четыре".»
+- Accent fix: «Распознано» убрано из голоса.
+- **И-35** — зафиксировано как ограничение Vosk. Лечится в `e4d`.
 
-### `5.8.11-e4-pin-6` (закрыт unit, откачен в pin-7) — показ подмены
-- `VoiceExecResult.Marked.recognizedOrdinal` — исходный номер от Vosk.
-- `VoiceModels.Marked.isSubstituted()` — extension «была ли подмена».
-- `VoiceDialog`: `Распознано «четырнадцатая» → Четвёртая отмечена.`
+### `5.8.11-e4-pin-6` (закрыт, откачен в pin-7) — показ подмены
+- `Marked.recognizedOrdinal`, `isSubstituted()`.
 - Признано ошибочным: показ подмены не решает главную проблему —
-  молчаливое неверное действие. Откачено в pin-7.
+  молчаливое неверное действие. Откачено.
 
-### `5.8.11-e4-pin-5` (закрыт unit) — расширение fallback
-- `VoiceMarkOrdinalFallback` — новый файл. Fallback расширен:
-  14↔4, 40↔4, 90↔9, 400↔4, 900↔9, 4000↔4, 9000↔9.
-- `ReconciliationViewModel.voiceMarkOrdinal` делегирует в helper.
-- Тесты: `VoiceMarkOrdinalFallbackTest` — 6 тестов.
+### `5.8.11-e4-pin-5` (закрыт) — расширение fallback
+- `VoiceMarkOrdinalFallback` — новый файл. 14↔4, 40↔4, 400↔4, 4000↔4.
 
-### `5.8.11-e4-pin-4` (закрыт unit) — числительные в pin + fallback 14→4
-- `VoiceCommandParser.parseForPinned`: фраза из числительных склеивается
-  в одно число («тринадцать шестьдесят семь» → `MarkOrdinal(1367)`).
-- `ReconciliationViewModel.voiceMarkOrdinal`: fallback 14↔4.
+### `5.8.11-e4-pin-4` (закрыт) — числительные в pin + fallback 14→4
+- `VoiceCommandParser.parseForPinned`: фраза из числительных
+  склеивается в одно число.
+- `voiceMarkOrdinal`: fallback 14↔4.
 
-### `5.8.11-e4-pin-3` (закрыт unit) — вес «X сотни», «следующая X»
+### `5.8.11-e4-pin-3` (закрыт) — вес «X сотни», «следующая X»
 - `VoiceCommandParser.parseWeightAnswer`: «два семьсот» → 2,7.
-- `VoiceCommandParser.parse`: «следующая X» → `Find(X)`.
+- «следующая X» → `Find(X)`.
 - `VoiceModels.FoundOne.queueSize`: префикс «Найдено N скважин».
 
-### `5.8.11-e4-pin-2` (закрыт unit) — очередь мультизапроса
+### `5.8.11-e4-pin-2` (закрыт) — очередь мультизапроса
 - `VoiceCommand.NextInQueue`.
 - `VoiceSession.queue`, `enqueue`, `nextInQueue`, `clearQueue`, `hasQueue`.
-- `ReconciliationViewModel.voiceSort`: очередь при мультизапросе.
 
-### `5.8.11-e4-pin-1` (закрыт unit) — закрепление скважины
-- `VoiceState.FOUND_PINNED`.
-- `PinnedScope` — orderId, orderTitle, areaTitle, wellNumber.
+### `5.8.11-e4-pin-1` (закрыт) — закрепление скважины
+- `VoiceState.FOUND_PINNED`, `PinnedScope`.
 - `VoiceSession.pin/unpin/isPinned`.
 - `VoiceCommandParser.parseForPinned`: голое число → `MarkOrdinal`.
 
-### `5.8.11-e4e-bundle` (закрыт unit) — мимикрия + единый путь
+### `5.8.11-e4e-bundle` (закрыт) — мимикрия + единый путь
 - `VoiceSpeaker.spellOut(groups)`: без запятых, префикс одним словом.
 - `ReconciliationViewModel.voiceSearch`: через `SearchService`.
 
-### `5.8.11-e4-tests` (закрыт unit) — покрытие парсера
+### `5.8.11-e4-tests` (закрыт) — покрытие парсера
 - `VoiceCommandParserWeightsTest` — 17 тестов.
 - `VoiceCommandParserFindTest` — 8 тестов.
 - `VoiceCommandParserPausedTest` — 6 тестов.
@@ -67,11 +122,13 @@
 
 - **Pin скважины** — `FOUND_PINNED`, `PinnedScope`. Реализовано.
 - **Очередь мультизапроса** — реализовано.
-- **Мимикрия TTS** — `spellOut(groups)`. Реализовано.
+- **Мимикрия TTS везде** — `spellMimicry`. Реализовано.
 - **Честная ошибка вместо fallback** — реализовано (pin-7).
-- **Маркеры намерения** — запланировано (`e4-markers`).
-- **Подтверждение массовых** — запланировано (`e4-markers`).
-- **Динамические словари Vosk** — запланировано (`e4-dicts`).
+- **Маркеры намерения** — реализовано (`e4-markers`).
+- **Подтверждение массовых** — реализовано (`e4-markers`).
+- **Очередь веса** — реализовано (`e4-weight-queue`).
+- **Префиксы по буквам** — реализовано (`e4-prefix-1`).
+- **Динамические словари Vosk** — `e4-dicts` (следующая серия).
 
 ## 5.8.11 серия — унификация поиска и ответа (SEARCH_MODEL)
 
