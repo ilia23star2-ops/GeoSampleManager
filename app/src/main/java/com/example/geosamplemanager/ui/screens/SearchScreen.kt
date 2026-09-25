@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +48,14 @@ import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
+
+/**
+ * FIX 5.8.11-e4-ui-1:
+ * Порог появления кнопки «Наверх». Показываем, если прокрутили
+ * больше 10 элементов списка (firstVisibleItemIndex > 10).
+ */
+internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
+    firstVisibleItemIndex > 10
 
 sealed interface ReconItem {
     val key: String
@@ -91,6 +100,13 @@ fun SearchScreen(
     DisposableEffect(state.voiceStatus) {
         view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
         onDispose { view.keepScreenOn = false }
+    }
+
+    // FIX 5.8.11-e4-ui-1: состояние скролла списка проб
+    // + флаг показа кнопки «Наверх».
+    val listState = rememberLazyListState()
+    val showScrollTop by remember {
+        derivedStateOf { shouldShowScrollTop(listState.firstVisibleItemIndex) }
     }
 
     var weightDialogRowId by remember { mutableStateOf<String?>(null) }
@@ -303,6 +319,8 @@ fun SearchScreen(
             HorizontalDivider()
 
             LazyColumn(
+                // FIX 5.8.11-e4-ui-1: state для кнопки «Наверх».
+                state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
                 contentPadding = PaddingValues(vertical = 8.dp)
@@ -472,11 +490,6 @@ fun SearchScreen(
         }
 
         // FIX 5.8.10-g2 (И-3):
-        // Раньше был VoiceStatusBar — тонкая полоска снизу Column.
-        // Теперь всю нижнюю часть занимает VoicePanel. Две панели
-        // одновременно не нужны.
-
-        // FIX 5.8.10-g2 (И-3):
         // Snackbar поднят на 100 dp — не перекрывает панель ГП.
         SnackbarHost(
             hostState = snackbarHostState,
@@ -485,9 +498,30 @@ fun SearchScreen(
                 .padding(bottom = 100.dp, start = 16.dp, end = 16.dp)
         )
 
+        // FIX 5.8.11-e4-ui-1:
+        // Кнопка «Наверх». Появляется, если в списке прокрутили больше
+        // 10 элементов. Маленькая, внизу справа, над панелью ГП.
+        // Скролл — мгновенный (scrollToItem, не animateScrollToItem).
+        if (showScrollTop) {
+            SmallFloatingActionButton(
+                onClick = {
+                    scope.launch { listState.scrollToItem(0) }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 100.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(
+                    Icons.Filled.KeyboardArrowUp,
+                    contentDescription = "Наверх"
+                )
+            }
+        }
+
         // FIX 5.8.10-g1/g2 (И-3):
         // Панель ГП — немодальная, прижата к низу экрана.
-        // Внутри VoiceDialog сам рендерит Box(fillMaxSize, BottomCenter).
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
