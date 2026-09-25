@@ -457,15 +457,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         state.voiceStatus = status
     }
 
-    /**
-     * FIX 5.8.11-e4-markers:
-     * Проверка тайм-аута ожидания. Вызывается из VoiceDialog
-     * периодически. Если pendingMarkIntent / pendingConfirm висит
-     * дольше 30 сек — сбрасываем.
-     *
-     * Возвращает: 0 — ничего не делаем; 1 — предупреждение (20 сек);
-     * 2 — сброс (30 сек). VoiceDialog использует это для озвучки.
-     */
     fun checkWaitTimeout(): Int {
         val now = System.currentTimeMillis()
 
@@ -507,12 +498,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             else -> Unit
         }
 
-        // FIX 5.8.11-e4-markers: подтверждение массовых.
         if (voiceSession.pendingConfirm != null) {
             return handlePendingConfirm(cmd)
         }
 
-        // FIX 5.8.11-e4-markers: маркер намерения — ждём номер.
         if (voiceSession.pendingMarkIntent != null) {
             return handlePendingMarkIntent(cmd)
         }
@@ -627,7 +616,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
             is VoiceCommand.MarkByNumbers -> markGuard { voiceMarkByNumbers(cmd.ordinals) }
 
-            // FIX 5.8.11-e4-markers: массовые → подтверждение.
             VoiceCommand.MarkAll -> markGuard {
                 voiceRequestConfirm(ConfirmedAction.MARK_ALL)
             }
@@ -637,7 +625,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.MarkCurrent -> markGuard { voiceMarkCurrent() }
 
-            // FIX 5.8.11-e4-markers: маркеры намерения.
             VoiceCommand.MarkIntent -> markGuard {
                 voiceStartMarkIntent(PendingMarkIntentType.MARK)
             }
@@ -648,19 +635,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 voiceStartMarkIntent(PendingMarkIntentType.POSTPONE)
             }
 
-            VoiceCommand.Confirm -> VoiceExecResult.Message(
-                "Нечего подтверждать."
-            )
-            VoiceCommand.Decline -> VoiceExecResult.Message(
-                "Нечего отменять."
-            )
+            VoiceCommand.Confirm -> VoiceExecResult.Message("Нечего подтверждать.")
+            VoiceCommand.Decline -> VoiceExecResult.Message("Нечего отменять.")
 
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
 
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
             VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
+
             is VoiceCommand.PostponeOrdinal -> markGuard { voicePostponeOrdinal(cmd.ordinal) }
-            
+
             VoiceCommand.Unpostpone -> voiceUnpostpone()
 
             VoiceCommand.ChoiceRemove -> voiceChoiceRemove()
@@ -700,7 +684,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Help -> VoiceExecResult.Message(
                 "Скажи номер, «отметь», «отметь все», «снять», «снять все», " +
-                        "«отложить», «следующая», «стоп», «пауза»."
+                        "«отложить», «отложить вторую», «следующая», «стоп», «пауза»."
             )
 
             is VoiceCommand.Sort -> voiceSort(cmd.queries)
@@ -710,13 +694,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    // ================================================================
-    // FIX 5.8.11-e4-markers: маркеры намерения
-    // ================================================================
-
-    /**
-     * Запустить маркер намерения. Проверяем, что есть активная скважина.
-     */
     private fun voiceStartMarkIntent(type: PendingMarkIntentType): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -738,10 +715,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message(question)
     }
 
-    /**
-     * Обработать команду внутри маркера намерения.
-     * Ждём MarkOrdinal / MarkByNumbers.
-     */
     private fun handlePendingMarkIntent(cmd: VoiceCommand): VoiceExecResult {
         val intent = voiceSession.pendingMarkIntent
             ?: return VoiceExecResult.Message("Ошибка состояния")
@@ -789,14 +762,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    // ================================================================
-    // FIX 5.8.11-e4-markers: подтверждение массовых
-    // ================================================================
-
-    /**
-     * Запросить подтверждение массового действия. Считаем, сколько
-     * проб будет затронуто, и озвучиваем.
-     */
     private fun voiceRequestConfirm(action: ConfirmedAction): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -839,9 +804,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         else -> "проб"
     }
 
-    /**
-     * Обработать команду в состоянии AWAITING_CONFIRM.
-     */
     private suspend fun handlePendingConfirm(cmd: VoiceCommand): VoiceExecResult {
         val pending = voiceSession.pendingConfirm
             ?: return VoiceExecResult.Message("Ошибка состояния")
@@ -873,8 +835,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             )
         }
     }
-
-    // ================================================================
 
     private inline fun markGuard(action: () -> VoiceExecResult): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
@@ -1303,10 +1263,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.MarkedMultiple(markedNumbers)
     }
 
-    /**
-     * FIX 5.8.11-e4-markers:
-     * Снятие отметки с нескольких проб: «снять → пять шесть».
-     */
     private fun voiceClearByNumbers(ordinals: List<Int>): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1331,8 +1287,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * FIX 5.8.11-e4-markers:
+     * FIX 5.8.11-e4-markers-2:
      * Отложить пробу по порядковому номеру.
+     *
+     * FIX 5.8.11-e4-markers-2/5:
+     * Номер пробы прогнан через VoiceSpeaker.spellOut, чтобы TTS
+     * не читал «NV136602» как одно большое число. Раньше было
+     * «сто тридцать шесть тысяч шестьсот два», теперь
+     * «эн вэ тринадцать шестьдесят шесть ноль два».
      */
     private fun voicePostponeOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -1348,7 +1310,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (row.postponed) return VoiceExecResult.Message("Проба уже отложена")
 
         setPostponed(row.id, true)
-        return VoiceExecResult.Message("Отложена: ${row.sampleNumber}")
+
+        val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+        return VoiceExecResult.Message("Отложена: $spoken")
     }
 
     private fun voicePostponeByNumbers(ordinals: List<Int>): VoiceExecResult {
