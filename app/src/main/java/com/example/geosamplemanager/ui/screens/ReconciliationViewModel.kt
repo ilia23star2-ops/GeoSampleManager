@@ -24,6 +24,7 @@ import com.example.geosamplemanager.data.voice.UnifiedSearchResult
 import com.example.geosamplemanager.data.voice.VoiceCommand
 import com.example.geosamplemanager.data.voice.VoiceCommandParser
 import com.example.geosamplemanager.data.voice.VoiceExecResult
+import com.example.geosamplemanager.data.voice.VoiceMarkOrdinalFallback
 import com.example.geosamplemanager.data.voice.VoiceNumberParser
 import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoicePrefixResolver
@@ -570,7 +571,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             is VoiceCommand.Search -> handleSearchInSession(cmd.query)
 
             is VoiceCommand.Find -> {
-                // FIX 5.8.11-e4-pin-3: новый поиск сбрасывает pin и очередь.
                 voiceSession.unpin()
                 voiceSession.clearQueue()
                 voiceSession.mode = VoiceSessionMode.SEARCH
@@ -924,10 +924,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * FIX 5.8.11-e4-pin-4:
-     * Vosk путает «четвёртая» ↔ «четырнадцатая» (4 ↔ 14).
-     * Fallback: если проба `ordinal` не найдена, попробовать `ordinal ± 10`
-     * (только для диапазонов 1..9 и 10..19).
+     * FIX 5.8.11-e4-pin-5:
+     * Раньше fallback был захардкожен прямо здесь (14↔4). Теперь
+     * логика вынесена в VoiceMarkOrdinalFallback и расширена:
+     *   14↔4, 400→4, 500→5, …, 900→9, 40→4, …, 90→9,
+     *   4000→4, …, 9000→9.
      */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -937,27 +938,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
-        var row = group.rows.firstOrNull {
-            it.wellNumber == wellNumber && it.numberInWell == ordinal
+        val wellRows = group.rows.filter { it.wellNumber == wellNumber }
+        if (wellRows.isEmpty()) {
+            return VoiceExecResult.Message("Проба №$ordinal не найдена")
         }
 
-        if (row == null) {
-            val alt = when (ordinal) {
-                in 10..19 -> ordinal - 10
-                in 1..9 -> ordinal + 10
-                else -> null
-            }
-            if (alt != null) {
-                row = group.rows.firstOrNull {
-                    it.wellNumber == wellNumber && it.numberInWell == alt
-                }
-                if (row != null) {
-                    Log.i(TAG, "voiceMarkOrdinal: fallback $ordinal → $alt")
-                }
-            }
+        val availableOrdinals: Set<Int> = wellRows.map { it.numberInWell }.toSet()
+
+        val resolvedOrdinal = VoiceMarkOrdinalFallback.resolve(
+            ordinal = ordinal,
+            hasOrdinal = { it in availableOrdinals }
+        ) ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+
+        if (resolvedOrdinal != ordinal) {
+            Log.i(TAG, "voiceMarkOrdinal: fallback $ordinal → $resolvedOrdinal")
         }
 
-        row ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+        val row = wellRows.firstOrNull { it.numberInWell == resolvedOrdinal }
+            ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
+
         return applyMarkDecision(row)
     }
 
