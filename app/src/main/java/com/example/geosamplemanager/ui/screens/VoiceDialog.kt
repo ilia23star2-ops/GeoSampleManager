@@ -484,16 +484,16 @@ private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
 }
 
 /**
- * FIX 5.8.11-e4-markers-2/6:
- * Единая точка озвучки номера. Если есть groups — мимикрия по ним.
- * Если нет — мимикрия через spellMimicry(fallback), а не по буквам.
+ * FIX 5.8.11-e4-pin-multi:
+ * Всегда озвучиваем полный номер из БД (r.query = matchedValue).
+ * Не берём r.groups — там только то, что сказал Vosk. Если человек
+ * не назвал префикс — в groups его нет.
+ *
+ * r.query для скважины = NV1366, для пробы = NV136602 — полный.
+ * spellMimicry разобьёт «как человек»: «энвэ 13 66».
  */
 private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
-    if (r.groups.isNotEmpty()) {
-        VoiceSpeaker.spellOut(r.groups)
-    } else {
-        VoiceSpeaker.spellMimicry(fallback)
-    }
+    VoiceSpeaker.spellMimicry(fallback)
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
     is VoiceExecResult.FoundOne -> {

@@ -3,16 +3,10 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-markers-2:
- *  - Глаголы отложения + номер одной фразой:
- *    «отложить вторую» → PostponeOrdinal(2)
- *    «отложи 7» → PostponeOrdinal(7)
- *    «перенести третью» → PostponeOrdinal(3)
- *  - Без номера → PostponeIntent (как было в e4-markers).
- *
- * FIX 5.8.11-e4-markers/8:
- *  - «отметь 7» (голое число) — через tail.toIntOrNull().
- *  - «хватит» — во всех состояниях.
+ * FIX 5.8.11-e4-pin-multi/10:
+ *  - isOnlyNumbersPhrase пропускает слова-разделители («и», «запятая»,
+ *    «,», «;»). Раньше «тринадцать и шестьдесят семь» не проходило
+ *    проверку, и уходило в Sort([13, 67]) вместо MarkOrdinal(1367).
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -51,7 +45,6 @@ class VoiceCommandParser(
 
     private val markVerbPrefixes = listOf("отметь ", "отметить ", "отметьте ")
 
-    /** FIX 5.8.11-e4-markers-2: глаголы отложения с аргументом. */
     private val postponeVerbPrefixes = listOf(
         "отложить ", "отложи ",
         "перенести ", "перенеси "
@@ -76,6 +69,13 @@ class VoiceCommandParser(
     private val markIntentWords = setOf("отметь", "отметить", "отметьте")
 
     private val stopWords = setOf("стоп", "хатит", "хватит")
+
+    /**
+     * FIX 5.8.11-e4-pin-multi/10:
+     * Слова-разделители, допустимые внутри числовой фразы.
+     * «тринадцать и шестьдесят семь» → число 1367.
+     */
+    private val numberPhraseSeparators = setOf("и", "запятая", ",", ";")
 
     private val hundredFormToValue: Map<String, Int> = mapOf(
         "сто" to 1, "двести" to 2, "триста" to 3, "четыреста" to 4,
@@ -176,43 +176,19 @@ class VoiceCommandParser(
             return if (value != null) VoiceCommand.SetWeight(value) else VoiceCommand.Unknown
         }
 
-        // Глагол «отметь» + номер.
         for (prefix in markVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
                 if (tail.isEmpty()) return VoiceCommand.MarkIntent
-
-                val ord = VoiceOrdinals.match(tail)
-                if (ord != null) return VoiceCommand.MarkOrdinal(ord)
-
-                tail.toIntOrNull()?.let { n ->
-                    if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
-                }
-
-                val num = numberParser.parse(tail).primary?.toIntOrNull()
-                if (num != null && num in 1..30) return VoiceCommand.MarkOrdinal(num)
-
-                return VoiceCommand.Unknown
+                return parseMarkTail(tail)
             }
         }
 
-        // FIX 5.8.11-e4-markers-2: глагол «отложить» + номер.
         for (prefix in postponeVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
                 if (tail.isEmpty()) return VoiceCommand.PostponeIntent
-
-                val ord = VoiceOrdinals.match(tail)
-                if (ord != null) return VoiceCommand.PostponeOrdinal(ord)
-
-                tail.toIntOrNull()?.let { n ->
-                    if (n in 1..30) return VoiceCommand.PostponeOrdinal(n)
-                }
-
-                val num = numberParser.parse(tail).primary?.toIntOrNull()
-                if (num != null && num in 1..30) return VoiceCommand.PostponeOrdinal(num)
-
-                return VoiceCommand.Unknown
+                return parsePostponeTail(tail)
             }
         }
 
@@ -224,11 +200,11 @@ class VoiceCommandParser(
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
 
             tail.toIntOrNull()?.let { n ->
-                if (n in 1..30) return VoiceCommand.ClearOrdinal(n)
+                if (n in 1..99) return VoiceCommand.ClearOrdinal(n)
             }
 
             val num = numberParser.parse(tail).primary?.toIntOrNull()
-            if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
+            if (num != null && num in 1..99) return VoiceCommand.ClearOrdinal(num)
             return VoiceCommand.Unknown
         }
 
@@ -276,6 +252,94 @@ class VoiceCommandParser(
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
     }
 
+    private fun parseMarkTail(tail: String): VoiceCommand {
+        val ordinals = VoiceOrdinals.matchAll(tail)
+        if (ordinals.isNotEmpty()) {
+            return if (ordinals.size == 1) VoiceCommand.MarkOrdinal(ordinals[0])
+            else VoiceCommand.MarkByNumbers(ordinals)
+        }
+
+        val numberTokens = tokenizeToNumberTokens(tail)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
+        }
+
+        tail.toIntOrNull()?.let { n ->
+            if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
+        }
+
+        if (isOnlyNumbersPhrase(tail)) {
+            val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+            if (parsed != null && parsed in 1..99) return VoiceCommand.MarkOrdinal(parsed)
+        }
+
+        return VoiceCommand.Unknown
+    }
+
+    private fun parsePostponeTail(tail: String): VoiceCommand {
+        val ordinals = VoiceOrdinals.matchAll(tail)
+        if (ordinals.isNotEmpty()) {
+            return VoiceCommand.PostponeOrdinal(ordinals[0])
+        }
+
+        tail.toIntOrNull()?.let { n ->
+            if (n in 1..99) return VoiceCommand.PostponeOrdinal(n)
+        }
+
+        if (isOnlyNumbersPhrase(tail)) {
+            val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+            if (parsed != null && parsed in 1..99) return VoiceCommand.PostponeOrdinal(parsed)
+        }
+
+        return VoiceCommand.Unknown
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-multi/8:
+     * Перечисление коротких одиночных чисел: «два три», «пять шесть семь».
+     */
+    private fun tokenizeToNumberTokens(text: String): List<Int> {
+        return try {
+            val tokens = numberParser.tokenize(text)
+            if (tokens.size < 2) return emptyList()
+
+            val numbers = tokens.mapNotNull { it as? VoiceToken.Number }
+            if (numbers.size != tokens.size) return emptyList()
+
+            if (numbers.any { it.kind != TokenKind.D }) return emptyList()
+            if (numbers.any { it.value == 0 }) return emptyList()
+
+            numbers.map { it.value }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-multi/10:
+     * Все ли слова фразы — числительные (или числа цифрами) или
+     * разрешённые разделители.
+     *
+     * Защита от мусора в pin: «семь утра было холодно» → false.
+     * Но «тринадцать и шестьдесят семь» → true (разделитель «и»
+     * допустим).
+     */
+    private fun isOnlyNumbersPhrase(text: String): Boolean {
+        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return false
+
+        return words.all { w ->
+            w.all { it.isDigit() } ||
+                    w in numberPhraseSeparators ||
+                    w in VoiceDictionary.singleDigits.keys ||
+                    w in VoiceDictionary.teens.keys ||
+                    w in VoiceDictionary.tens.keys ||
+                    w in VoiceDictionary.hundreds.keys ||
+                    w in VoiceDictionary.thousandWords ||
+                    w in VoiceDictionary.millionWords
+        }
+    }
+
     fun parseWithState(
         input: String,
         state: VoiceState,
@@ -284,7 +348,13 @@ class VoiceCommandParser(
         return when (state) {
             VoiceState.IDLE -> VoiceCommand.Unknown
             VoiceState.LISTENING -> parse(input, pendingChoice = false)
-            VoiceState.FOUND_PINNED -> parseForPinned(input)
+            VoiceState.FOUND_PINNED -> {
+                if (mode == VoiceSessionMode.SORT) {
+                    parse(input, pendingChoice = false)
+                } else {
+                    parseForPinned(input)
+                }
+            }
             VoiceState.AWAITING_WEIGHT -> parseForWeight(input)
             VoiceState.AWAITING_CHOICE -> parse(input, pendingChoice = true)
             VoiceState.AWAITING_CONTINUE -> parseForContinue(input)
@@ -320,25 +390,21 @@ class VoiceCommandParser(
             }
         }
 
-        val tokens = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.size in 2..5) {
-            val nums = tokens.mapNotNull { t ->
-                numberParser.parse(t).primary?.replace("|", "")?.toIntOrNull()
-                    ?.takeIf { it in 1..30 }
-            }
-            if (nums.size == tokens.size && nums.size >= 2) {
-                return VoiceCommand.MarkByNumbers(nums)
-            }
+        val numberTokens = tokenizeToNumberTokens(norm)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
         }
 
         norm.toIntOrNull()?.let { n ->
-            if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
+            if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
-        val parsed = numberParser.parse(norm)
-        val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
-        if (combined != null && combined in 1..30) {
-            return VoiceCommand.MarkOrdinal(combined)
+        if (isOnlyNumbersPhrase(norm)) {
+            val parsed = numberParser.parse(norm)
+            val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
+            if (combined != null && combined in 1..99) {
+                return VoiceCommand.MarkOrdinal(combined)
+            }
         }
 
         return VoiceCommand.Unknown
@@ -376,31 +442,20 @@ class VoiceCommandParser(
 
         if (norm in nextVerbWords) return VoiceCommand.Next
 
+        val numberTokens = tokenizeToNumberTokens(norm)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
+        }
+
         norm.toIntOrNull()?.let { n ->
             if (n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
-        run {
-            val tokens = numberParser.tokenize(norm)
-            if (tokens.isNotEmpty()) {
-                val hasNonNumber = tokens.any { t ->
-                    when (t) {
-                        is VoiceToken.Number -> false
-                        is VoiceToken.Separator -> false
-                        is VoiceToken.Unknown -> {
-                            !(t.raw in VoiceDictionary.thousandWords ||
-                                    t.raw in VoiceDictionary.millionWords)
-                        }
-                        else -> true
-                    }
-                }
-                if (!hasNonNumber) {
-                    val parsed = numberParser.parse(norm)
-                    val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
-                    if (combined != null && combined > 0) {
-                        return VoiceCommand.MarkOrdinal(combined)
-                    }
-                }
+        if (isOnlyNumbersPhrase(norm)) {
+            val parsed = numberParser.parse(norm)
+            val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
+            if (combined != null && combined > 0) {
+                return VoiceCommand.MarkOrdinal(combined)
             }
         }
 
