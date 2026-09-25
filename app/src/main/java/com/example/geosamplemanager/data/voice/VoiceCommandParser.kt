@@ -3,15 +3,11 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-pin-multi:
- *  - «два три» → MarkByNumbers([2, 3]).
- *  - «двадцать три» → MarkOrdinal(23).
- *  - «отметь один два три» → MarkByNumbers([1, 2, 3]).
- *  - В SORT режиме FOUND_PINNED идёт в обычный parse.
- *
- * FIX 5.8.11-e4-pin-multi/5:
- *  - tokenizeToNumberTokens переписан без VoiceToken.
- *    Работает через numberParser.parse().primary и разделитель «|».
+ * FIX 5.8.11-e4-pin-multi/6:
+ *  - isOnlyNumbersPhrase — защита от мусора в pin.
+ *    «семь утра было холодно» → Unknown (не MarkOrdinal(7)).
+ *  - parseForPinned: блок с parse(norm).primary выполняется только
+ *    если все слова — числительные.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -266,8 +262,10 @@ class VoiceCommandParser(
             if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
-        val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
-        if (parsed != null && parsed in 1..99) return VoiceCommand.MarkOrdinal(parsed)
+        if (isOnlyNumbersPhrase(tail)) {
+            val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+            if (parsed != null && parsed in 1..99) return VoiceCommand.MarkOrdinal(parsed)
+        }
 
         return VoiceCommand.Unknown
     }
@@ -282,23 +280,20 @@ class VoiceCommandParser(
             if (n in 1..99) return VoiceCommand.PostponeOrdinal(n)
         }
 
-        val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
-        if (parsed != null && parsed in 1..99) return VoiceCommand.PostponeOrdinal(parsed)
+        if (isOnlyNumbersPhrase(tail)) {
+            val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+            if (parsed != null && parsed in 1..99) return VoiceCommand.PostponeOrdinal(parsed)
+        }
 
         return VoiceCommand.Unknown
     }
 
     /**
-     * FIX 5.8.11-e4-pin-multi/5:
      * Разобрать текст как перечисление коротких чисел.
      *
-     * Использует numberParser.parse().primary:
-     *  - если primary содержит «|» → в фразе несколько отдельных чисел.
-     *    «два три» → "2|3" → [2, 3].
-     *  - если primary без «|» → одно число. Возвращаем emptyList.
-     *    «двадцать три» → "23" → [].
-     *
-     * Возвращает emptyList для не-перечисления.
+     * Возвращает список из 2+ элементов только если numberParser
+     * явно указал перечисление (primary содержит «|»).
+     * Иначе — пустой список (значит одно число или не число).
      */
     private fun tokenizeToNumberTokens(text: String): List<Int> {
         return try {
@@ -318,6 +313,26 @@ class VoiceCommandParser(
             values
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-multi/6:
+     * Все ли слова фразы — числительные (или числа цифрами).
+     * Защита от мусора в pin: «семь утра было холодно» → false.
+     */
+    private fun isOnlyNumbersPhrase(text: String): Boolean {
+        val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.isEmpty()) return false
+
+        return words.all { w ->
+            w.all { it.isDigit() } ||
+                    w in VoiceDictionary.singleDigits.keys ||
+                    w in VoiceDictionary.teens.keys ||
+                    w in VoiceDictionary.tens.keys ||
+                    w in VoiceDictionary.hundreds.keys ||
+                    w in VoiceDictionary.thousandWords ||
+                    w in VoiceDictionary.millionWords
         }
     }
 
@@ -380,10 +395,12 @@ class VoiceCommandParser(
             if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
-        val parsed = numberParser.parse(norm)
-        val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
-        if (combined != null && combined in 1..99) {
-            return VoiceCommand.MarkOrdinal(combined)
+        if (isOnlyNumbersPhrase(norm)) {
+            val parsed = numberParser.parse(norm)
+            val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
+            if (combined != null && combined in 1..99) {
+                return VoiceCommand.MarkOrdinal(combined)
+            }
         }
 
         return VoiceCommand.Unknown
@@ -430,12 +447,22 @@ class VoiceCommandParser(
             if (n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
-        run {
+        // FIX 5.8.11-e4-pin-multi/6: блок с parse(norm).primary выполняется
+        // только если все слова — числительные. Иначе «семь утра было
+        // холодно» становится MarkOrdinal(7).
+        if (isOnlyNumbersPhrase(norm)) {
             val parsed = numberParser.parse(norm)
             val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
             if (combined != null && combined > 0) {
                 return VoiceCommand.MarkOrdinal(combined)
             }
+        }
+
+        val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
+        if (words.size == 1) {
+            val parsed = numberParser.parse(norm)
+            val n = parsed.primary?.toIntOrNull()
+            if (n != null && n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
         val result = parse(input, pendingChoice = false)
