@@ -42,6 +42,7 @@ import com.example.geosamplemanager.data.voice.DigitGrouper
 import com.example.geosamplemanager.data.voice.GroupKind
 import com.example.geosamplemanager.data.voice.GroupToCandidates
 import com.example.geosamplemanager.data.voice.QueryNormalizer
+import com.example.geosamplemanager.data.voice.QuerySplitter
 import com.example.geosamplemanager.data.voice.QueryToken
 import com.example.geosamplemanager.data.voice.QueryTokenizer
 import com.example.geosamplemanager.data.voice.SearchResult
@@ -338,23 +339,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> {
-        val result = mutableListOf<List<QueryToken>>()
-        val current = mutableListOf<QueryToken>()
-
-        for (t in tokens) {
-            if (t is QueryToken.Separator) {
-                if (current.isNotEmpty()) {
-                    result.add(current.toList())
-                    current.clear()
-                }
-            } else {
-                current.add(t)
-            }
-        }
-        if (current.isNotEmpty()) result.add(current.toList())
-        return result
-    }
+    /**
+     * FIX 5.8.11-multi-query:
+     * Логика разбиения вынесена в QuerySplitter.
+     * Здесь — тонкая обёртка, чтобы не менять вызовы.
+     */
+    private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
+        QuerySplitter.splitIntoRequests(tokens)
 
     private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
         try {
@@ -1217,12 +1208,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return result
     }
 
-    /**
-     * FIX 5.8.11-e4-fix-voice-1:
-     * attentionReason — как в voiceSearch. Проверяем выбранные
-     * участок и наряд, чтобы в SORT-режиме тоже срабатывало
-     * «Другой участок / Другой наряд».
-     */
     private suspend fun voiceNextInQueue(): VoiceExecResult {
         if (!voiceSession.hasQueue) {
             return VoiceExecResult.Message("Очередь пуста. Скажите «следующая» для нового запроса.")
@@ -1568,11 +1553,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
-    /**
-     * FIX 5.8.11-e4-fix-voice-1:
-     * Если проба не найдена — возвращаем MarkOrdinalNotFound с
-     * подсказкой. Раньше было просто Message, подсказка не срабатывала.
-     */
     private fun voiceClearOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1756,11 +1736,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * FIX 5.8.11-e4-fix-voice-1:
-     * attentionReason — если выбранный участок/наряд не совпадает
-     * с найденным. Раньше в SORT было жёстко null.
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
