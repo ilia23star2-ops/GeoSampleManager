@@ -5,6 +5,14 @@ import kotlin.math.roundToInt
 /**
  * Произношение номеров, весов и счётных фраз для TTS.
  *
+ * FIX 5.8.11-e4-speak-1:
+ * - splitLikeHuman(digits) — разбивает слитную строку цифр так,
+ *   как сказал бы человек: 1366 → 13|66, 1090031 → 109|00|31,
+ *   109003101 → 109|00|31|01.
+ * - spellMimicry(text) переписан: сначала простая ветка
+ *   «префикс + цифры» без разделителей, потом fallback через
+ *   QueryTokenizer + DigitGrouper.
+ *
  * FIX 5.8.11-e4-prefix-1:
  * - spellLetters разделяет буквы пробелом: «KPD» → «ка пэ дэ».
  *   Vosk в грамматике учит эти же звуки по отдельности, поэтому
@@ -14,74 +22,27 @@ import kotlin.math.roundToInt
 object VoiceSpeaker {
 
     private val letterToSound: Map<Char, String> = mapOf(
-        'A' to "а",
-        'B' to "бэ",
-        'C' to "цэ",
-        'D' to "дэ",
-        'E' to "е",
-        'F' to "эф",
-        'G' to "гэ",
-        'H' to "аш",
-        'I' to "и",
-        'J' to "жэ",
-        'K' to "ка",
-        'L' to "эль",
-        'M' to "эм",
-        'N' to "эн",
-        'O' to "о",
-        'P' to "пэ",
-        'Q' to "ку",
-        'R' to "эр",
-        'S' to "эс",
-        'T' to "тэ",
-        'U' to "у",
-        'V' to "вэ",
-        'W' to "даблю",
-        'X' to "икс",
-        'Y' to "игрек",
-        'Z' to "зэт"
+        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
+        'F' to "эф", 'G' to "гэ", 'H' to "аш", 'I' to "и", 'J' to "жэ",
+        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
+        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
+        'U' to "у", 'V' to "вэ", 'W' to "даблю", 'X' to "икс",
+        'Y' to "игрек", 'Z' to "зэт"
     )
 
     private val letterNames: Map<Char, String> = mapOf(
-        'A' to "а",
-        'B' to "бэ",
-        'C' to "цэ",
-        'D' to "дэ",
-        'E' to "е",
-        'F' to "эф",
-        'G' to "жэ",
-        'H' to "аш",
-        'I' to "и",
-        'J' to "йот",
-        'K' to "ка",
-        'L' to "эль",
-        'M' to "эм",
-        'N' to "эн",
-        'O' to "о",
-        'P' to "пэ",
-        'Q' to "ку",
-        'R' to "эр",
-        'S' to "эс",
-        'T' to "тэ",
-        'U' to "у",
-        'V' to "вэ",
-        'W' to "дубль-вэ",
-        'X' to "икс",
-        'Y' to "игрек",
-        'Z' to "зэт"
+        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
+        'F' to "эф", 'G' to "жэ", 'H' to "аш", 'I' to "и", 'J' to "йот",
+        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
+        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
+        'U' to "у", 'V' to "вэ", 'W' to "дубль-вэ", 'X' to "икс",
+        'Y' to "игрек", 'Z' to "зэт"
     )
 
     private val digitNames: Map<Char, String> = mapOf(
-        '0' to "ноль",
-        '1' to "один",
-        '2' to "два",
-        '3' to "три",
-        '4' to "четыре",
-        '5' to "пять",
-        '6' to "шесть",
-        '7' to "семь",
-        '8' to "восемь",
-        '9' to "девять"
+        '0' to "ноль", '1' to "один", '2' to "два", '3' to "три",
+        '4' to "четыре", '5' to "пять", '6' to "шесть", '7' to "семь",
+        '8' to "восемь", '9' to "девять"
     )
 
     private val unitsMasculine = arrayOf(
@@ -126,6 +87,7 @@ object VoiceSpeaker {
             return spellPrefixAndDigits(prefix, digits)
         }
 
+        // Fallback: старый путь через токенизацию.
         return try {
             val tokens = QueryTokenizer().tokenize(text)
             if (tokens.isEmpty()) return spellOut(text)
@@ -159,8 +121,13 @@ object VoiceSpeaker {
     }
 
     /**
+     * FIX 5.8.11-e4-speak-1:
      * Разбить слитную строку цифр так, как сказал бы человек.
-     * Чётная длина — по пары. Нечётная — первая 3, потом по 2.
+     *
+     * Правило:
+     *   длина ≤ 3   → как есть.
+     *   чётная      → пары слева: 2+2+2+...
+     *   нечётная    → первая 3, потом пары: 3+2+2+...
      */
     fun splitLikeHuman(digits: String): List<String> {
         if (digits.isEmpty()) return emptyList()
@@ -269,7 +236,7 @@ object VoiceSpeaker {
     }
 
     // ================================================================
-    // Старый API
+    // Старый API: произношение строки
     // ================================================================
 
     fun spellOut(text: String): String {
