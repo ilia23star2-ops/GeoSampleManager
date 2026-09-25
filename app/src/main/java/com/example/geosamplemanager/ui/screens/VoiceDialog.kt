@@ -27,6 +27,7 @@ import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
+import com.example.geosamplemanager.data.voice.isSubstituted
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -219,15 +220,19 @@ private fun handleFeedback(
             val ordWord = VoiceOrdinals.word(result.ordinal)
             val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
 
+            // FIX 5.8.11-e4-pin-6: при подмене сначала проговариваем
+            // «Распознано четырнадцатая», потом — что отметили.
+            val substPrefix = substitutedPhrase(result)
+
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
-                    "$subject — весовой контроль. Вес?"
+                    "$substPrefix$subject — весовой контроль. Вес?"
                 result.needsWeight ->
-                    "$subject — холостая. Вес?"
+                    "$substPrefix$subject — холостая. Вес?"
                 result.isWeightControl ->
-                    "$subject — весовой контроль, отмечена."
+                    "$substPrefix$subject — весовой контроль, отмечена."
                 else ->
-                    "$subject отмечена."
+                    "$substPrefix$subject отмечена."
             }
 
             controller?.speak(phrase)
@@ -303,6 +308,18 @@ private fun handleFeedback(
     }
 }
 
+/**
+ * FIX 5.8.11-e4-pin-6:
+ * Голосовой префикс при подмене номера.
+ * «Распознано четырнадцатая. » — если Vosk услышал 14, а отметили 4.
+ * Пусто — если подмены не было.
+ */
+private fun substitutedPhrase(result: VoiceExecResult.Marked): String {
+    if (!result.isSubstituted()) return ""
+    val heard = result.recognizedOrdinal?.let { VoiceOrdinals.word(it) } ?: return ""
+    return "Распознано $heard. "
+}
+
 private fun resolveOrdinals(
     sampleNumbers: List<String>,
     viewModel: ReconciliationViewModel
@@ -367,10 +384,6 @@ private fun buildAttentionFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     return sb.toString()
 }
 
-/**
- * FIX 5.8.11-e4-pin-3: если queueSize > 1 — префикс «Найдено N скважин.
- * Слушайте первую.»
- */
 private fun buildFoundOnePhrase(r: VoiceExecResult.FoundOne): String {
     val spokenNumber = spokenNumberOf(r, r.query)
     val sb = StringBuilder()
@@ -550,7 +563,18 @@ private fun describeResult(
                 else -> ""
             }
 
-            "$subject отмечена: ${result.sampleNumber}$extra"
+            // FIX 5.8.11-e4-pin-6: при подмене показываем
+            // «Распознано «четырнадцатая» → ».
+            val substPrefix = if (result.isSubstituted()) {
+                val heard = result.recognizedOrdinal
+                    ?.let { VoiceOrdinals.word(it) }
+                    ?: "№${result.recognizedOrdinal}"
+                "Распознано «$heard» → "
+            } else {
+                ""
+            }
+
+            "$substPrefix$subject отмечена: ${result.sampleNumber}$extra"
         }
 
         is VoiceExecResult.MarkedMultiple -> {
