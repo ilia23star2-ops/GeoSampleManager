@@ -6,6 +6,11 @@ import org.junit.Test
 /**
  * FIX 5.8.11-e4-speak-1:
  * Тесты мимикрии и разбиения длинных номеров «как человек».
+ *
+ * FIX 5.8.11-e4-prefix-1:
+ *  - префиксы произносятся по буквам через пробел:
+ *    «KPD» → «ка пэ дэ», «NV» → «эн вэ»;
+ *  - одиночная буква — без пробела: «W» → «даблю».
  */
 class VoiceSpeakerTest {
 
@@ -14,7 +19,7 @@ class VoiceSpeakerTest {
     // ================================================================
 
     @Test
-    fun prefixKpdOneWord() {
+    fun prefixKpdSpaced() {
         val groups = listOf(
             DigitGroup("KPD", GroupKind.PREFIX),
             DigitGroup("109", GroupKind.PLAIN),
@@ -22,7 +27,7 @@ class VoiceSpeakerTest {
             DigitGroup("31", GroupKind.PLAIN)
         )
         assertEquals(
-            "капэдэ сто девять ноль ноль тридцать один",
+            "ка пэ дэ сто девять ноль ноль тридцать один",
             VoiceSpeaker.spellOut(groups)
         )
     }
@@ -34,7 +39,7 @@ class VoiceSpeakerTest {
     }
 
     @Test
-    fun wLetterAsDablyu() {
+    fun wLetterAsDablyuOneWord() {
         val groups = listOf(DigitGroup("W", GroupKind.PREFIX))
         assertEquals("даблю", VoiceSpeaker.spellOut(groups))
     }
@@ -42,6 +47,19 @@ class VoiceSpeakerTest {
     @Test
     fun emptyGroups() {
         assertEquals("", VoiceSpeaker.spellOut(emptyList()))
+    }
+
+    @Test
+    fun prefixNvSpaced() {
+        val groups = listOf(
+            DigitGroup("NV", GroupKind.PREFIX),
+            DigitGroup("1524", GroupKind.PLAIN),
+            DigitGroup("01", GroupKind.PLAIN)
+        )
+        assertEquals(
+            "эн вэ пятнадцать двадцать четыре ноль один",
+            VoiceSpeaker.spellOut(groups)
+        )
     }
 
     // ================================================================
@@ -95,7 +113,7 @@ class VoiceSpeakerTest {
     @Test
     fun spellMimicryNvFourDigits() {
         assertEquals(
-            "энвэ тринадцать шестьдесят шесть",
+            "эн вэ тринадцать шестьдесят шесть",
             VoiceSpeaker.spellMimicry("NV1366")
         )
     }
@@ -103,7 +121,7 @@ class VoiceSpeakerTest {
     @Test
     fun spellMimicryNvSixDigits() {
         assertEquals(
-            "энвэ тринадцать шестьдесят шесть ноль один",
+            "эн вэ тринадцать шестьдесят шесть ноль один",
             VoiceSpeaker.spellMimicry("NV136601")
         )
     }
@@ -111,7 +129,7 @@ class VoiceSpeakerTest {
     @Test
     fun spellMimicryKpdSevenDigits() {
         assertEquals(
-            "капэдэ сто девять ноль ноль тридцать один",
+            "ка пэ дэ сто девять ноль ноль тридцать один",
             VoiceSpeaker.spellMimicry("KPD1090031")
         )
     }
@@ -149,7 +167,7 @@ class VoiceSpeakerTest {
 
     @Test
     fun spellMimicryOnlyPrefix() {
-        // Только буквы, без цифр — spellLetters.
-        assertEquals("капэдэ", VoiceSpeaker.spellMimicry("KPD"))
+        // Только буквы, без цифр.
+        assertEquals("ка пэ дэ", VoiceSpeaker.spellMimicry("KPD"))
     }
 }
