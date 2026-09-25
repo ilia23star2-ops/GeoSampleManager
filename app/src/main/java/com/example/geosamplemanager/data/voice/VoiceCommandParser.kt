@@ -4,16 +4,14 @@ package com.example.geosamplemanager.data.voice
  * Разбор голосовой фразы в VoiceCommand.
  *
  * FIX 5.8.11-e4-pin-multi:
- *  - «два три» → MarkByNumbers([2, 3]). Два+ Number-токена от Vosk
- *    означают перечисление, а не одно большое число.
- *  - «двадцать три» → MarkOrdinal(23). Один Number-токен — одно число.
+ *  - «два три» → MarkByNumbers([2, 3]).
+ *  - «двадцать три» → MarkOrdinal(23).
  *  - «отметь один два три» → MarkByNumbers([1, 2, 3]).
- *  - В SORT режиме FOUND_PINNED больше не идёт в parseForPinned:
- *    pin не имеет смысла, каждый номер — новый запрос сортировки.
+ *  - В SORT режиме FOUND_PINNED идёт в обычный parse.
  *
- * FIX 5.8.11-e4-markers-2/8:
- *  - «отметь 7» (голое число) — через tail.toIntOrNull().
- *  - «хватит» — во всех состояниях.
+ * FIX 5.8.11-e4-pin-multi/5:
+ *  - tokenizeToNumberTokens переписан без VoiceToken.
+ *    Работает через numberParser.parse().primary и разделитель «|».
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -176,7 +174,6 @@ class VoiceCommandParser(
             return if (value != null) VoiceCommand.SetWeight(value) else VoiceCommand.Unknown
         }
 
-        // FIX 5.8.11-e4-pin-multi: глагол «отметь» + аргументы.
         for (prefix in markVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
@@ -185,7 +182,6 @@ class VoiceCommandParser(
             }
         }
 
-        // FIX 5.8.11-e4-pin-multi: глагол «отложить» + аргументы.
         for (prefix in postponeVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
@@ -254,17 +250,6 @@ class VoiceCommandParser(
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-multi:
-     * Разбор аргумента после «отметь» / «отметить» / «отметьте».
-     *
-     * Приоритет:
-     *   1. Порядковые («первая», «первая вторая») → MarkOrdinal / MarkByNumbers.
-     *   2. Несколько Number-токенов («5 6», «2 3») → MarkByNumbers.
-     *   3. Одно число цифрами («7») → MarkOrdinal.
-     *   4. Одно число прописью («семь») → MarkOrdinal.
-     *   5. Иначе → Unknown.
-     */
     private fun parseMarkTail(tail: String): VoiceCommand {
         val ordinals = VoiceOrdinals.matchAll(tail)
         if (ordinals.isNotEmpty()) {
@@ -287,15 +272,10 @@ class VoiceCommandParser(
         return VoiceCommand.Unknown
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-multi:
-     * Разбор аргумента после «отложить» / «отложи» / «перенести».
-     */
     private fun parsePostponeTail(tail: String): VoiceCommand {
         val ordinals = VoiceOrdinals.matchAll(tail)
         if (ordinals.isNotEmpty()) {
-            return if (ordinals.size == 1) VoiceCommand.PostponeOrdinal(ordinals[0])
-            else VoiceCommand.PostponeOrdinal(ordinals[0])
+            return VoiceCommand.PostponeOrdinal(ordinals[0])
         }
 
         tail.toIntOrNull()?.let { n ->
@@ -309,23 +289,33 @@ class VoiceCommandParser(
     }
 
     /**
-     * FIX 5.8.11-e4-pin-multi:
-     * Собрать числовые значения из Number-токенов.
+     * FIX 5.8.11-e4-pin-multi/5:
+     * Разобрать текст как перечисление коротких чисел.
      *
-     * Если Number-токенов >= 2 — это перечисление: «два три» → [2, 3].
-     * Если один — вернёт [n], но это не перечисление (проверяет caller).
+     * Использует numberParser.parse().primary:
+     *  - если primary содержит «|» → в фразе несколько отдельных чисел.
+     *    «два три» → "2|3" → [2, 3].
+     *  - если primary без «|» → одно число. Возвращаем emptyList.
+     *    «двадцать три» → "23" → [].
+     *
+     * Возвращает emptyList для не-перечисления.
      */
     private fun tokenizeToNumberTokens(text: String): List<Int> {
         return try {
-            val tokens = numberParser.tokenize(text)
-            val numbers = tokens.filterIsInstance<VoiceToken.Number>()
-            if (numbers.size < 2) return emptyList()
+            val parsed = numberParser.parse(text)
+            val primary = parsed.primary ?: return emptyList()
+            if (!primary.contains("|")) return emptyList()
 
-            val values = numbers.mapNotNull { t ->
-                val v = t.value
-                v.toIntOrNull() ?: v.replace("|", "").toIntOrNull()
+            val parts = primary.split("|").filter { it.isNotBlank() }
+            if (parts.size < 2) return emptyList()
+
+            val values = mutableListOf<Int>()
+            for (p in parts) {
+                val n = p.toIntOrNull() ?: return emptyList()
+                if (n !in 1..99) return emptyList()
+                values.add(n)
             }
-            if (values.size != numbers.size) emptyList() else values
+            values
         } catch (_: Exception) {
             emptyList()
         }
@@ -339,8 +329,6 @@ class VoiceCommandParser(
         return when (state) {
             VoiceState.IDLE -> VoiceCommand.Unknown
             VoiceState.LISTENING -> parse(input, pendingChoice = false)
-            // FIX 5.8.11-e4-pin-multi: в SORT режиме pin не работает —
-            // каждый номер это новый запрос сортировки, не отметка.
             VoiceState.FOUND_PINNED -> {
                 if (mode == VoiceSessionMode.SORT) {
                     parse(input, pendingChoice = false)
@@ -383,7 +371,6 @@ class VoiceCommandParser(
             }
         }
 
-        // FIX 5.8.11-e4-pin-multi: несколько Number-токенов → перечисление.
         val numberTokens = tokenizeToNumberTokens(norm)
         if (numberTokens.size >= 2) {
             return VoiceCommand.MarkByNumbers(numberTokens)
@@ -413,22 +400,6 @@ class VoiceCommandParser(
         }
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-multi:
-     * Разбор в FOUND_PINNED.
-     *
-     * Приоритет:
-     *   1. «дальше» → NextInQueue.
-     *   2. «следующая X» → Find(X).
-     *   3. «следующая» → Next.
-     *   4. Несколько Number-токенов → MarkByNumbers.
-     *   5. Число цифрами → MarkOrdinal.
-     *   6. Одно числительное прописью → MarkOrdinal.
-     *   7. Обычный parse(). Search → Unknown (в pin).
-     *
-     * НЕ принимает: если mode == SORT, этот метод не вызывается
-     * (см. parseWithState).
-     */
     private fun parseForPinned(input: String): VoiceCommand {
         val raw = input.trim()
         if (raw.isEmpty()) return VoiceCommand.Unknown
@@ -450,7 +421,6 @@ class VoiceCommandParser(
 
         if (norm in nextVerbWords) return VoiceCommand.Next
 
-        // FIX 5.8.11-e4-pin-multi: несколько Number-токенов → перечисление.
         val numberTokens = tokenizeToNumberTokens(norm)
         if (numberTokens.size >= 2) {
             return VoiceCommand.MarkByNumbers(numberTokens)
@@ -461,34 +431,11 @@ class VoiceCommandParser(
         }
 
         run {
-            val tokens = numberParser.tokenize(norm)
-            if (tokens.isNotEmpty()) {
-                val hasNonNumber = tokens.any { t ->
-                    when (t) {
-                        is VoiceToken.Number -> false
-                        is VoiceToken.Separator -> false
-                        is VoiceToken.Unknown -> {
-                            !(t.raw in VoiceDictionary.thousandWords ||
-                                    t.raw in VoiceDictionary.millionWords)
-                        }
-                        else -> true
-                    }
-                }
-                if (!hasNonNumber) {
-                    val parsed = numberParser.parse(norm)
-                    val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
-                    if (combined != null && combined > 0) {
-                        return VoiceCommand.MarkOrdinal(combined)
-                    }
-                }
-            }
-        }
-
-        val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (words.size == 1) {
             val parsed = numberParser.parse(norm)
-            val n = parsed.primary?.toIntOrNull()
-            if (n != null && n > 0) return VoiceCommand.MarkOrdinal(n)
+            val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
+            if (combined != null && combined > 0) {
+                return VoiceCommand.MarkOrdinal(combined)
+            }
         }
 
         val result = parse(input, pendingChoice = false)
