@@ -659,7 +659,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             is VoiceCommand.ClearOrdinal -> markGuard { voiceClearOrdinal(cmd.ordinal) }
             VoiceCommand.ClearLast -> markGuard { voiceClearLast() }
-
+            is VoiceCommand.PostponeOrdinal -> markGuard { voicePostponeOrdinal(cmd.ordinal) }
+            
             VoiceCommand.Unpostpone -> voiceUnpostpone()
 
             VoiceCommand.ChoiceRemove -> voiceChoiceRemove()
