@@ -3,10 +3,10 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-pin-multi/8:
- *  - tokenizeToNumberTokens работает через numberParser.tokenize()
- *    и проверяет TokenKind. «два три» = [2, 3] (все D),
- *    «двадцать три» = не перечисление (есть X).
+ * FIX 5.8.11-e4-pin-multi/10:
+ *  - isOnlyNumbersPhrase пропускает слова-разделители («и», «запятая»,
+ *    «,», «;»). Раньше «тринадцать и шестьдесят семь» не проходило
+ *    проверку, и уходило в Sort([13, 67]) вместо MarkOrdinal(1367).
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -69,6 +69,13 @@ class VoiceCommandParser(
     private val markIntentWords = setOf("отметь", "отметить", "отметьте")
 
     private val stopWords = setOf("стоп", "хатит", "хватит")
+
+    /**
+     * FIX 5.8.11-e4-pin-multi/10:
+     * Слова-разделители, допустимые внутри числовой фразы.
+     * «тринадцать и шестьдесят семь» → число 1367.
+     */
+    private val numberPhraseSeparators = setOf("и", "запятая", ",", ";")
 
     private val hundredFormToValue: Map<String, Int> = mapOf(
         "сто" to 1, "двести" to 2, "триста" to 3, "четыреста" to 4,
@@ -290,20 +297,6 @@ class VoiceCommandParser(
     /**
      * FIX 5.8.11-e4-pin-multi/8:
      * Перечисление коротких одиночных чисел: «два три», «пять шесть семь».
-     *
-     * Идёт через numberParser.tokenize и проверяет TokenKind:
-     *  - все токены должны быть VoiceToken.Number;
-     *  - все kind == D (одиночные цифры);
-     *  - значений >= 2;
-     *  - ни одно не 0.
-     *
-     * Примеры:
-     *   «два три»            → [2, 3]
-     *   «пять шесть семь»    → [5, 6, 7]
-     *   «двадцать три»       → [] (есть X)
-     *   «сто двадцать три»   → [] (есть H, X)
-     *   «четырнадцать»       → [] (T, size < 2)
-     *   «семь утра холодно»  → [] (Unknown в середине)
      */
     private fun tokenizeToNumberTokens(text: String): List<Int> {
         return try {
@@ -323,7 +316,13 @@ class VoiceCommandParser(
     }
 
     /**
-     * Все ли слова фразы — числительные. Защита от мусора в pin.
+     * FIX 5.8.11-e4-pin-multi/10:
+     * Все ли слова фразы — числительные (или числа цифрами) или
+     * разрешённые разделители.
+     *
+     * Защита от мусора в pin: «семь утра было холодно» → false.
+     * Но «тринадцать и шестьдесят семь» → true (разделитель «и»
+     * допустим).
      */
     private fun isOnlyNumbersPhrase(text: String): Boolean {
         val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
@@ -331,6 +330,7 @@ class VoiceCommandParser(
 
         return words.all { w ->
             w.all { it.isDigit() } ||
+                    w in numberPhraseSeparators ||
                     w in VoiceDictionary.singleDigits.keys ||
                     w in VoiceDictionary.teens.keys ||
                     w in VoiceDictionary.tens.keys ||
