@@ -924,14 +924,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * FIX 5.8.11-e4-pin-5:
-     * Fallback вынесен в VoiceMarkOrdinalFallback, расширен:
-     *   14↔4, 400→4, 500→5, …, 900→9, 40→4, …, 90→9, 4000→4, …, 9000→9.
+     * FIX 5.8.11-e4-pin-7:
+     * Раньше здесь был fallback: «14» → 4, «40» → 4 и т.д. Оказалось
+     * опасно — Vosk путает «четвёртая» ↔ «четырнадцатая» в обе стороны,
+     * и отличить намерение нельзя. Если юзер сказал «четырнадцатая»
+     * и хотел 14, а её нет — fallback молча отмечал 4. Неправильно.
      *
-     * FIX 5.8.11-e4-pin-6:
-     * Если сработал fallback (resolvedOrdinal != ordinal) — передаём
-     * исходный ordinal как recognizedOrdinal в VoiceExecResult.Marked.
-     * UI и озвучка покажут «Распознано X → Y».
+     * Теперь:
+     *   - проба с распознанным ordinal есть → отмечаем;
+     *   - пробы нет → MarkOrdinalNotFound(ordinal, hintOrdinal).
+     *     hintOrdinal — «спорный» двойник (14 → 4), если такой есть.
+     *     UI и озвучка покажут: «Пробы №14 нет. Если нужна 4 —
+     *     скажите „четыре"». Пользователь уточняет числом —
+     *     количественные Vosk не путает.
      */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -941,27 +946,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
-        val wellRows = group.rows.filter { it.wellNumber == wellNumber }
-        if (wellRows.isEmpty()) {
-            return VoiceExecResult.Message("Проба №$ordinal не найдена")
+        val row = group.rows.firstOrNull {
+            it.wellNumber == wellNumber && it.numberInWell == ordinal
         }
 
-        val availableOrdinals: Set<Int> = wellRows.map { it.numberInWell }.toSet()
-
-        val resolvedOrdinal = VoiceMarkOrdinalFallback.resolve(
-            ordinal = ordinal,
-            hasOrdinal = { it in availableOrdinals }
-        ) ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
-
-        val substituted = resolvedOrdinal != ordinal
-        if (substituted) {
-            Log.i(TAG, "voiceMarkOrdinal: fallback $ordinal → $resolvedOrdinal")
+        if (row == null) {
+            val hint = VoiceMarkOrdinalFallback.hintFor(ordinal)
+            if (hint != null) {
+                Log.i(TAG, "voiceMarkOrdinal: пробы №$ordinal нет, подсказка → $hint")
+            }
+            return VoiceExecResult.MarkOrdinalNotFound(ordinal, hint)
         }
 
-        val row = wellRows.firstOrNull { it.numberInWell == resolvedOrdinal }
-            ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
-
-        return applyMarkDecision(row, if (substituted) ordinal else null)
+        return applyMarkDecision(row)
     }
 
     private fun voiceMarkCurrent(): VoiceExecResult {
@@ -976,16 +973,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return applyMarkDecision(row)
     }
 
-    /**
-     * FIX 5.8.11-e4-pin-6:
-     * Параметр recognizedOrdinal — что распознал Vosk до fallback.
-     * Если null — подмены не было, отметили ровно то, что услышали.
-     * Если != row.numberInWell — была подмена.
-     */
-    private fun applyMarkDecision(
-        row: SampleRow,
-        recognizedOrdinal: Int? = null
-    ): VoiceExecResult {
+    private fun applyMarkDecision(row: SampleRow): VoiceExecResult {
         val decision = analyzeMark(toMarkContext(state, row))
         Log.i(TAG, "applyMarkDecision: row=${row.sampleNumber} decision=$decision")
 
@@ -998,8 +986,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
                     isWeightControl = row.weightControl,
-                    needsWeight = false,
-                    recognizedOrdinal = recognizedOrdinal
+                    needsWeight = false
                 )
             }
             is MarkDecision.MarkWithWeight -> {
@@ -1010,8 +997,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
                     isWeightControl = false,
-                    needsWeight = false,
-                    recognizedOrdinal = recognizedOrdinal
+                    needsWeight = false
                 )
             }
             is MarkDecision.NeedsControlWeight -> {

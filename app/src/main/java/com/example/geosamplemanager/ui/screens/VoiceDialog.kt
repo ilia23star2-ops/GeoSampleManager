@@ -27,7 +27,6 @@ import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
-import com.example.geosamplemanager.data.voice.isSubstituted
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -220,19 +219,39 @@ private fun handleFeedback(
             val ordWord = VoiceOrdinals.word(result.ordinal)
             val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
 
-            // FIX 5.8.11-e4-pin-6: при подмене сначала проговариваем
-            // «Распознано четырнадцатая», потом — что отметили.
-            val substPrefix = substitutedPhrase(result)
-
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
-                    "$substPrefix$subject — весовой контроль. Вес?"
+                    "$subject — весовой контроль. Вес?"
                 result.needsWeight ->
-                    "$substPrefix$subject — холостая. Вес?"
+                    "$subject — холостая. Вес?"
                 result.isWeightControl ->
-                    "$substPrefix$subject — весовой контроль, отмечена."
+                    "$subject — весовой контроль, отмечена."
                 else ->
-                    "$substPrefix$subject отмечена."
+                    "$subject отмечена."
+            }
+
+            controller?.speak(phrase)
+        }
+
+        /**
+         * FIX 5.8.11-e4-pin-7:
+         * Проба с распознанным номером не найдена. Честная ошибка +
+         * подсказка числом для «спорных» пар (14 → 4, 40 → 4, 400 → 4).
+         *
+         * Пример:
+         *   Сказали «четырнадцатая», в скважине есть №4, нет №14.
+         *   Голос: «Пробы четырнадцатой нет. Если нужна четвёртая —
+         *   скажите четыре.»
+         */
+        is VoiceExecResult.MarkOrdinalNotFound -> {
+            fb.soundError()
+
+            val hint = result.hintOrdinal
+            val phrase = if (hint != null) {
+                val hintWord = VoiceSpeaker.numberWords(hint)
+                "Пробы ${result.ordinal} нет. Если нужна $hintWord — скажите $hintWord."
+            } else {
+                "Пробы ${result.ordinal} нет."
             }
 
             controller?.speak(phrase)
@@ -306,18 +325,6 @@ private fun handleFeedback(
 
         VoiceExecResult.Stopped -> {}
     }
-}
-
-/**
- * FIX 5.8.11-e4-pin-6:
- * Голосовой префикс при подмене номера.
- * «Распознано четырнадцатая. » — если Vosk услышал 14, а отметили 4.
- * Пусто — если подмены не было.
- */
-private fun substitutedPhrase(result: VoiceExecResult.Marked): String {
-    if (!result.isSubstituted()) return ""
-    val heard = result.recognizedOrdinal?.let { VoiceOrdinals.word(it) } ?: return ""
-    return "Распознано $heard. "
 }
 
 private fun resolveOrdinals(
@@ -469,6 +476,9 @@ private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (resul
     is VoiceExecResult.FoundMany -> VoiceStatus.Found("Найден в нескольких нарядах")
     is VoiceExecResult.Marked -> VoiceStatus.Marked(result.sampleNumber)
 
+    is VoiceExecResult.MarkOrdinalNotFound ->
+        VoiceStatus.Error("Пробы №${result.ordinal} нет")
+
     is VoiceExecResult.MarkedMultiple ->
         VoiceStatus.Marked("Отмечено: ${result.sampleNumbers.size}")
 
@@ -563,18 +573,25 @@ private fun describeResult(
                 else -> ""
             }
 
-            // FIX 5.8.11-e4-pin-6: при подмене показываем
-            // «Распознано «четырнадцатая» → ».
-            val substPrefix = if (result.isSubstituted()) {
-                val heard = result.recognizedOrdinal
-                    ?.let { VoiceOrdinals.word(it) }
-                    ?: "№${result.recognizedOrdinal}"
-                "Распознано «$heard» → "
-            } else {
-                ""
-            }
+            "$subject отмечена: ${result.sampleNumber}$extra"
+        }
 
-            "$substPrefix$subject отмечена: ${result.sampleNumber}$extra"
+        /**
+         * FIX 5.8.11-e4-pin-7:
+         * Проба с распознанным номером не найдена. Если распознанный
+         * номер — «спорный» (Vosk путает «четвёртая» ↔ «четырнадцатая»),
+         * даём подсказку: «Скажите „четыре"». Количественные Vosk
+         * распознаёт чётко.
+         */
+        is VoiceExecResult.MarkOrdinalNotFound -> {
+            val hint = result.hintOrdinal
+            if (hint != null) {
+                val hintWord = VoiceSpeaker.numberWords(hint)
+                "Пробы №${result.ordinal} нет. " +
+                        "Если нужна №$hint — произнесите «$hintWord»."
+            } else {
+                "Пробы №${result.ordinal} нет."
+            }
         }
 
         is VoiceExecResult.MarkedMultiple -> {

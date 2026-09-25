@@ -1,79 +1,83 @@
 package com.example.geosamplemanager.data.voice
 
 /**
- * FIX 5.8.11-e4-pin-5:
- * Подбор альтернативного номера пробы, если Vosk распознал порядковый
- * номер неверно.
+ * FIX 5.8.11-e4-pin-7:
+ * Подсказки при промахе по номеру пробы.
  *
- * Vosk путает:
- *   «четвёртая»  ↔ «четыреста»        (4 ↔ 400)
- *   «четвёртая»  ↔ «сорок»            (4 ↔ 40)
+ * Vosk путает порядковые с общим корнем «четыр» / «пят» / «шест» /
+ * «седьм» / «восьм» / «девят»:
  *   «четвёртая»  ↔ «четырнадцатая»    (4 ↔ 14)
+ *   «четвёртая»  ↔ «сороковая»        (4 ↔ 40)
+ *   «четвёртая»  ↔ «четырёхсотая»     (4 ↔ 400)
+ *   «четвёртая»  ↔ «четырёхтысячная»  (4 ↔ 4000)
+ * То же для 5..9: 15/50/500/5000, 16/60/600/6000, …, 19/90/900/9000.
  *
- * FIX 5.8.11-e4-pin-6:
- * Рядом добавлена extension-функция [isSubstituted] для
- * VoiceExecResult.Marked — чтобы UI и озвучка могли явно показать
- * подмену пользователю.
+ * Для 1..3 подсказок нет: корни «перв», «втор», «трет» не путаются
+ * с 10/100/1000 (фонетически слишком далеко).
+ *
+ * Раньше (pin-5/pin-6) здесь жил fallback: увидели «14», отметили «4».
+ * Это молчаливое предположение — иногда неверное. Теперь вместо
+ * fallback — подсказка: «Пробы №14 нет. Если нужна №4 — скажите
+ * „четыре"». Количественные числа Vosk распознаёт чётко, поэтому
+ * уточнение числом работает надёжно.
+ *
+ * Объект остался с прежним именем (VoiceMarkOrdinalFallback) — чтобы
+ * не плодить git-переименования. По смыслу теперь это «hints».
  */
 object VoiceMarkOrdinalFallback {
 
     /**
-     * Список альтернативных номеров в порядке приоритета.
+     * Все «спорные» двойники числа ordinal, по приоритету.
      * Может быть пустым.
+     *
+     * Примеры:
+     *   candidatesFor(14)   → [4]
+     *   candidatesFor(4)    → [14, 40, 400, 4000]
+     *   candidatesFor(400)  → [4]
+     *   candidatesFor(1)    → []  (Vosk не путает)
+     *   candidatesFor(25)   → []  (не круглое, не 4..9)
      */
     fun candidatesFor(ordinal: Int): List<Int> {
         val result = mutableListOf<Int>()
 
-        // 1) 14 ↔ 4: диапазон 10..19 → минус 10.
-        if (ordinal in 10..19) {
+        // 14..19 → 4..9 (минус 10).
+        if (ordinal in 14..19) {
             result.add(ordinal - 10)
         }
-        // 1..9 → плюс 10.
-        if (ordinal in 1..9) {
+
+        // Для 4..9 — прямые двойники: +10, ×10, ×100, ×1000.
+        // Для 1..3 — ничего (фонетически не путается).
+        if (ordinal in 4..9) {
             result.add(ordinal + 10)
+            result.add(ordinal * 10)
+            result.add(ordinal * 100)
+            result.add(ordinal * 1000)
         }
 
-        // 2) Круглые сотни: 400, 500, …, 900 → 4, 5, …, 9.
-        if (ordinal in 400..900 && ordinal % 100 == 0) {
-            result.add(ordinal / 100)
-        }
-
-        // 3) Круглые десятки: 40, 50, …, 90 → 4, 5, …, 9.
+        // 40..90 (круглые) → 4..9.
         if (ordinal in 40..90 && ordinal % 10 == 0) {
             result.add(ordinal / 10)
         }
 
-        // 4) Круглые тысячи: 4000, 5000, …, 9000 → 4, 5, …, 9.
+        // 400..900 (круглые) → 4..9.
+        if (ordinal in 400..900 && ordinal % 100 == 0) {
+            result.add(ordinal / 100)
+        }
+
+        // 4000..9000 (круглые) → 4..9.
         if (ordinal in 4000..9000 && ordinal % 1000 == 0) {
             result.add(ordinal / 1000)
         }
 
-        return result
+        return result.distinct()
     }
 
     /**
-     * Найти подходящий номер пробы.
+     * Какое число пользователь, вероятно, имел в виду.
+     *
+     * Возвращает первого кандидата из [candidatesFor] или null, если
+     * число не «спорное» (например, 1, 2, 3, 20, 25) — тогда
+     * подсказки нет.
      */
-    fun resolve(ordinal: Int, hasOrdinal: (Int) -> Boolean): Int? {
-        if (hasOrdinal(ordinal)) return ordinal
-        for (alt in candidatesFor(ordinal)) {
-            if (hasOrdinal(alt)) return alt
-        }
-        return null
-    }
+    fun hintFor(ordinal: Int): Int? = candidatesFor(ordinal).firstOrNull()
 }
-
-/**
- * FIX 5.8.11-e4-pin-6:
- * Была ли подмена номера при отметке.
- *
- * true  — Vosk услышал один номер, а отметилась проба с другим
- *         (сработал fallback).
- * false — отметили ровно ту пробу, которую услышали.
- *
- * Используется в UI (VoiceDialog.describeResult) и в озвучке
- * (VoiceDialog.handleFeedback): при true добавляется префикс
- * «Распознано X → Y.»
- */
-fun VoiceExecResult.Marked.isSubstituted(): Boolean =
-    recognizedOrdinal != null && recognizedOrdinal != ordinal
