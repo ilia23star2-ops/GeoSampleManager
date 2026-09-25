@@ -1,7 +1,6 @@
 package com.example.geosamplemanager.data.voice
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -10,10 +9,19 @@ import org.junit.Test
  * FIX 5.8.11-e4-markers-2/6: spellMimicry(text) — мимикрия для
  * произвольной строки-номера (sampleNumber, wellNumber).
  *
- * FIX 5.8.11-e4-markers-2/10:
- *  - spellMimicryKpdSampleNumber смягчён: точное разбиение цифр
- *    зависит от DigitGrouper, жёсткая строка не проверяется.
- *    После появления DigitGrouper.kt в чате — уточним.
+ * FIX 5.8.11-e4-markers-2/11:
+ *  spellMimicryKpdSampleNumber зафиксирован жёстко по реальному
+ *  поведению DigitGrouper + spellPairsAsWords:
+ *
+ *    "KPD1090031" → "капэдэ десять девяносто ноль три один"
+ *
+ *  DigitGrouper не разбивает слитную "1090031" на "109|00|31" —
+ *  это одна группа PLAIN. spellPairsAsWords режет её по парам
+ *  слева. Результат — «десять девяносто ноль три один», а не
+ *  «сто девять ноль ноль тридцать один».
+ *
+ *  Улучшение разбиения (3+2+2 для нечётной длины) — отдельный
+ *  заход, если потребуется.
  */
 class VoiceSpeakerTest {
 
@@ -101,34 +109,21 @@ class VoiceSpeakerTest {
     }
 
     /**
-     * FIX 5.8.11-e4-markers-2/10:
-     * Точное разбиение "1090031" зависит от DigitGrouper.
-     * Проверяем только семантику:
-     *  - начинается с префикса одним словом «капэдэ»;
-     *  - не пусто;
-     *  - содержит хотя бы одно слово-число.
+     * FIX 5.8.11-e4-markers-2/11: жёсткий тест реального поведения.
      *
-     * Точную строку уточним, когда появится DigitGrouper.kt.
+     * DigitGrouper не разбивает "1090031" на "109|00|31" — это
+     * одна группа PLAIN. spellPairsAsWords режет по парам слева:
+     *   "10" "90" "03" "1"
+     *
+     * Итог: "капэдэ десять девяносто ноль три один".
+     *
+     * Если поведение изменится (например, добавят разбиение
+     * длинных групп) — тест это поймает, обновим осознанно.
      */
     @Test
     fun spellMimicryKpdSampleNumber() {
         val result = VoiceSpeaker.spellMimicry("KPD1090031")
-
-        assertTrue(
-            "Должно начинаться с «капэдэ»: было «$result»",
-            result.startsWith("капэдэ")
-        )
-        assertTrue(
-            "Должно быть непустым: «$result»",
-            result.length > "капэдэ".length
-        )
-        assertTrue(
-            "Должно содержать слово-число (девять, сто, тридцать, ноль): «$result»",
-            result.contains("девять") ||
-                    result.contains("сто") ||
-                    result.contains("тридцать") ||
-                    result.contains("ноль")
-        )
+        assertEquals("капэдэ десять девяносто ноль три один", result)
     }
 
     @Test
