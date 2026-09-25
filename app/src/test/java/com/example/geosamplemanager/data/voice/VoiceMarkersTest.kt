@@ -6,7 +6,13 @@ import org.junit.Test
 
 /**
  * FIX 5.8.11-e4-pin-multi:
- * Тесты «2 3» → MarkByNumbers, SORT+pin → обычный parse.
+ * Тесты «два три» → MarkByNumbers, SORT+pin → обычный parse.
+ *
+ * FIX 5.8.11-e4-pin-multi/6:
+ *  - тесты на перечисление переписаны со слов, не с цифр через пробел
+ *    (Vosk так не выдаёт);
+ *  - проверяем «не Unknown» — конкретный результат (MarkOrdinal(23)
+ *    или MarkByNumbers([2,3])) зависит от VoiceNumberParser.
  */
 class VoiceMarkersTest {
 
@@ -67,21 +73,33 @@ class VoiceMarkersTest {
     }
 
     // ================================================================
-    // FIX 5.8.11-e4-pin-multi: несколько чисел = MarkByNumbers
+    // FIX 5.8.11-e4-pin-multi: перечисление (тесты на словах)
     // ================================================================
 
+    /**
+     * «два три» — либо MarkOrdinal(23), либо MarkByNumbers([2, 3]).
+     * Точный результат зависит от VoiceNumberParser (даёт ли «|»).
+     * Главное — не Unknown.
+     */
     @Test
-    fun parseForPinnedTwoDigitsReturnsMarkByNumbers() {
+    fun parseForPinnedTwoWordsReturnsMarkSomething() {
         val cmd = parser.parseWithState(
-            "2 3",
+            "два три",
             VoiceState.FOUND_PINNED,
             VoiceSessionMode.SEARCH
         )
-        // Ожидаем MarkByNumbers([2, 3]) или MarkOrdinal(23) —
-        // зависит от того, как Vosk разбивает. Проверяем что не MarkIntent.
         assertTrue(
             "Должно быть MarkOrdinal или MarkByNumbers: $cmd",
             cmd is VoiceCommand.MarkOrdinal || cmd is VoiceCommand.MarkByNumbers
+        )
+    }
+
+    @Test
+    fun otmetTwoWordsReturnsMarkSomething() {
+        val cmd = parser.parse("отметь два три")
+        assertTrue(
+            "Не должно быть Unknown: $cmd",
+            cmd !is VoiceCommand.Unknown
         )
     }
 
@@ -95,15 +113,18 @@ class VoiceMarkersTest {
         assertEquals(VoiceCommand.MarkOrdinal(23), cmd)
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-multi/6:
+     * Мусор в pin → Unknown. Проверка isOnlyNumbersPhrase.
+     */
     @Test
-    fun otmetTwoDigitsReturnsMarkByNumbers() {
-        val cmd = parser.parse("отметь 2 3")
-        // Должно быть либо MarkOrdinal(23) если Vosk склеил,
-        // либо MarkByNumbers([2,3]). Проверяем что не Unknown.
-        assertTrue(
-            "Не должно быть Unknown: $cmd",
-            cmd !is VoiceCommand.Unknown
+    fun parseForPinnedGarbageReturnsUnknown() {
+        val cmd = parser.parseWithState(
+            "семь утра было холодно",
+            VoiceState.FOUND_PINNED,
+            VoiceSessionMode.SEARCH
         )
+        assertEquals(VoiceCommand.Unknown, cmd)
     }
 
     // ================================================================
@@ -117,8 +138,6 @@ class VoiceMarkersTest {
             VoiceState.FOUND_PINNED,
             VoiceSessionMode.SORT
         )
-        // В SORT режиме pin не работает — обычный parse.
-        // «1367» — это число, похоже на поисковый запрос.
         assertTrue(
             "SORT+pin: не должно быть MarkOrdinal: $cmd",
             cmd !is VoiceCommand.MarkOrdinal &&
