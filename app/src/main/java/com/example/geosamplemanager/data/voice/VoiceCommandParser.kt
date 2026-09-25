@@ -3,14 +3,15 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-markers-2:
- *  - Глаголы отложения + номер одной фразой:
- *    «отложить вторую» → PostponeOrdinal(2)
- *    «отложи 7» → PostponeOrdinal(7)
- *    «перенести третью» → PostponeOrdinal(3)
- *  - Без номера → PostponeIntent (как было в e4-markers).
+ * FIX 5.8.11-e4-pin-multi:
+ *  - «два три» → MarkByNumbers([2, 3]). Два+ Number-токена от Vosk
+ *    означают перечисление, а не одно большое число.
+ *  - «двадцать три» → MarkOrdinal(23). Один Number-токен — одно число.
+ *  - «отметь один два три» → MarkByNumbers([1, 2, 3]).
+ *  - В SORT режиме FOUND_PINNED больше не идёт в parseForPinned:
+ *    pin не имеет смысла, каждый номер — новый запрос сортировки.
  *
- * FIX 5.8.11-e4-markers/8:
+ * FIX 5.8.11-e4-markers-2/8:
  *  - «отметь 7» (голое число) — через tail.toIntOrNull().
  *  - «хватит» — во всех состояниях.
  */
@@ -51,7 +52,6 @@ class VoiceCommandParser(
 
     private val markVerbPrefixes = listOf("отметь ", "отметить ", "отметьте ")
 
-    /** FIX 5.8.11-e4-markers-2: глаголы отложения с аргументом. */
     private val postponeVerbPrefixes = listOf(
         "отложить ", "отложи ",
         "перенести ", "перенеси "
@@ -176,43 +176,21 @@ class VoiceCommandParser(
             return if (value != null) VoiceCommand.SetWeight(value) else VoiceCommand.Unknown
         }
 
-        // Глагол «отметь» + номер.
+        // FIX 5.8.11-e4-pin-multi: глагол «отметь» + аргументы.
         for (prefix in markVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
                 if (tail.isEmpty()) return VoiceCommand.MarkIntent
-
-                val ord = VoiceOrdinals.match(tail)
-                if (ord != null) return VoiceCommand.MarkOrdinal(ord)
-
-                tail.toIntOrNull()?.let { n ->
-                    if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
-                }
-
-                val num = numberParser.parse(tail).primary?.toIntOrNull()
-                if (num != null && num in 1..30) return VoiceCommand.MarkOrdinal(num)
-
-                return VoiceCommand.Unknown
+                return parseMarkTail(tail)
             }
         }
 
-        // FIX 5.8.11-e4-markers-2: глагол «отложить» + номер.
+        // FIX 5.8.11-e4-pin-multi: глагол «отложить» + аргументы.
         for (prefix in postponeVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
                 if (tail.isEmpty()) return VoiceCommand.PostponeIntent
-
-                val ord = VoiceOrdinals.match(tail)
-                if (ord != null) return VoiceCommand.PostponeOrdinal(ord)
-
-                tail.toIntOrNull()?.let { n ->
-                    if (n in 1..30) return VoiceCommand.PostponeOrdinal(n)
-                }
-
-                val num = numberParser.parse(tail).primary?.toIntOrNull()
-                if (num != null && num in 1..30) return VoiceCommand.PostponeOrdinal(num)
-
-                return VoiceCommand.Unknown
+                return parsePostponeTail(tail)
             }
         }
 
@@ -224,11 +202,11 @@ class VoiceCommandParser(
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
 
             tail.toIntOrNull()?.let { n ->
-                if (n in 1..30) return VoiceCommand.ClearOrdinal(n)
+                if (n in 1..99) return VoiceCommand.ClearOrdinal(n)
             }
 
             val num = numberParser.parse(tail).primary?.toIntOrNull()
-            if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
+            if (num != null && num in 1..99) return VoiceCommand.ClearOrdinal(num)
             return VoiceCommand.Unknown
         }
 
@@ -276,6 +254,83 @@ class VoiceCommandParser(
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-multi:
+     * Разбор аргумента после «отметь» / «отметить» / «отметьте».
+     *
+     * Приоритет:
+     *   1. Порядковые («первая», «первая вторая») → MarkOrdinal / MarkByNumbers.
+     *   2. Несколько Number-токенов («5 6», «2 3») → MarkByNumbers.
+     *   3. Одно число цифрами («7») → MarkOrdinal.
+     *   4. Одно число прописью («семь») → MarkOrdinal.
+     *   5. Иначе → Unknown.
+     */
+    private fun parseMarkTail(tail: String): VoiceCommand {
+        val ordinals = VoiceOrdinals.matchAll(tail)
+        if (ordinals.isNotEmpty()) {
+            return if (ordinals.size == 1) VoiceCommand.MarkOrdinal(ordinals[0])
+            else VoiceCommand.MarkByNumbers(ordinals)
+        }
+
+        val numberTokens = tokenizeToNumberTokens(tail)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
+        }
+
+        tail.toIntOrNull()?.let { n ->
+            if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
+        }
+
+        val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+        if (parsed != null && parsed in 1..99) return VoiceCommand.MarkOrdinal(parsed)
+
+        return VoiceCommand.Unknown
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-multi:
+     * Разбор аргумента после «отложить» / «отложи» / «перенести».
+     */
+    private fun parsePostponeTail(tail: String): VoiceCommand {
+        val ordinals = VoiceOrdinals.matchAll(tail)
+        if (ordinals.isNotEmpty()) {
+            return if (ordinals.size == 1) VoiceCommand.PostponeOrdinal(ordinals[0])
+            else VoiceCommand.PostponeOrdinal(ordinals[0])
+        }
+
+        tail.toIntOrNull()?.let { n ->
+            if (n in 1..99) return VoiceCommand.PostponeOrdinal(n)
+        }
+
+        val parsed = numberParser.parse(tail).primary?.replace("|", "")?.toIntOrNull()
+        if (parsed != null && parsed in 1..99) return VoiceCommand.PostponeOrdinal(parsed)
+
+        return VoiceCommand.Unknown
+    }
+
+    /**
+     * FIX 5.8.11-e4-pin-multi:
+     * Собрать числовые значения из Number-токенов.
+     *
+     * Если Number-токенов >= 2 — это перечисление: «два три» → [2, 3].
+     * Если один — вернёт [n], но это не перечисление (проверяет caller).
+     */
+    private fun tokenizeToNumberTokens(text: String): List<Int> {
+        return try {
+            val tokens = numberParser.tokenize(text)
+            val numbers = tokens.filterIsInstance<VoiceToken.Number>()
+            if (numbers.size < 2) return emptyList()
+
+            val values = numbers.mapNotNull { t ->
+                val v = t.value
+                v.toIntOrNull() ?: v.replace("|", "").toIntOrNull()
+            }
+            if (values.size != numbers.size) emptyList() else values
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     fun parseWithState(
         input: String,
         state: VoiceState,
@@ -284,7 +339,15 @@ class VoiceCommandParser(
         return when (state) {
             VoiceState.IDLE -> VoiceCommand.Unknown
             VoiceState.LISTENING -> parse(input, pendingChoice = false)
-            VoiceState.FOUND_PINNED -> parseForPinned(input)
+            // FIX 5.8.11-e4-pin-multi: в SORT режиме pin не работает —
+            // каждый номер это новый запрос сортировки, не отметка.
+            VoiceState.FOUND_PINNED -> {
+                if (mode == VoiceSessionMode.SORT) {
+                    parse(input, pendingChoice = false)
+                } else {
+                    parseForPinned(input)
+                }
+            }
             VoiceState.AWAITING_WEIGHT -> parseForWeight(input)
             VoiceState.AWAITING_CHOICE -> parse(input, pendingChoice = true)
             VoiceState.AWAITING_CONTINUE -> parseForContinue(input)
@@ -320,24 +383,19 @@ class VoiceCommandParser(
             }
         }
 
-        val tokens = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
-        if (tokens.size in 2..5) {
-            val nums = tokens.mapNotNull { t ->
-                numberParser.parse(t).primary?.replace("|", "")?.toIntOrNull()
-                    ?.takeIf { it in 1..30 }
-            }
-            if (nums.size == tokens.size && nums.size >= 2) {
-                return VoiceCommand.MarkByNumbers(nums)
-            }
+        // FIX 5.8.11-e4-pin-multi: несколько Number-токенов → перечисление.
+        val numberTokens = tokenizeToNumberTokens(norm)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
         }
 
         norm.toIntOrNull()?.let { n ->
-            if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
+            if (n in 1..99) return VoiceCommand.MarkOrdinal(n)
         }
 
         val parsed = numberParser.parse(norm)
         val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
-        if (combined != null && combined in 1..30) {
+        if (combined != null && combined in 1..99) {
             return VoiceCommand.MarkOrdinal(combined)
         }
 
@@ -355,6 +413,22 @@ class VoiceCommandParser(
         }
     }
 
+    /**
+     * FIX 5.8.11-e4-pin-multi:
+     * Разбор в FOUND_PINNED.
+     *
+     * Приоритет:
+     *   1. «дальше» → NextInQueue.
+     *   2. «следующая X» → Find(X).
+     *   3. «следующая» → Next.
+     *   4. Несколько Number-токенов → MarkByNumbers.
+     *   5. Число цифрами → MarkOrdinal.
+     *   6. Одно числительное прописью → MarkOrdinal.
+     *   7. Обычный parse(). Search → Unknown (в pin).
+     *
+     * НЕ принимает: если mode == SORT, этот метод не вызывается
+     * (см. parseWithState).
+     */
     private fun parseForPinned(input: String): VoiceCommand {
         val raw = input.trim()
         if (raw.isEmpty()) return VoiceCommand.Unknown
@@ -375,6 +449,12 @@ class VoiceCommandParser(
         }
 
         if (norm in nextVerbWords) return VoiceCommand.Next
+
+        // FIX 5.8.11-e4-pin-multi: несколько Number-токенов → перечисление.
+        val numberTokens = tokenizeToNumberTokens(norm)
+        if (numberTokens.size >= 2) {
+            return VoiceCommand.MarkByNumbers(numberTokens)
+        }
 
         norm.toIntOrNull()?.let { n ->
             if (n > 0) return VoiceCommand.MarkOrdinal(n)
