@@ -10,18 +10,10 @@ package com.example.geosamplemanager.data.voice
  *   «четвёртая»  ↔ «сорок»            (4 ↔ 40)
  *   «четвёртая»  ↔ «четырнадцатая»    (4 ↔ 14)
  *
- * Логика:
- *   1) сначала пробуем точный ordinal (это делает вызывающий);
- *   2) если его нет — идём по списку кандидатов по порядку;
- *   3) первый найденный выигрывает.
- *
- * Список кандидатов (в порядке приоритета):
- *   1. ordinal ± 10 для диапазонов 1..9 и 10..19 (было в e4-pin-4).
- *   2. Круглые сотни: 400 → 4, 500 → 5, …, 900 → 9.
- *   3. Круглые десятки: 40 → 4, 50 → 5, …, 90 → 9.
- *   4. Круглые тысячи: 4000 → 4, 5000 → 5, …, 9000 → 9.
- *
- * Сам ordinal в список НЕ входит — его проверяет вызывающий.
+ * FIX 5.8.11-e4-pin-6:
+ * Рядом добавлена extension-функция [isSubstituted] для
+ * VoiceExecResult.Marked — чтобы UI и озвучка могли явно показать
+ * подмену пользователю.
  */
 object VoiceMarkOrdinalFallback {
 
@@ -42,13 +34,11 @@ object VoiceMarkOrdinalFallback {
         }
 
         // 2) Круглые сотни: 400, 500, …, 900 → 4, 5, …, 9.
-        // 100, 200, 300 не трогаем — редкие ошибки Vosk.
         if (ordinal in 400..900 && ordinal % 100 == 0) {
             result.add(ordinal / 100)
         }
 
         // 3) Круглые десятки: 40, 50, …, 90 → 4, 5, …, 9.
-        // 20 и 30 не трогаем — это валидные номера проб.
         if (ordinal in 40..90 && ordinal % 10 == 0) {
             result.add(ordinal / 10)
         }
@@ -63,12 +53,6 @@ object VoiceMarkOrdinalFallback {
 
     /**
      * Найти подходящий номер пробы.
-     *
-     * @param ordinal   номер, распознанный из голоса.
-     * @param hasOrdinal функция проверки: есть ли проба с таким номером
-     *                   в текущей скважине.
-     * @return точный ordinal, если он есть; иначе первый найденный
-     *         из кандидатов; null, если ничего не подошло.
      */
     fun resolve(ordinal: Int, hasOrdinal: (Int) -> Boolean): Int? {
         if (hasOrdinal(ordinal)) return ordinal
@@ -78,3 +62,18 @@ object VoiceMarkOrdinalFallback {
         return null
     }
 }
+
+/**
+ * FIX 5.8.11-e4-pin-6:
+ * Была ли подмена номера при отметке.
+ *
+ * true  — Vosk услышал один номер, а отметилась проба с другим
+ *         (сработал fallback).
+ * false — отметили ровно ту пробу, которую услышали.
+ *
+ * Используется в UI (VoiceDialog.describeResult) и в озвучке
+ * (VoiceDialog.handleFeedback): при true добавляется префикс
+ * «Распознано X → Y.»
+ */
+fun VoiceExecResult.Marked.isSubstituted(): Boolean =
+    recognizedOrdinal != null && recognizedOrdinal != ordinal

@@ -925,10 +925,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     /**
      * FIX 5.8.11-e4-pin-5:
-     * Раньше fallback был захардкожен прямо здесь (14↔4). Теперь
-     * логика вынесена в VoiceMarkOrdinalFallback и расширена:
-     *   14↔4, 400→4, 500→5, …, 900→9, 40→4, …, 90→9,
-     *   4000→4, …, 9000→9.
+     * Fallback вынесен в VoiceMarkOrdinalFallback, расширен:
+     *   14↔4, 400→4, 500→5, …, 900→9, 40→4, …, 90→9, 4000→4, …, 9000→9.
+     *
+     * FIX 5.8.11-e4-pin-6:
+     * Если сработал fallback (resolvedOrdinal != ordinal) — передаём
+     * исходный ordinal как recognizedOrdinal в VoiceExecResult.Marked.
+     * UI и озвучка покажут «Распознано X → Y».
      */
     private fun voiceMarkOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -950,14 +953,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             hasOrdinal = { it in availableOrdinals }
         ) ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
 
-        if (resolvedOrdinal != ordinal) {
+        val substituted = resolvedOrdinal != ordinal
+        if (substituted) {
             Log.i(TAG, "voiceMarkOrdinal: fallback $ordinal → $resolvedOrdinal")
         }
 
         val row = wellRows.firstOrNull { it.numberInWell == resolvedOrdinal }
             ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
 
-        return applyMarkDecision(row)
+        return applyMarkDecision(row, if (substituted) ordinal else null)
     }
 
     private fun voiceMarkCurrent(): VoiceExecResult {
@@ -972,7 +976,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return applyMarkDecision(row)
     }
 
-    private fun applyMarkDecision(row: SampleRow): VoiceExecResult {
+    /**
+     * FIX 5.8.11-e4-pin-6:
+     * Параметр recognizedOrdinal — что распознал Vosk до fallback.
+     * Если null — подмены не было, отметили ровно то, что услышали.
+     * Если != row.numberInWell — была подмена.
+     */
+    private fun applyMarkDecision(
+        row: SampleRow,
+        recognizedOrdinal: Int? = null
+    ): VoiceExecResult {
         val decision = analyzeMark(toMarkContext(state, row))
         Log.i(TAG, "applyMarkDecision: row=${row.sampleNumber} decision=$decision")
 
@@ -985,7 +998,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
                     isWeightControl = row.weightControl,
-                    needsWeight = false
+                    needsWeight = false,
+                    recognizedOrdinal = recognizedOrdinal
                 )
             }
             is MarkDecision.MarkWithWeight -> {
@@ -996,7 +1010,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     sampleNumber = row.sampleNumber,
                     ordinal = row.numberInWell,
                     isWeightControl = false,
-                    needsWeight = false
+                    needsWeight = false,
+                    recognizedOrdinal = recognizedOrdinal
                 )
             }
             is MarkDecision.NeedsControlWeight -> {

@@ -1,6 +1,7 @@
 package com.example.geosamplemanager.data.voice
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,8 +10,8 @@ import org.junit.Test
  * FIX 5.8.11-e4-pin-5:
  * Тесты fallback порядковых номеров пробы.
  *
- * Vosk путает «четвёртая» с «четыреста» (4 ↔ 400), «сорок» (4 ↔ 40),
- * «четырнадцатая» (4 ↔ 14). Fallback пробует альтернативы.
+ * FIX 5.8.11-e4-pin-6:
+ * Добавлены тесты isSubstituted() — индикатора подмены номера.
  */
 class VoiceMarkOrdinalFallbackTest {
 
@@ -56,9 +57,7 @@ class VoiceMarkOrdinalFallbackTest {
 
     @Test
     fun candidatesForNormalOrdinalIsEmpty() {
-        // 7 — не круглая сотня, не круглый десяток, не 1..9 + 10
-        // наоборот: 7 в 1..9 → +10 = 17. Значит не пусто.
-        // Проверим другой: 25 — вообще ничего.
+        // 25 — не круглая сотня, не круглый десяток, не 1..9 с +10.
         val c = VoiceMarkOrdinalFallback.candidatesFor(25)
         assertTrue("25 → кандидатов быть не должно, получено $c", c.isEmpty())
     }
@@ -107,5 +106,45 @@ class VoiceMarkOrdinalFallbackTest {
         val available = setOf(7, 8, 9)
         val result = VoiceMarkOrdinalFallback.resolve(400) { it in available }
         assertNull(result)
+    }
+
+    // ================================================================
+    // FIX 5.8.11-e4-pin-6: isSubstituted
+    // ================================================================
+
+    @Test
+    fun isSubstituted_trueWhenDifferent() {
+        val r = VoiceExecResult.Marked(
+            sampleNumber = "NV136604",
+            ordinal = 4,
+            isWeightControl = false,
+            needsWeight = false,
+            recognizedOrdinal = 14
+        )
+        assertTrue("14 → 4: подмена должна быть true", r.isSubstituted())
+    }
+
+    @Test
+    fun isSubstituted_falseWhenSame() {
+        val r = VoiceExecResult.Marked(
+            sampleNumber = "NV136604",
+            ordinal = 4,
+            isWeightControl = false,
+            needsWeight = false,
+            recognizedOrdinal = 4
+        )
+        assertFalse("4 → 4: подмены не было", r.isSubstituted())
+    }
+
+    @Test
+    fun isSubstituted_falseWhenNull() {
+        val r = VoiceExecResult.Marked(
+            sampleNumber = "NV136604",
+            ordinal = 4,
+            isWeightControl = false,
+            needsWeight = false,
+            recognizedOrdinal = null
+        )
+        assertFalse("null: подмены не было", r.isSubstituted())
     }
 }
