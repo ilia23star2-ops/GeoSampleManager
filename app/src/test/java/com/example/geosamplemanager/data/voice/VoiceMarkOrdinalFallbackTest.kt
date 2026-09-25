@@ -1,150 +1,144 @@
 package com.example.geosamplemanager.data.voice
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.8.11-e4-pin-5:
- * Тесты fallback порядковых номеров пробы.
+ * FIX 5.8.11-e4-pin-7:
+ * Тесты подсказок при промахе по номеру пробы.
  *
- * FIX 5.8.11-e4-pin-6:
- * Добавлены тесты isSubstituted() — индикатора подмены номера.
+ * Раньше здесь был fallback (14 → 4). Теперь — подсказка: «Пробы №14
+ * нет, если нужна №4 — скажите „четыре"». Пользователь уточняет
+ * числом — количественные Vosk не путает.
  */
 class VoiceMarkOrdinalFallbackTest {
 
     // ================================================================
-    // candidatesFor — список альтернатив
+    // candidatesFor
     // ================================================================
 
     @Test
-    fun candidatesForFourHundredContainsFour() {
-        val c = VoiceMarkOrdinalFallback.candidatesFor(400)
-        assertTrue("400 → должен быть кандидат 4, получено $c", c.contains(4))
+    fun candidatesForFourteenContainsFour() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(14)
+        assertTrue("14 → должен быть 4, получено $c", c.contains(4))
     }
 
     @Test
-    fun candidatesForFiveHundredContainsFive() {
-        val c = VoiceMarkOrdinalFallback.candidatesFor(500)
-        assertTrue("500 → должен быть кандидат 5, получено $c", c.contains(5))
+    fun candidatesForFifteenContainsFive() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(15)
+        assertTrue("15 → должен быть 5, получено $c", c.contains(5))
+    }
+
+    @Test
+    fun candidatesForNineteenContainsNine() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(19)
+        assertTrue("19 → должен быть 9, получено $c", c.contains(9))
     }
 
     @Test
     fun candidatesForFortyContainsFour() {
         val c = VoiceMarkOrdinalFallback.candidatesFor(40)
-        assertTrue("40 → должен быть кандидат 4, получено $c", c.contains(4))
+        assertTrue("40 → должен быть 4, получено $c", c.contains(4))
     }
 
     @Test
     fun candidatesForNinetyContainsNine() {
         val c = VoiceMarkOrdinalFallback.candidatesFor(90)
-        assertTrue("90 → должен быть кандидат 9, получено $c", c.contains(9))
+        assertTrue("90 → должен быть 9, получено $c", c.contains(9))
     }
 
     @Test
-    fun candidatesForFourteenContainsFour() {
-        val c = VoiceMarkOrdinalFallback.candidatesFor(14)
-        assertTrue("14 → должен быть кандидат 4, получено $c", c.contains(4))
+    fun candidatesForFourHundredContainsFour() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(400)
+        assertTrue("400 → должен быть 4, получено $c", c.contains(4))
     }
 
     @Test
-    fun candidatesForFourContainsFourteen() {
+    fun candidatesForFiveHundredContainsFive() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(500)
+        assertTrue("500 → должен быть 5, получено $c", c.contains(5))
+    }
+
+    @Test
+    fun candidatesForFourThousandContainsFour() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(4000)
+        assertTrue("4000 → должен быть 4, получено $c", c.contains(4))
+    }
+
+    @Test
+    fun candidatesForFourContainsFourteenAndFortyAndMore() {
         val c = VoiceMarkOrdinalFallback.candidatesFor(4)
-        assertTrue("4 → должен быть кандидат 14, получено $c", c.contains(14))
+        assertTrue("4 → должен быть 14, получено $c", c.contains(14))
+        assertTrue("4 → должен быть 40, получено $c", c.contains(40))
+        assertTrue("4 → должен быть 400, получено $c", c.contains(400))
+        assertTrue("4 → должен быть 4000, получено $c", c.contains(4000))
     }
 
     @Test
-    fun candidatesForNormalOrdinalIsEmpty() {
-        // 25 — не круглая сотня, не круглый десяток, не 1..9 с +10.
+    fun candidatesForTwentyFiveIsEmpty() {
         val c = VoiceMarkOrdinalFallback.candidatesFor(25)
         assertTrue("25 → кандидатов быть не должно, получено $c", c.isEmpty())
     }
 
-    // ================================================================
-    // resolve — подбор с учётом наличия
-    // ================================================================
-
     @Test
-    fun resolveExactMatchReturnsOrdinal() {
-        val available = setOf(1, 2, 3, 4, 5)
-        val result = VoiceMarkOrdinalFallback.resolve(4) { it in available }
-        assertEquals(4, result)
+    fun candidatesForTwentyIsEmpty() {
+        val c = VoiceMarkOrdinalFallback.candidatesFor(20)
+        assertTrue("20 → кандидатов быть не должно, получено $c", c.isEmpty())
     }
 
     @Test
-    fun resolveFourHundredToFour() {
-        val available = setOf(1, 2, 3, 4, 5)
-        val result = VoiceMarkOrdinalFallback.resolve(400) { it in available }
-        assertEquals(4, result)
-    }
-
-    @Test
-    fun resolveFortyToFour() {
-        val available = setOf(1, 2, 3, 4, 5)
-        val result = VoiceMarkOrdinalFallback.resolve(40) { it in available }
-        assertEquals(4, result)
-    }
-
-    @Test
-    fun resolveFourteenToFour() {
-        val available = setOf(1, 2, 3, 4, 5)
-        val result = VoiceMarkOrdinalFallback.resolve(14) { it in available }
-        assertEquals(4, result)
-    }
-
-    @Test
-    fun resolveFourToFourteenWhenNoFour() {
-        val available = setOf(11, 12, 13, 14, 15)
-        val result = VoiceMarkOrdinalFallback.resolve(4) { it in available }
-        assertEquals(14, result)
-    }
-
-    @Test
-    fun resolveNothingFoundReturnsNull() {
-        val available = setOf(7, 8, 9)
-        val result = VoiceMarkOrdinalFallback.resolve(400) { it in available }
-        assertNull(result)
+    fun candidatesForHundredIsEmpty() {
+        // Круглые сотни 100, 200, 300 не «спорные» — Vosk их не путает
+        // с 1, 2, 3.
+        val c = VoiceMarkOrdinalFallback.candidatesFor(100)
+        assertTrue("100 → кандидатов быть не должно, получено $c", c.isEmpty())
     }
 
     // ================================================================
-    // FIX 5.8.11-e4-pin-6: isSubstituted
+    // hintFor
     // ================================================================
 
     @Test
-    fun isSubstituted_trueWhenDifferent() {
-        val r = VoiceExecResult.Marked(
-            sampleNumber = "NV136604",
-            ordinal = 4,
-            isWeightControl = false,
-            needsWeight = false,
-            recognizedOrdinal = 14
-        )
-        assertTrue("14 → 4: подмена должна быть true", r.isSubstituted())
+    fun hintForFourteenIsFour() {
+        assertEquals(4, VoiceMarkOrdinalFallback.hintFor(14))
     }
 
     @Test
-    fun isSubstituted_falseWhenSame() {
-        val r = VoiceExecResult.Marked(
-            sampleNumber = "NV136604",
-            ordinal = 4,
-            isWeightControl = false,
-            needsWeight = false,
-            recognizedOrdinal = 4
-        )
-        assertFalse("4 → 4: подмены не было", r.isSubstituted())
+    fun hintForFortyIsFour() {
+        assertEquals(4, VoiceMarkOrdinalFallback.hintFor(40))
     }
 
     @Test
-    fun isSubstituted_falseWhenNull() {
-        val r = VoiceExecResult.Marked(
-            sampleNumber = "NV136604",
-            ordinal = 4,
-            isWeightControl = false,
-            needsWeight = false,
-            recognizedOrdinal = null
-        )
-        assertFalse("null: подмены не было", r.isSubstituted())
+    fun hintForFourHundredIsFour() {
+        assertEquals(4, VoiceMarkOrdinalFallback.hintFor(400))
+    }
+
+    @Test
+    fun hintForFourThousandIsFour() {
+        assertEquals(4, VoiceMarkOrdinalFallback.hintFor(4000))
+    }
+
+    @Test
+    fun hintForFourIsFourteen() {
+        // Для 4 первым кандидатом идёт 14 (самая частая путаница).
+        assertEquals(14, VoiceMarkOrdinalFallback.hintFor(4))
+    }
+
+    @Test
+    fun hintForTwentyFiveIsNull() {
+        assertNull(VoiceMarkOrdinalFallback.hintFor(25))
+    }
+
+    @Test
+    fun hintForTwentyIsNull() {
+        assertNull(VoiceMarkOrdinalFallback.hintFor(20))
+    }
+
+    @Test
+    fun hintForOneIsNull() {
+        // 1..3 Vosk не путает с «-надцат» / «-десят».
+        assertNull(VoiceMarkOrdinalFallback.hintFor(1))
     }
 }
