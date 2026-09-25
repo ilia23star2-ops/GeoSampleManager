@@ -3,11 +3,10 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-pin-multi/6:
- *  - isOnlyNumbersPhrase — защита от мусора в pin.
- *    «семь утра было холодно» → Unknown (не MarkOrdinal(7)).
- *  - parseForPinned: блок с parse(norm).primary выполняется только
- *    если все слова — числительные.
+ * FIX 5.8.11-e4-pin-multi/8:
+ *  - tokenizeToNumberTokens работает через numberParser.tokenize()
+ *    и проверяет TokenKind. «два три» = [2, 3] (все D),
+ *    «двадцать три» = не перечисление (есть X).
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -289,37 +288,42 @@ class VoiceCommandParser(
     }
 
     /**
-     * Разобрать текст как перечисление коротких чисел.
+     * FIX 5.8.11-e4-pin-multi/8:
+     * Перечисление коротких одиночных чисел: «два три», «пять шесть семь».
      *
-     * Возвращает список из 2+ элементов только если numberParser
-     * явно указал перечисление (primary содержит «|»).
-     * Иначе — пустой список (значит одно число или не число).
+     * Идёт через numberParser.tokenize и проверяет TokenKind:
+     *  - все токены должны быть VoiceToken.Number;
+     *  - все kind == D (одиночные цифры);
+     *  - значений >= 2;
+     *  - ни одно не 0.
+     *
+     * Примеры:
+     *   «два три»            → [2, 3]
+     *   «пять шесть семь»    → [5, 6, 7]
+     *   «двадцать три»       → [] (есть X)
+     *   «сто двадцать три»   → [] (есть H, X)
+     *   «четырнадцать»       → [] (T, size < 2)
+     *   «семь утра холодно»  → [] (Unknown в середине)
      */
     private fun tokenizeToNumberTokens(text: String): List<Int> {
         return try {
-            val parsed = numberParser.parse(text)
-            val primary = parsed.primary ?: return emptyList()
-            if (!primary.contains("|")) return emptyList()
+            val tokens = numberParser.tokenize(text)
+            if (tokens.size < 2) return emptyList()
 
-            val parts = primary.split("|").filter { it.isNotBlank() }
-            if (parts.size < 2) return emptyList()
+            val numbers = tokens.mapNotNull { it as? VoiceToken.Number }
+            if (numbers.size != tokens.size) return emptyList()
 
-            val values = mutableListOf<Int>()
-            for (p in parts) {
-                val n = p.toIntOrNull() ?: return emptyList()
-                if (n !in 1..99) return emptyList()
-                values.add(n)
-            }
-            values
+            if (numbers.any { it.kind != TokenKind.D }) return emptyList()
+            if (numbers.any { it.value == 0 }) return emptyList()
+
+            numbers.map { it.value }
         } catch (_: Exception) {
             emptyList()
         }
     }
 
     /**
-     * FIX 5.8.11-e4-pin-multi/6:
-     * Все ли слова фразы — числительные (или числа цифрами).
-     * Защита от мусора в pin: «семь утра было холодно» → false.
+     * Все ли слова фразы — числительные. Защита от мусора в pin.
      */
     private fun isOnlyNumbersPhrase(text: String): Boolean {
         val words = text.split(Regex("\\s+")).filter { it.isNotBlank() }
@@ -447,9 +451,6 @@ class VoiceCommandParser(
             if (n > 0) return VoiceCommand.MarkOrdinal(n)
         }
 
-        // FIX 5.8.11-e4-pin-multi/6: блок с parse(norm).primary выполняется
-        // только если все слова — числительные. Иначе «семь утра было
-        // холодно» становится MarkOrdinal(7).
         if (isOnlyNumbersPhrase(norm)) {
             val parsed = numberParser.parse(norm)
             val combined = parsed.primary?.replace("|", "")?.toIntOrNull()
