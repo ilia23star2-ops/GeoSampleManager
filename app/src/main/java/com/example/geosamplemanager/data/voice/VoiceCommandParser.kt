@@ -4,11 +4,16 @@ package com.example.geosamplemanager.data.voice
  * Разбор голосовой фразы в VoiceCommand.
  *
  * FIX 5.8.11-e4-markers:
- *  - Глагол без номера → маркер намерения:
- *    «отметь» → MarkIntent, «снять» → ClearIntent, «отложить» → PostponeIntent.
- *  - Глагол + номер в одной фразе → сразу команда:
- *    «отметь пятую» → MarkOrdinal(5), «отметь пять шесть» → MarkByNumbers.
+ *  - Глагол без номера → маркер намерения.
+ *  - Глагол + номер в одной фразе → сразу команда.
  *  - В AWAITING_CONFIRM: «подтверждаю» → Confirm, «отменяю» → Decline.
+ *
+ * FIX 5.8.11-e4-markers/8:
+ *  - «отметь 7» (голое число цифрами) — теперь парсится через
+ *    tail.toIntOrNull(). Раньше numberParser.parse("7").primary
+ *    не давал нужный результат.
+ *  - В parseForPaused добавлено «хватит» (раньше было только «хатит»).
+ *  - В parse() и parseForContinue добавлено «хватит».
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -57,22 +62,16 @@ class VoiceCommandParser(
 
     private val ordinalJoinWords = setOf("и", "запятая", ",", ";")
 
-    /** FIX 5.8.11-e4-markers: слова-подтверждения. */
     private val confirmWords = setOf("подтверждаю", "подтвердить")
-
-    /** FIX 5.8.11-e4-markers: слова-отказы от подтверждения. */
     private val declineWords = setOf("отменяю", "отменить", "отмена")
-
-    /** FIX 5.8.11-e4-markers: глаголы маркера «снять» без номера. */
     private val clearIntentWords = setOf("снять", "сними", "убрать", "убери")
-
-    /** FIX 5.8.11-e4-markers: глаголы маркера «отложить» без номера. */
     private val postponeIntentWords = setOf(
         "отложить", "отложи", "перенести", "перенеси"
     )
-
-    /** FIX 5.8.11-e4-markers: глаголы маркера «отметь» без номера. */
     private val markIntentWords = setOf("отметь", "отметить", "отметьте")
+
+    /** FIX 5.8.11-e4-markers/8: единый набор стоп-слов. */
+    private val stopWords = setOf("стоп", "хатит", "хватит")
 
     private val hundredFormToValue: Map<String, Int> = mapOf(
         "сто" to 1, "двести" to 2, "триста" to 3, "четыреста" to 4,
@@ -134,7 +133,7 @@ class VoiceCommandParser(
         }
 
         when (norm) {
-            "стоп", "хватит" -> return VoiceCommand.Stop
+            in stopWords -> return VoiceCommand.Stop
             "пауза", "паузу" -> return VoiceCommand.Pause
             "продолжить", "продолжай" -> return VoiceCommand.Resume
             "отмена", "отменить", "назад", "верни" -> return VoiceCommand.Undo
@@ -147,12 +146,10 @@ class VoiceCommandParser(
             "снять все", "сбросить все", "очистить все" -> return VoiceCommand.ClearAll
             "все", "отметь все", "отметить все", "отметьте все" -> return VoiceCommand.MarkAll
 
-            // FIX 5.8.11-e4-markers: глагол без номера → маркер намерения.
             in markIntentWords -> return VoiceCommand.MarkIntent
             in clearIntentWords -> return VoiceCommand.ClearIntent
             in postponeIntentWords -> return VoiceCommand.PostponeIntent
 
-            // «отметь эту», «эту», «её» → отметка найденной.
             "отметь эту", "отметить эту", "эту", "эту отметь",
             "отметь ее", "отметить ее", "отметь её", "отметить её",
             "ее", "её", "ее отметь", "её отметь",
@@ -175,14 +172,23 @@ class VoiceCommandParser(
             return if (value != null) VoiceCommand.SetWeight(value) else VoiceCommand.Unknown
         }
 
+        // FIX 5.8.11-e4-markers/8: глагол + номер.
+        // Порядок: порядковое → цифры → числительное словами.
         for (prefix in markVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
                 if (tail.isEmpty()) return VoiceCommand.MarkIntent
+
                 val ord = VoiceOrdinals.match(tail)
                 if (ord != null) return VoiceCommand.MarkOrdinal(ord)
+
+                tail.toIntOrNull()?.let { n ->
+                    if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
+                }
+
                 val num = numberParser.parse(tail).primary?.toIntOrNull()
                 if (num != null && num in 1..30) return VoiceCommand.MarkOrdinal(num)
+
                 return VoiceCommand.Unknown
             }
         }
@@ -193,6 +199,11 @@ class VoiceCommandParser(
             val tail = words.drop(1).joinToString(" ")
             val ord = VoiceOrdinals.match(tail)
             if (ord != null) return VoiceCommand.ClearOrdinal(ord)
+
+            tail.toIntOrNull()?.let { n ->
+                if (n in 1..30) return VoiceCommand.ClearOrdinal(n)
+            }
+
             val num = numberParser.parse(tail).primary?.toIntOrNull()
             if (num != null && num in 1..30) return VoiceCommand.ClearOrdinal(num)
             return VoiceCommand.Unknown
@@ -262,19 +273,6 @@ class VoiceCommandParser(
         }
     }
 
-    /**
-     * FIX 5.8.11-e4-markers:
-     * Разбор в AWAITING_MARK / AWAITING_CLEAR / AWAITING_POSTPONE.
-     *
-     * Ждём номер пробы. Принимаем:
-     *   - порядковое: «четвёртая» → MarkOrdinal(4);
-     *   - число цифрами: «4» → MarkOrdinal(4);
-     *   - фраза из числительных: «пять шесть» → MarkByNumbers;
-     *   - управление: «отмена» → Undo, «стоп» → Stop, «пауза» → Pause.
-     *
-     * ViewModel сам решит, что делать с MarkOrdinal — отметить, снять
-     * или отложить — по полю pendingMarkIntent.type.
-     */
     private fun parseForNumberIntent(input: String): VoiceCommand {
         val norm = numberParser
             .normalize(input)
@@ -286,12 +284,11 @@ class VoiceCommandParser(
         if (norm.isEmpty()) return VoiceCommand.Unknown
 
         when (norm) {
-            "стоп", "хватит" -> return VoiceCommand.Stop
+            in stopWords -> return VoiceCommand.Stop
             "отмена", "отменить" -> return VoiceCommand.Undo
             "пауза", "паузу" -> return VoiceCommand.Pause
         }
 
-        // Порядковые: «первая», «первая вторая третья».
         val ordinals = VoiceOrdinals.matchAll(norm)
         if (ordinals.isNotEmpty() && isOrdinalPhrase(norm.split(Regex("\\s+")))) {
             return when {
@@ -300,7 +297,6 @@ class VoiceCommandParser(
             }
         }
 
-        // Несколько чисел через пробел: «пять шесть».
         val tokens = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
         if (tokens.size in 2..5) {
             val nums = tokens.mapNotNull { t ->
@@ -312,7 +308,6 @@ class VoiceCommandParser(
             }
         }
 
-        // Одиночное число.
         norm.toIntOrNull()?.let { n ->
             if (n in 1..30) return VoiceCommand.MarkOrdinal(n)
         }
@@ -326,22 +321,13 @@ class VoiceCommandParser(
         return VoiceCommand.Unknown
     }
 
-    /**
-     * FIX 5.8.11-e4-markers:
-     * Разбор в AWAITING_CONFIRM.
-     *
-     * Принимаем:
-     *   - «подтверждаю», «подтвердить» → Confirm;
-     *   - «отменяю», «отменить», «отмена» → Decline;
-     *   - «стоп», «хватит» → Stop.
-     */
     private fun parseForConfirm(input: String): VoiceCommand {
         val norm = numberParser.normalize(input).trim()
 
         return when {
             norm in confirmWords -> VoiceCommand.Confirm
             norm in declineWords -> VoiceCommand.Decline
-            norm == "стоп" || norm == "хатит" || norm == "хватит" -> VoiceCommand.Stop
+            norm in stopWords -> VoiceCommand.Stop
             else -> VoiceCommand.Unknown
         }
     }
@@ -410,7 +396,7 @@ class VoiceCommandParser(
         val norm = numberParser.normalize(input).trim()
 
         when (norm) {
-            "стоп", "хватит" -> return VoiceCommand.Stop
+            in stopWords -> return VoiceCommand.Stop
             "отмена", "отменить" -> return VoiceCommand.Undo
             "пауза", "паузу" -> return VoiceCommand.Pause
         }
@@ -426,7 +412,7 @@ class VoiceCommandParser(
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
             "пауза", "паузу" -> VoiceCommand.Pause
-            "стоп", "хатит" -> VoiceCommand.Stop
+            in stopWords -> VoiceCommand.Stop
             else -> parse(input, pendingChoice = false)
         }
     }
@@ -436,7 +422,7 @@ class VoiceCommandParser(
 
         return when (norm) {
             "продолжить", "продолжай" -> VoiceCommand.Resume
-            "стоп", "хатит" -> VoiceCommand.Stop
+            in stopWords -> VoiceCommand.Stop
             else -> VoiceCommand.Unknown
         }
     }
