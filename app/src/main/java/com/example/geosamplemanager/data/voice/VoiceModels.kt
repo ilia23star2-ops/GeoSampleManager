@@ -27,12 +27,6 @@ sealed class VoiceExecResult {
         val otherOrderNumber: String? = null,
         val isSortMode: Boolean = false,
         val groups: List<DigitGroup> = emptyList(),
-        /**
-         * FIX 5.8.11-e4-pin-3:
-         * Размер очереди мультизапроса, включая текущую скважину.
-         * 0 или 1 — обычный одиночный поиск. >1 — мультизапрос,
-         * VoiceDialog озвучит «Найдено N скважин» перед первым.
-         */
         val queueSize: Int = 0
     ) : VoiceExecResult()
 
@@ -42,7 +36,17 @@ sealed class VoiceExecResult {
         val sampleNumber: String,
         val ordinal: Int,
         val isWeightControl: Boolean,
-        val needsWeight: Boolean
+        val needsWeight: Boolean,
+
+        /**
+         * FIX 5.8.11-e4-pin-6:
+         * Номер пробы, который распознал Vosk (до fallback).
+         *
+         * null — подмены не было: отметили ровно ту пробу, которую услышали.
+         * != ordinal — была подмена fallback: услышали одно, отметили другое.
+         * Тогда UI/озвучка обязаны показать «Распознано X → Y».
+         */
+        val recognizedOrdinal: Int? = null
     ) : VoiceExecResult()
 
     data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
