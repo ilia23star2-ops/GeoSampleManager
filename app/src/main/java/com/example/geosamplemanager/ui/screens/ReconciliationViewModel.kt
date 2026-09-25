@@ -1287,14 +1287,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     /**
-     * FIX 5.8.11-e4-markers-2:
-     * Отложить пробу по порядковому номеру.
-     *
-     * FIX 5.8.11-e4-markers-2/5:
-     * Номер пробы прогнан через VoiceSpeaker.spellOut, чтобы TTS
-     * не читал «NV136602» как одно большое число. Раньше было
-     * «сто тридцать шесть тысяч шестьсот два», теперь
-     * «эн вэ тринадцать шестьдесят шесть ноль два».
+     * FIX 5.8.11-e4-markers-2/6:
+     * Номер пробы прогнан через VoiceSpeaker.spellMimicry —
+     * мимикрия, как человек. Было «эн вэ 13 66 02», стало
+     * «энвэ тринадцать шестьдесят шесть ноль два».
      */
     private fun voicePostponeOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -1311,7 +1307,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
         setPostponed(row.id, true)
 
-        val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+        val spoken = VoiceSpeaker.spellMimicry(row.sampleNumber)
         return VoiceExecResult.Message("Отложена: $spoken")
     }
 
@@ -1396,6 +1392,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
+    /**
+     * FIX 5.8.11-e4-markers-2/6:
+     * Номер пробы — через spellMimicry.
+     */
     private fun voiceClearOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1407,7 +1407,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             it.wellNumber == wellNumber && it.numberInWell == ordinal
         } ?: return VoiceExecResult.Message("Проба №$ordinal не найдена")
         if (!row.found) {
-            val spoken = VoiceSpeaker.spellOut(row.sampleNumber)
+            val spoken = VoiceSpeaker.spellMimicry(row.sampleNumber)
             return VoiceExecResult.Message("Проба $spoken не отмечена")
         }
         setFound(row.id, false)
@@ -1669,6 +1669,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
+    /**
+     * FIX 5.8.11-e4-markers-2/6:
+     * Номера скважин и проб в описаниях — через spellMimicry.
+     */
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {
         val source = VoiceSearchRepository(getApplication())
         val all = source.loadAll()
@@ -1685,7 +1689,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .filter { it.isNotBlank() }
 
             if (candidates.isEmpty()) {
-                descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
+                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
                 continue
             }
 
@@ -1694,9 +1698,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     is UnifiedSearchResult.Found -> {
                         val hit = r.hits.first()
                         val subject = when (r.matchedKind) {
-                            UnifiedMatchKind.WELL -> "Скважина ${VoiceSpeaker.spellOut(hit.wellNumber)}"
-                            UnifiedMatchKind.SAMPLE -> "Проба ${VoiceSpeaker.spellOut(hit.sampleNumber)}"
-                            UnifiedMatchKind.NONE -> VoiceSpeaker.spellOut(hit.wellNumber)
+                            UnifiedMatchKind.WELL ->
+                                "Скважина ${VoiceSpeaker.spellMimicry(hit.wellNumber)}"
+                            UnifiedMatchKind.SAMPLE ->
+                                "Проба ${VoiceSpeaker.spellMimicry(hit.sampleNumber)}"
+                            UnifiedMatchKind.NONE ->
+                                VoiceSpeaker.spellMimicry(hit.wellNumber)
                         }
                         val orderSpoken = VoiceSpeaker.spellNumber(hit.orderNumber.toIntOrNull() ?: 0)
                         if (r.isUnique) descriptions.add("$subject, Наряд №$orderSpoken")
@@ -1706,14 +1713,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         }
                     }
                     UnifiedSearchResult.NotFound -> {
-                        descriptions.add("${VoiceSpeaker.spellOut(clean)} — не найдено")
+                        descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
                     }
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "voiceSort: проверка «$clean» упала", e)
-                descriptions.add("${VoiceSpeaker.spellOut(clean)} — ошибка")
+                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
             }
         }
 
