@@ -540,21 +540,34 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 is VoiceCommand.Search -> {
                     voiceSession.awaitingContinue = false
-                    voiceSearch(cmd.query)
+                    if (voiceSession.mode == VoiceSessionMode.SORT) {
+                        voiceSort(listOf(cmd.query))
+                    } else {
+                        voiceSearch(cmd.query)
+                    }
                 }
+                
                 is VoiceCommand.Sort -> {
                     voiceSession.awaitingContinue = false
                     voiceSort(cmd.queries)
                 }
+                
                 is VoiceCommand.Find -> {
                     voiceSession.awaitingContinue = false
-                    voiceSession.mode = VoiceSessionMode.SEARCH
-                    if (cmd.query.isNullOrBlank()) VoiceExecResult.Message("Поиск. Скажите номер.")
-                    else voiceSearch(cmd.query)
+                    if (cmd.query.isNullOrBlank()) {
+                        if (voiceSession.mode != VoiceSessionMode.SORT) {
+                            voiceSession.mode = VoiceSessionMode.SEARCH
+                        }
+                        VoiceExecResult.Message("Поиск. Скажите номер.")
+                    } else {
+                        if (voiceSession.mode == VoiceSessionMode.SORT) {
+                            voiceSort(listOf(cmd.query))
+                        } else {
+                            voiceSession.mode = VoiceSessionMode.SEARCH
+                            voiceSearch(cmd.query)
+                        }
+                    }
                 }
-                else -> VoiceExecResult.Message("Скажите «продолжить» или «стоп».")
-            }
-        }
 
         if (voiceSession.awaitingWeight) {
             if (cmd is VoiceCommand.Pause) {
@@ -603,14 +616,36 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         return when (cmd) {
-            is VoiceCommand.Search -> handleSearchInSession(cmd.query)
-
+            // FIX 5.8.11-e4-pin-multi:
+            // В SORT режиме «новый запрос» — это сортировка, не поиск.
+            // Короткий ответ: «Скважина X. Наряд Y.», без статистики.
+            is VoiceCommand.Search -> {
+                if (voiceSession.mode == VoiceSessionMode.SORT) {
+                    voiceSession.unpin()
+                    voiceSession.clearQueue()
+                    voiceSort(listOf(cmd.query))
+                } else {
+                    handleSearchInSession(cmd.query)
+                }
+            }
+            
             is VoiceCommand.Find -> {
                 voiceSession.unpin()
                 voiceSession.clearQueue()
-                voiceSession.mode = VoiceSessionMode.SEARCH
-                if (cmd.query.isNullOrBlank()) VoiceExecResult.Message("Поиск. Скажите номер.")
-                else handleSearchInSession(cmd.query)
+                if (cmd.query.isNullOrBlank()) {
+                    // В SORT режиме «найди» без номера — остаёмся в SORT, ждём номер.
+                    if (voiceSession.mode != VoiceSessionMode.SORT) {
+                        voiceSession.mode = VoiceSessionMode.SEARCH
+                    }
+                    VoiceExecResult.Message("Поиск. Скажите номер.")
+                } else {
+                    if (voiceSession.mode == VoiceSessionMode.SORT) {
+                        voiceSort(listOf(cmd.query))
+                    } else {
+                        voiceSession.mode = VoiceSessionMode.SEARCH
+                        handleSearchInSession(cmd.query)
+                    }
+                }
             }
 
             is VoiceCommand.MarkOrdinal -> markGuard { voiceMarkOrdinal(cmd.ordinal) }
