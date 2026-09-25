@@ -36,17 +36,31 @@ sealed class VoiceExecResult {
         val sampleNumber: String,
         val ordinal: Int,
         val isWeightControl: Boolean,
-        val needsWeight: Boolean,
+        val needsWeight: Boolean
+    ) : VoiceExecResult()
 
-        /**
-         * FIX 5.8.11-e4-pin-6:
-         * Номер пробы, который распознал Vosk (до fallback).
-         *
-         * null — подмены не было: отметили ровно ту пробу, которую услышали.
-         * != ordinal — была подмена fallback: услышали одно, отметили другое.
-         * Тогда UI/озвучка обязаны показать «Распознано X → Y».
-         */
-        val recognizedOrdinal: Int? = null
+    /**
+     * FIX 5.8.11-e4-pin-7:
+     * В FOUND_PINNED распознали номер пробы, но такой пробы в скважине нет.
+     *
+     * Раньше (pin-5/pin-6) здесь работал fallback: 14 → 4, 40 → 4 и т.д.
+     * Но Vosk путает «четвёртая» ↔ «четырнадцатая» в обе стороны, и
+     * отличить намерение нельзя. Fallback молча делал предположение —
+     * и иногда ошибался (юзер сказал «четырнадцатая», хотел 14, а
+     * отметилась 4).
+     *
+     * Теперь вместо подмены — честная ошибка + подсказка:
+     *   ordinal     — что распознали («14»).
+     *   hintOrdinal — какое число пользователь, вероятно, имел в виду
+     *                 («4»), если распознанное — «спорное» число
+     *                 (4..9 × 10/100/1000). Иначе — null.
+     *
+     * UI и озвучка говорят: «Пробы №14 нет. Если нужна №4 — скажите
+     * „четыре"». Пользователь уточняет числом — Vosk числа не путает.
+     */
+    data class MarkOrdinalNotFound(
+        val ordinal: Int,
+        val hintOrdinal: Int?
     ) : VoiceExecResult()
 
     data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
