@@ -12,7 +12,7 @@
 Не всё подряд. Только:
 - Парсеры (Excel, голос, числа, запросы).
 - Поиск (уровни `UnifiedSearch`, fuzzy).
-- Доменные решения (`MarkDecision`, `analyzeMark`).
+- Доменные решения (`MarkDecision`, `analyzeMark`, `VoiceMarkOrdinalFallback`).
 - Маппинг результатов (`ResponseMapper`).
 - Логика undo/redo.
 - Миграции БД.
@@ -31,12 +31,14 @@ UI не тестируем — проверяем руками.
 
 | Файл | Что проверяет |
 |---|---|
-| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124, «ноль ноль три» → 003, «тысяча пятьсот шестьдесят два» → 1562 |
-| `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV, префиксы из `ImportSettings` |
-| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)`, «снять первую» → `ClearOrdinal(1)`, «вес два пять» → `SetWeight(2.5)`, «1524» → `Search`, «стоп» → `Stop` |
-| `WeightVoiceParserTest.kt` | Разбор веса: «два и шесть» → 2.6, «полтора» → 1.5, «две целых шесть десятых» → 2.6 |
+| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124, «тысяча пятьсот шестьдесят два» → 1562 |
+| `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV |
+| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)`, «снять первую» → `ClearOrdinal(1)` |
+| `WeightVoiceParserTest.kt` | Разбор веса: «два и шесть» → 2.6, «полтора» → 1.5 |
 | `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy |
 | `AnswerStateTest.kt` | Определение `AnswerState` из `AnswerReason` |
+| **`VoiceSpeakerTest.kt`** | `spellOut(groups)`: «KPD1090031» → «капэдэ сто девять ноль ноль тридцать один» |
+| **`VoiceMarkOrdinalFallbackTest.kt`** | Подсказки при промахе по номеру: 14 → 4, 40 → 4, 400 → 4, 4000 → 4; 4 → 14/40/400/4000; для 1..3 — пусто. 26 тестов. |
 
 ### `data/reconciliation/`
 
@@ -52,31 +54,27 @@ UI не тестируем — проверяем руками.
 
 ---
 
-## Что ДОЛЖНО появиться (по серии `5.8.11-e4`)
+## Что ДОЛЖНО появиться
 
-**Долг — не покрыто.** Пачка `e4-tests`:
-
-### Приоритет 1 (новые правки без тестов)
+### Приоритет 1 (закладки `5.8.11-b/c`)
 
 | Файл | Что проверять |
 |---|---|
-| `VoiceCommandParserWeightsTest.kt` | `parseWeightAnswer`: мусор «семь утра было холодно» → null; «семь» → 7.0; «два и шесть» → 2.6; `isCleanWeightPhrase` |
-| `VoiceCommandParserStatesTest.kt` | `parseForWeight`: «пауза» → `Pause`, «стоп» → `Stop`, «отмена» → `Undo`. `parseForPaused`: «стоп»/«хатит» → `Stop` |
-| `VoiceCommandParserFindTest.kt` | «найди» → `Find(null)`; «найди 1524» → `Find("1524")`; «найти KPD1090031» → `Find(...)` |
-| `VoiceSpeakerTest.kt` | `spellOut(groups)`: «KPD1090031» → «капэдэ сто девять ноль ноль тридцать один»; без запятых; W → «даблю» |
-
-### Приоритет 2 (закладки без тестов)
-
-| Файл | Что проверять |
-|---|---|
-| `QueryTokenizerTest.kt` | `QueryTokenizer`: `KPD1090031` → `[Prefix, Number]`; «1524» → `Number`; «первая» → `Ordinal` |
+| `QueryTokenizerTest.kt` | `KPD1090031` → `[Prefix, Number]`; «1524» → `Number` |
 | `QueryNormalizerTest.kt` | Lowercase, ё→е, дефисы, пунктуация |
-| `DigitGrouperTest.kt` | «109 00 31» → три группы; «1524» → одна; нули → `LEADING_ZERO` |
+| `DigitGrouperTest.kt` | «109 00 31» → три группы; нули → `LEADING_ZERO` |
 | `GroupToCandidatesTest.kt` | Порядок кандидатов: слитно / по группам / по парам |
-| `SearchServiceTest.kt` | `SearchService.search` — мок `VoiceSampleSource`, проверка `Found`/`NotFound` |
+| `SearchServiceTest.kt` | `SearchService.search` — мок `VoiceSampleSource` |
 | `VoiceSessionStateTest.kt` | `VoiceSession.state` — все переходы |
 
-### Приоритет 3 (старые, из планов)
+### Приоритет 2 (после `e4-markers`)
+
+| Файл | Что проверять |
+|---|---|
+| `VoiceMarkersTest.kt` | Маркеры намерения: «отметь» → `AWAITING_MARK`, «снять» → `AWAITING_CLEAR` |
+| `VoiceConfirmTest.kt` | Подтверждение массовых: «да» / «нет» / тайм-аут |
+
+### Приоритет 3 (старые)
 
 | Файл | Что проверять |
 |---|---|
@@ -88,8 +86,8 @@ UI не тестируем — проверяем руками.
 
 - **Vosk** — галлюцинации, распознавание. Только device-check.
 - **TTS** — произношение, кулдаун. Только device-check.
-- **Compose UI** — Compose UI-тесты отдельная тема, не сейчас.
-- **Реальная БД** — только миграции, остальное на устройстве.
+- **Compose UI** — отдельная тема, не сейчас.
+- **Реальная БД** — только миграции.
 - **`ReconciliationViewModel`** целиком — связан с Application, Vosk, БД.
 
 ---
@@ -112,7 +110,7 @@ text
 
 CI (`.github/workflows/build.yml`):
 - Job **`unit-tests`** — на каждый PR в `main` и `feature/*`.
-- Пропускается, если в PR только документация (job остаётся зелёным).
+- Пропускается, если в PR только документация.
 - Блокирует merge при красном (branch protection).
 
 ### Вручную (Actions)
@@ -126,6 +124,7 @@ CI (`.github/workflows/build.yml`):
 
 Артефакты:
 - `test-report` — HTML-отчёт.
+- `app-debug` — APK (если `build_apk`).
 
 ---
 
@@ -136,7 +135,7 @@ CI (`.github/workflows/build.yml`):
 3. **Один тест — одна проверка.** Не смешивать.
 4. **Не тестировать UI.** Compose-тесты — отдельная тема.
 5. **Не тестировать БД целиком.** Только миграции.
-6. **Тест должен проходить за <100 мс.** Если дольше — что-то не так.
+6. **Тест должен проходить за <100 мс.**
 7. **Комментарии в тестах — на русском.** Имена — латиница.
 
 ---
@@ -154,23 +153,18 @@ CI (`.github/workflows/build.yml`):
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Пачка `e4-tests` — покрыть `e4b`, `e4g`, `e4g3`, `e4e-a`, `e4e-bundle/3` |
-| 🟡 После `e4-tests` | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
+| 🔴 Сейчас | Пачка `e4-markers` — покрыть новые состояния |
+| 🟡 После | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest` (миграции), `ReconciliationStateTest` (undo/redo) |
 
 ---
 
 ## Долг — сводка
 
-**Сделано (серия `e4`):**
-- `e4a` — вес в `AWAITING_WEIGHT`. Нет тестов.
-- `e4b` — фильтр мусора в весе. **Критично покрыть.**
-- `e4g` — Pause + опечатка. **Критично покрыть.**
-- `e4g3` — команда «Найди». **Критично покрыть.**
-- `e4-fix-1` — убрано «четвертью». Грамматика, не тестируется.
-- `e4-fix-2` — кулдаун 250 мс. Константа.
-- `e4e-a` — мимикрия в `VoiceSpeaker`. **Критично покрыть.**
-- `e4e-bundle/2` — поле `groups`. Тривиально.
-- `e4e-bundle/3` — `voiceSearch` через `SearchService`. **Частично покрыть** (`buildGroupsForVoice`).
+**Закрыто (серия `e4-pin`):**
+- `e4-pin-1…7` — покрыто `VoiceMarkOrdinalFallbackTest` (26 тестов), `VoiceSpeakerTest`, `VoiceCommandParserTest`.
+- `e4-tests` — покрытие парсера (3 файла, 31 тест).
 
-**План:** пачка `e4-tests` (5–7 файлов) закрывает приоритет 1.
+**Осталось:**
+- `e4e-bundle/3` — `voiceSearch` через `SearchService`. Частично покрыть (`buildGroupsForVoice`).
+- `e4-markers` — новые состояния. Критично покрыть после реализации.
