@@ -220,8 +220,11 @@ private fun handleFeedback(
             val ordWord = VoiceOrdinals.word(result.ordinal)
             val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
 
-            // FIX 5.8.11-e4-pin-6: при подмене сначала проговариваем
-            // «Распознано четырнадцатая», потом — что отметили.
+            // FIX 5.8.11-e4-pin-7:
+            // Слово «Распознано» убрано из голоса — TTS ставил неправильное
+            // ударение, резало слух. Теперь просто проговариваем слово,
+            // которое услышали, перед результатом.
+            // На экране (describeResult) «Распознано» осталось.
             val substPrefix = substitutedPhrase(result)
 
             val phrase = when {
@@ -311,13 +314,19 @@ private fun handleFeedback(
 /**
  * FIX 5.8.11-e4-pin-6:
  * Голосовой префикс при подмене номера.
- * «Распознано четырнадцатая. » — если Vosk услышал 14, а отметили 4.
+ *
+ * FIX 5.8.11-e4-pin-7:
+ * Убрано слово «Распознано» — TTS ставил неверное ударение
+ * («распОзнано» вместо «распознАно»), резало слух. Просто
+ * проговариваем слово, которое услышали.
+ *
+ * «Четырнадцатая. » — если Vosk услышал 14, а отметили 4.
  * Пусто — если подмены не было.
  */
 private fun substitutedPhrase(result: VoiceExecResult.Marked): String {
     if (!result.isSubstituted()) return ""
     val heard = result.recognizedOrdinal?.let { VoiceOrdinals.word(it) } ?: return ""
-    return "Распознано $heard. "
+    return "$heard. "
 }
 
 private fun resolveOrdinals(
@@ -563,8 +572,8 @@ private fun describeResult(
                 else -> ""
             }
 
-            // FIX 5.8.11-e4-pin-6: при подмене показываем
-            // «Распознано «четырнадцатая» → ».
+            // FIX 5.8.11-e4-pin-6: на экране «Распознано» оставляем —
+            // глазами читается нормально, ударение не слышно.
             val substPrefix = if (result.isSubstituted()) {
                 val heard = result.recognizedOrdinal
                     ?.let { VoiceOrdinals.word(it) }
