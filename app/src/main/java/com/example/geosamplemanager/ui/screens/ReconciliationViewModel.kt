@@ -569,6 +569,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
 
+                else -> VoiceExecResult.Message("Скажите «продолжить» или «стоп».")
+            }
+        }
+
         if (voiceSession.awaitingWeight) {
             if (cmd is VoiceCommand.Pause) {
                 voiceSession.awaitingWeight = false
