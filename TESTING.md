@@ -25,36 +25,48 @@ UI не тестируем — проверяем руками.
 
 ## Что уже есть
 
-Тесты в `app/src/test/java/com/example/geosamplemanager/`:
+Тесты в `app/src/test/java/com/example/geosamplemanager/`.
 
 ### `data/voice/`
 
-| Файл | Что проверяет |
-|---|---|
-| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124, «тысяча пятьсот шестьдесят два» → 1562 |
-| `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV |
-| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)`, «снять первую» → `ClearOrdinal(1)` |
-| `WeightVoiceParserTest.kt` | Разбор веса: «два и шесть» → 2.6, «полтора» → 1.5 |
-| `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy |
-| `AnswerStateTest.kt` | Определение `AnswerState` из `AnswerReason` |
-| **`VoiceSpeakerTest.kt`** | `spellOut(groups)`: «KPD1090031» → «капэдэ сто девять ноль ноль тридцать один» |
-| **`VoiceMarkOrdinalFallbackTest.kt`** | Подсказки при промахе по номеру: 14 → 4, 40 → 4, 400 → 4, 4000 → 4; 4 → 14/40/400/4000; для 1..3 — пусто. 26 тестов. |
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124, «тысяча пятьсот шестьдесят два» → 1562 | 12 |
+| `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV | 7 |
+| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)`, «снять первую» → `ClearOrdinal(1)` | 12 |
+| `WeightVoiceParserTest.kt` | «два и шесть» → 2.6, «полтора» → 1.5 | 19 |
+| `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy | 18 |
+| `AnswerStateTest.kt` | `AnswerState` из `AnswerReason` | 22 |
+| `VoiceCommandParserFindTest.kt` | «найди X» → `Find(X)`, «найди» → `Find(null)` | 8 |
+| `VoiceCommandParserPausedTest.kt` | Состояние PAUSED: «продолжить», «стоп», «хватит» | 6 |
+| `VoiceCommandParserPin3Test.kt` | pin: «дальше», «следующая X», вес «X сотни» | 10 |
+| `VoiceCommandParserPin4Test.kt` | pin: склейка числительных, fallback 14↔4 | 7 |
+| `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED`: голое число → `MarkOrdinal` | 8 |
+| `VoiceCommandParserQueueTest.kt` | Очередь: «дальше» → `NextInQueue` | 6 |
+| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть», «два семьсот», мусор → Unknown | 17 |
+| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4, 400→4; 1..3 → null | 27 |
+| `VoiceMarkersTest.kt` | Маркеры, отложение одной фразой, SORT+pin | 17 |
+| `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman`, префиксы по буквам | 19 |
 
 ### `data/reconciliation/`
 
-| Файл | Что проверяет |
-|---|---|
-| `MarkDecisionTest.kt` | `analyzeMark`: уже отмечена, ошибка импорта, отложена, ВК, холостая, `CanMark` |
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `MarkDecisionTest.kt` | `analyzeMark`: уже отмечена, ошибка, отложена, ВК, холостая | 27 |
 
 ### `ui/screens/`
 
-| Файл | Что проверяет |
-|---|---|
-| `AnalyzeMatchTest.kt` | Функция `analyzeMatch` (сопоставление) |
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `AnalyzeMatchTest.kt` | Функция `analyzeMatch` | 18 |
+| `ReconciliationWeightQueueTest.kt` | `buildWeightQueue`: холостые, ВК, порядок | 11 |
+| `SearchScrollTopTest.kt` | `shouldShowScrollTop`: порог >10 | 5 |
+
+**Всего: ~260 тестов.** Все зелёные.
 
 ---
 
-## Что ДОЛЖНО появиться
+## Что ещё нужно
 
 ### Приоритет 1 (закладки `5.8.11-b/c`)
 
@@ -67,12 +79,11 @@ UI не тестируем — проверяем руками.
 | `SearchServiceTest.kt` | `SearchService.search` — мок `VoiceSampleSource` |
 | `VoiceSessionStateTest.kt` | `VoiceSession.state` — все переходы |
 
-### Приоритет 2 (после `e4-markers`)
+### Приоритет 2 (после `e4-dicts`)
 
 | Файл | Что проверять |
 |---|---|
-| `VoiceMarkersTest.kt` | Маркеры намерения: «отметь» → `AWAITING_MARK`, «снять» → `AWAITING_CLEAR` |
-| `VoiceConfirmTest.kt` | Подтверждение массовых: «да» / «нет» / тайм-аут |
+| `VoiceGrammarStateTest.kt` | Размер словаря в разных состояниях ГП |
 
 ### Приоритет 3 (старые)
 
@@ -102,8 +113,6 @@ UI не тестируем — проверяем руками.
 ### В терминале
 ./gradlew testDebugUnitTest
 
-text
-
 Отчёт: `app/build/reports/tests/testDebugUnitTest/index.html`.
 
 ### Автоматически на PR
@@ -132,8 +141,8 @@ CI (`.github/workflows/build.yml`):
 
 1. **Имя теста — латиница.** `parseThousand`, не `парситТысячу`.
 2. **Ассерты — простые.** `assertEquals(expected, actual)`.
-3. **Один тест — одна проверка.** Не смешивать.
-4. **Не тестировать UI.** Compose-тесты — отдельная тема.
+3. **Один тест — одна проверка.**
+4. **Не тестировать UI.**
 5. **Не тестировать БД целиком.** Только миграции.
 6. **Тест должен проходить за <100 мс.**
 7. **Комментарии в тестах — на русском.** Имена — латиница.
@@ -153,18 +162,25 @@ CI (`.github/workflows/build.yml`):
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Пачка `e4-markers` — покрыть новые состояния |
-| 🟡 После | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
+| 🔴 Сейчас | Закрыто: серия `e4` полностью |
+| 🟡 После `e4-dicts` | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest` (миграции), `ReconciliationStateTest` (undo/redo) |
 
 ---
 
 ## Долг — сводка
 
-**Закрыто (серия `e4-pin`):**
-- `e4-pin-1…7` — покрыто `VoiceMarkOrdinalFallbackTest` (26 тестов), `VoiceSpeakerTest`, `VoiceCommandParserTest`.
-- `e4-tests` — покрытие парсера (3 файла, 31 тест).
+**Сделано (серия `e4`):**
+- `e4-tests` — 3 файла, 31 тест.
+- `e4-pin-3/4` — `VoiceCommandParserPin3Test`, `VoiceCommandParserPin4Test`.
+- `e4-pin-7` — `VoiceMarkOrdinalFallbackTest` (27 тестов).
+- `e4-markers` — `VoiceMarkersTest` (17 тестов).
+- `e4-markers-2` — расширение `VoiceMarkersTest`.
+- `e4-speak-1` — `VoiceSpeakerTest` (19 тестов).
+- `e4-prefix-1` — обновление `VoiceSpeakerTest`.
+- `e4-weight-queue` — `ReconciliationWeightQueueTest` (11 тестов).
+- `e4-ui-1` — `SearchScrollTopTest` (5 тестов).
 
 **Осталось:**
-- `e4e-bundle/3` — `voiceSearch` через `SearchService`. Частично покрыть (`buildGroupsForVoice`).
-- `e4-markers` — новые состояния. Критично покрыть после реализации.
+- Закладки `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — приоритет после `e4-dicts`.
+- `AppDatabaseTest` — миграции.
