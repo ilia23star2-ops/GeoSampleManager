@@ -35,6 +35,8 @@ import com.example.geosamplemanager.data.voice.VoiceSession
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
+import com.example.geosamplemanager.data.voice.WeightQueueItem
+import com.example.geosamplemanager.data.voice.WeightQueueKind
 import com.example.geosamplemanager.data.voice.DigitGroup
 import com.example.geosamplemanager.data.voice.DigitGrouper
 import com.example.geosamplemanager.data.voice.GroupKind
@@ -457,8 +459,33 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         state.voiceStatus = status
     }
 
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Тайм-аут очереди веса: 30 сек, предупреждение на 20-й.
+     * Возвращает: 0 — ок, 1 — предупреждение, 2 — сброс всей очереди.
+     *
+     * Логика для маркеров и подтверждения — прежняя.
+     */
     fun checkWaitTimeout(): Int {
         val now = System.currentTimeMillis()
+
+        // Очередь веса
+        if (voiceSession.hasWeightQueue) {
+            val elapsed = now - voiceSession.weightQueueStartedAt
+            val warnMs = 20_000L
+            val expireMs = 30_000L
+
+            if (elapsed >= expireMs) {
+                voiceSession.clearWeightQueue()
+                return 2
+            }
+
+            if (elapsed >= warnMs && elapsed < warnMs + 500) {
+                return 1
+            }
+
+            return 0
+        }
 
         val startedAt = voiceSession.pendingMarkIntent?.startedAt
             ?: voiceSession.pendingConfirm?.startedAt
@@ -486,7 +513,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         Log.i(
             TAG,
             "voiceExecute: $cmd (state=${voiceSession.state}, " +
-                    "pinned=${voiceSession.isPinned}, queue=${voiceSession.queue.size})"
+                    "pinned=${voiceSession.isPinned}, queue=${voiceSession.queue.size}, " +
+                    "weightQueue=${voiceSession.weightQueue.size})"
         )
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
@@ -496,6 +524,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoicePostpone -> return voiceChoicePostpone()
             VoiceCommand.ChoiceSkip -> return voiceChoiceSkip()
             else -> Unit
+        }
+
+        // FIX 5.8.11-e4-weight-queue: очередь веса — приоритетно.
+        if (voiceSession.hasWeightQueue) {
+            return handleWeightQueue(cmd)
         }
 
         if (voiceSession.pendingConfirm != null) {
@@ -546,12 +579,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         voiceSearch(cmd.query)
                     }
                 }
-                
+
                 is VoiceCommand.Sort -> {
                     voiceSession.awaitingContinue = false
                     voiceSort(cmd.queries)
                 }
-                
+
                 is VoiceCommand.Find -> {
                     voiceSession.awaitingContinue = false
                     if (cmd.query.isNullOrBlank()) {
@@ -620,9 +653,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
 
         return when (cmd) {
-            // FIX 5.8.11-e4-pin-multi:
-            // В SORT режиме «новый запрос» — это сортировка, не поиск.
-            // Короткий ответ: «Скважина X. Наряд Y.», без статистики.
             is VoiceCommand.Search -> {
                 if (voiceSession.mode == VoiceSessionMode.SORT) {
                     voiceSession.unpin()
@@ -632,12 +662,11 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     handleSearchInSession(cmd.query)
                 }
             }
-            
+
             is VoiceCommand.Find -> {
                 voiceSession.unpin()
                 voiceSession.clearQueue()
                 if (cmd.query.isNullOrBlank()) {
-                    // В SORT режиме «найди» без номера — остаёмся в SORT, ждём номер.
                     if (voiceSession.mode != VoiceSessionMode.SORT) {
                         voiceSession.mode = VoiceSessionMode.SEARCH
                     }
@@ -676,6 +705,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             VoiceCommand.Confirm -> VoiceExecResult.Message("Нечего подтверждать.")
             VoiceCommand.Decline -> VoiceExecResult.Message("Нечего отменять.")
+            VoiceCommand.SkipWeightItem -> VoiceExecResult.Message("Нет очереди веса.")
 
             is VoiceCommand.SetWeight -> voiceSetWeight(cmd.value)
 
@@ -732,6 +762,98 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.Unknown -> VoiceExecResult.Message("Не понял команду")
         }
     }
+
+    // ================================================================
+    // FIX 5.8.11-e4-weight-queue: обработка очереди
+    // ================================================================
+
+    private suspend fun handleWeightQueue(cmd: VoiceCommand): VoiceExecResult {
+        val item = voiceSession.currentWeightItem
+            ?: return finishWeightQueue()
+
+        when (cmd) {
+            is VoiceCommand.SetWeight -> {
+                return when (val v = validateWeight(cmd.value)) {
+                    is WeightValidation.Ok -> {
+                        applyWeightToQueueItem(item, v.value)
+                        voiceSession.weightQueueMarked++
+                        advanceOrFinishWeightQueue()
+                    }
+                    is WeightValidation.Invalid -> {
+                        VoiceExecResult.Message("Не понял вес. Повторите.")
+                    }
+                }
+            }
+
+            VoiceCommand.SkipWeightItem -> {
+                voiceSession.weightQueueSkipped++
+                return advanceOrFinishWeightQueue()
+            }
+
+            VoiceCommand.Stop -> return VoiceExecResult.Stopped
+
+            VoiceCommand.Pause -> {
+                voiceSession.isPaused = true
+                return VoiceExecResult.Message("Пауза")
+            }
+
+            VoiceCommand.Undo -> {
+                voiceSession.clearWeightQueue()
+                return VoiceExecResult.Message("Отменено.")
+            }
+
+            else -> {
+                val question = weightQuestion(item)
+                return VoiceExecResult.Message(question)
+            }
+        }
+    }
+
+    private fun applyWeightToQueueItem(item: WeightQueueItem, weight: Double) {
+        val row = state.groups
+            .asSequence()
+            .flatMap { it.rows.asSequence() }
+            .firstOrNull { it.sampleNumber == item.sampleNumber }
+            ?: return
+
+        when (item.kind) {
+            WeightQueueKind.BLANK -> setBlankWeightAndMarkFound(row.id, weight)
+            WeightQueueKind.WEIGHT_CONTROL -> setControlWeightAndFound(row.id, weight)
+        }
+    }
+
+    private fun advanceOrFinishWeightQueue(): VoiceExecResult {
+        if (voiceSession.advanceWeightQueue()) {
+            val item = voiceSession.currentWeightItem
+                ?: return finishWeightQueue()
+            return VoiceExecResult.WeightQueueAsked(
+                item = item,
+                index = voiceSession.weightQueuePosition,
+                total = voiceSession.weightQueueTotal,
+                marked = voiceSession.weightQueueMarked,
+                skipped = voiceSession.weightQueueSkipped
+            )
+        }
+        return finishWeightQueue()
+    }
+
+    private fun finishWeightQueue(): VoiceExecResult {
+        val marked = voiceSession.weightQueueMarked
+        val skipped = voiceSession.weightQueueSkipped
+        voiceSession.clearWeightQueue()
+        return VoiceExecResult.WeightQueueDone(marked = marked, skipped = skipped)
+    }
+
+    private fun weightQuestion(item: WeightQueueItem): String {
+        val type = when (item.kind) {
+            WeightQueueKind.BLANK -> "Холостая"
+            WeightQueueKind.WEIGHT_CONTROL -> "Весовой контроль"
+        }
+        val word = VoiceOrdinals.word(item.ordinal) ?: "номер ${item.ordinal}"
+        return "$type, $word. Вес?"
+    }
+
+    // ================================================================
 
     private fun voiceStartMarkIntent(type: PendingMarkIntentType): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
@@ -1325,12 +1447,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Снято отметок: $count")
     }
 
-    /**
-     * FIX 5.8.11-e4-markers-2/6:
-     * Номер пробы прогнан через VoiceSpeaker.spellMimicry —
-     * мимикрия, как человек. Было «эн вэ 13 66 02», стало
-     * «энвэ тринадцать шестьдесят шесть ноль два».
-     */
     private fun voicePostponeOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1373,6 +1489,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Отложено проб: $count")
     }
 
+    /**
+     * FIX 5.8.11-e4-weight-queue:
+     * Массовая отметка. Отмечаем всё, что можно отметить сразу;
+     * если остались холостые/ВК без веса — строим очередь и
+     * задаём первый вопрос. Иначе — MarkedAll.
+     */
     private fun voiceMarkAll(): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1381,40 +1503,54 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val group = state.groupById(orderId.toString())
             ?: return VoiceExecResult.Message("Наряд не загружен")
 
-        val rows = group.rows.filter { it.wellNumber == wellNumber && !it.found }
-        if (rows.isEmpty()) return VoiceExecResult.Message("Все пробы уже отмечены")
+        val wellRows = group.rows.filter { it.wellNumber == wellNumber }
+        val toMark = wellRows.filter { !it.found }
 
-        val decisions = rows.map { analyzeMark(toMarkContext(state, it)) }
-        val blocking = decisions.filter {
-            it is MarkDecision.NeedsControlWeight ||
-                    it is MarkDecision.NeedsBlankWeight ||
-                    it is MarkDecision.ImportError
-        }
-        if (blocking.isNotEmpty()) {
-            return VoiceExecResult.Message(
-                "Есть пробы, которым нужен вес или ошибка импорта. " +
-                        "Отмечай по одной или заполни на экране."
-            )
-        }
+        if (toMark.isEmpty()) return VoiceExecResult.Message("Все пробы уже отмечены")
+
+        val queue = buildWeightQueue(toMark)
 
         var marked = 0
         var lastId: String? = null
         var lastNumber: String? = null
-        rows.forEachIndexed { index, row ->
-            when (val d = decisions[index]) {
+
+        for (row in toMark) {
+            if (row.hasImportError) continue
+            val decision = analyzeMark(toMarkContext(state, row))
+            when (decision) {
                 is MarkDecision.CanMark -> {
-                    setFound(row.id, true); marked++; lastId = row.id; lastNumber = row.sampleNumber
+                    setFound(row.id, true)
+                    marked++
+                    lastId = row.id
+                    lastNumber = row.sampleNumber
                 }
                 is MarkDecision.MarkWithWeight -> {
-                    setBlankWeightAndMarkFound(row.id, d.weight); marked++; lastId = row.id; lastNumber = row.sampleNumber
+                    setBlankWeightAndMarkFound(row.id, decision.weight)
+                    marked++
+                    lastId = row.id
+                    lastNumber = row.sampleNumber
                 }
                 else -> Unit
             }
         }
+
         voiceSession.lastMarkedRowId = lastId
         voiceSession.lastMarkedSampleNumber = lastNumber
-        if (marked == 0) return VoiceExecResult.Message("Нечего отмечать")
-        return VoiceExecResult.MarkedAll(marked)
+
+        if (queue.isEmpty()) {
+            if (marked == 0) return VoiceExecResult.Message("Нечего отмечать")
+            return VoiceExecResult.MarkedAll(marked)
+        }
+
+        voiceSession.startWeightQueue(queue)
+        val first = queue.first()
+        return VoiceExecResult.WeightQueueAsked(
+            item = first,
+            index = 1,
+            total = queue.size,
+            marked = marked,
+            skipped = 0
+        )
     }
 
     private fun voiceSetWeight(value: Double): VoiceExecResult {
@@ -1431,10 +1567,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.WeightSet(row.sampleNumber, value)
     }
 
-    /**
-     * FIX 5.8.11-e4-markers-2/6:
-     * Номер пробы — через spellMimicry.
-     */
     private fun voiceClearOrdinal(ordinal: Int): VoiceExecResult {
         val orderId = voiceSession.currentOrderId
             ?: return VoiceExecResult.Message("Сначала найдите скважину")
@@ -1708,10 +1840,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.11-e4-markers-2/6:
-     * Номера скважин и проб в описаниях — через spellMimicry.
-     */
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {
         val source = VoiceSearchRepository(getApplication())
         val all = source.loadAll()
