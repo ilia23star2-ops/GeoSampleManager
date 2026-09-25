@@ -3,17 +3,16 @@ package com.example.geosamplemanager.data.voice
 /**
  * Разбор голосовой фразы в VoiceCommand.
  *
- * FIX 5.8.11-e4-markers:
- *  - Глагол без номера → маркер намерения.
- *  - Глагол + номер в одной фразе → сразу команда.
- *  - В AWAITING_CONFIRM: «подтверждаю» → Confirm, «отменяю» → Decline.
+ * FIX 5.8.11-e4-markers-2:
+ *  - Глаголы отложения + номер одной фразой:
+ *    «отложить вторую» → PostponeOrdinal(2)
+ *    «отложи 7» → PostponeOrdinal(7)
+ *    «перенести третью» → PostponeOrdinal(3)
+ *  - Без номера → PostponeIntent (как было в e4-markers).
  *
  * FIX 5.8.11-e4-markers/8:
- *  - «отметь 7» (голое число цифрами) — теперь парсится через
- *    tail.toIntOrNull(). Раньше numberParser.parse("7").primary
- *    не давал нужный результат.
- *  - В parseForPaused добавлено «хватит» (раньше было только «хатит»).
- *  - В parse() и parseForContinue добавлено «хватит».
+ *  - «отметь 7» (голое число) — через tail.toIntOrNull().
+ *  - «хватит» — во всех состояниях.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -52,6 +51,12 @@ class VoiceCommandParser(
 
     private val markVerbPrefixes = listOf("отметь ", "отметить ", "отметьте ")
 
+    /** FIX 5.8.11-e4-markers-2: глаголы отложения с аргументом. */
+    private val postponeVerbPrefixes = listOf(
+        "отложить ", "отложи ",
+        "перенести ", "перенеси "
+    )
+
     private val removeVerbWords = setOf("снять", "убрать", "удали", "удалить")
 
     private val findVerbWords = setOf("найди", "найти", "ищи", "искать", "поищи")
@@ -70,7 +75,6 @@ class VoiceCommandParser(
     )
     private val markIntentWords = setOf("отметь", "отметить", "отметьте")
 
-    /** FIX 5.8.11-e4-markers/8: единый набор стоп-слов. */
     private val stopWords = setOf("стоп", "хатит", "хватит")
 
     private val hundredFormToValue: Map<String, Int> = mapOf(
@@ -172,8 +176,7 @@ class VoiceCommandParser(
             return if (value != null) VoiceCommand.SetWeight(value) else VoiceCommand.Unknown
         }
 
-        // FIX 5.8.11-e4-markers/8: глагол + номер.
-        // Порядок: порядковое → цифры → числительное словами.
+        // Глагол «отметь» + номер.
         for (prefix in markVerbPrefixes) {
             if (norm.startsWith(prefix)) {
                 val tail = norm.removePrefix(prefix).trim()
@@ -188,6 +191,26 @@ class VoiceCommandParser(
 
                 val num = numberParser.parse(tail).primary?.toIntOrNull()
                 if (num != null && num in 1..30) return VoiceCommand.MarkOrdinal(num)
+
+                return VoiceCommand.Unknown
+            }
+        }
+
+        // FIX 5.8.11-e4-markers-2: глагол «отложить» + номер.
+        for (prefix in postponeVerbPrefixes) {
+            if (norm.startsWith(prefix)) {
+                val tail = norm.removePrefix(prefix).trim()
+                if (tail.isEmpty()) return VoiceCommand.PostponeIntent
+
+                val ord = VoiceOrdinals.match(tail)
+                if (ord != null) return VoiceCommand.PostponeOrdinal(ord)
+
+                tail.toIntOrNull()?.let { n ->
+                    if (n in 1..30) return VoiceCommand.PostponeOrdinal(n)
+                }
+
+                val num = numberParser.parse(tail).primary?.toIntOrNull()
+                if (num != null && num in 1..30) return VoiceCommand.PostponeOrdinal(num)
 
                 return VoiceCommand.Unknown
             }

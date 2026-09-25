@@ -34,17 +34,6 @@ import kotlin.math.roundToInt
 
 private const val LOG_TAG = "VoiceDialog"
 
-/**
- * FIX 5.8.11-e4-markers:
- * Тайм-аут ожидания. Проверяется каждые 250 мс через
- * viewModel.checkWaitTimeout(). Возвращаемое значение:
- *   0 — ничего
- *   1 — предупреждение (20 сек прошло)
- *   2 — сброс (30 сек прошло)
- *
- * Цикл 250 мс — гарантированно попадает в окно предупреждения
- * (500 мс), поэтому каждый тайм-аут озвучивается один раз.
- */
 private const val TIMEOUT_TICK_MS = 250L
 
 @Composable
@@ -173,9 +162,6 @@ fun VoiceDialog(
         }
     }
 
-    // FIX 5.8.11-e4-markers: цикл тайм-аута ожидания.
-    // Каждые 250 мс проверяем, не прошло ли 30 сек с момента,
-    // когда ГП задал вопрос (Какую пробу? / Отметить все?).
     LaunchedEffect(Unit) {
         var warnedStartedAt: Long? = null
 
@@ -185,7 +171,6 @@ fun VoiceDialog(
             val code = viewModel.checkWaitTimeout()
 
             if (code == 1) {
-                // Предупреждение. Озвучиваем один раз на сессию ожидания.
                 val startedAt = viewModel.voiceSession.pendingMarkIntent?.startedAt
                     ?: viewModel.voiceSession.pendingConfirm?.startedAt
 
@@ -265,7 +250,8 @@ private fun handleFeedback(
             fb.soundOk()
 
             val ordWord = VoiceOrdinals.word(result.ordinal)
-            val subject = ordWord ?: "Проба ${VoiceSpeaker.spellOut(result.sampleNumber)}"
+            val subject = ordWord
+                ?: "Проба ${VoiceSpeaker.spellMimicry(result.sampleNumber)}"
 
             val phrase = when {
                 result.needsWeight && result.isWeightControl ->
@@ -281,11 +267,6 @@ private fun handleFeedback(
             controller?.speak(phrase)
         }
 
-        /**
-         * FIX 5.8.11-e4-pin-7:
-         * Проба с распознанным номером не найдена. Честная ошибка +
-         * подсказка числом для «спорных» пар (14 → 4, 40 → 4, 400 → 4).
-         */
         is VoiceExecResult.MarkOrdinalNotFound -> {
             fb.soundError()
 
@@ -502,11 +483,16 @@ private fun buildFoundOneShortPhrase(r: VoiceExecResult.FoundOne): String {
     }
 }
 
+/**
+ * FIX 5.8.11-e4-markers-2/6:
+ * Единая точка озвучки номера. Если есть groups — мимикрия по ним.
+ * Если нет — мимикрия через spellMimicry(fallback), а не по буквам.
+ */
 private fun spokenNumberOf(r: VoiceExecResult.FoundOne, fallback: String): String =
     if (r.groups.isNotEmpty()) {
         VoiceSpeaker.spellOut(r.groups)
     } else {
-        VoiceSpeaker.spellOut(fallback)
+        VoiceSpeaker.spellMimicry(fallback)
     }
 
 private fun statusFromResult(result: VoiceExecResult): VoiceStatus = when (result) {
