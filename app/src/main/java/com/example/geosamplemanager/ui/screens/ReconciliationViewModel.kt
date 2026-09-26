@@ -1846,6 +1846,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
+    /**
+     * FIX 5.8.11-sort-ui:
+     * Раньше метод возвращал только Message для TTS, не трогая state.query.
+     * UI оставался пустым. Теперь собираем канонические номера найденных
+     * скважин/проб и (для не найденных — сырой текст) пишем в state.query
+     * через setQuery. UI строит мультизапрос как при ручном вводе.
+     */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -1856,6 +1863,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val all = source.loadAll()
 
         val descriptions = mutableListOf<String>()
+        val uiTokens = mutableListOf<String>()
 
         val selectedArea = state.selectedArea
         val selectedOrder = state.selectedOrder
@@ -1870,6 +1878,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (candidates.isEmpty()) {
                 descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                uiTokens.add(clean)
                 continue
             }
 
@@ -1899,16 +1908,30 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         }
 
                         when {
-                            !r.isUnique ->
+                            !r.isUnique -> {
                                 descriptions.add("$subject — найден в нескольких нарядах")
-                            conflict != null ->
+                                uiTokens.add(clean)
+                            }
+                            conflict != null -> {
                                 descriptions.add("$subject — $conflict")
-                            else ->
+                                uiTokens.add(clean)
+                            }
+                            else -> {
                                 descriptions.add("$subject, Наряд №$orderSpoken")
+                                // Канонический номер — тот же, что показала бы UI
+                                // при ручном вводе.
+                                val canonical = when (r.matchedKind) {
+                                    UnifiedMatchKind.WELL -> hit.wellNumber
+                                    UnifiedMatchKind.SAMPLE -> hit.sampleNumber
+                                    UnifiedMatchKind.NONE -> hit.wellNumber
+                                }
+                                uiTokens.add(canonical)
+                            }
                         }
                     }
                     UnifiedSearchResult.NotFound -> {
                         descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                        uiTokens.add(clean)
                     }
                 }
             } catch (e: CancellationException) {
@@ -1916,7 +1939,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: Exception) {
                 Log.e(TAG, "voiceSortFlat: проверка «$clean» упала", e)
                 descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
+                uiTokens.add(clean)
             }
+        }
+
+        // Записываем канонические номера в state.query через setQuery —
+        // это тот же путь, что при ручном вводе. UI построит мультизапрос.
+        if (uiTokens.isNotEmpty()) {
+            val uiQuery = uiTokens.joinToString(" ")
+            setQuery(uiQuery)
         }
 
         val text = if (descriptions.isEmpty()) "Не понял." else descriptions.joinToString(". ") + "."
