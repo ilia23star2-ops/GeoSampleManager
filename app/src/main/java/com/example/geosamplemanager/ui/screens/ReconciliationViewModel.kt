@@ -497,7 +497,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             TAG,
             "voiceExecute: $cmd (state=${voiceSession.state}, " +
                     "pinned=${voiceSession.isPinned}, queue=${voiceSession.queue.size}, " +
-                    "weightQueue=${voiceSession.weightQueue.size})"
+                    "weightQueue=${voiceSession.weightQueue.size}, " +
+                    "mode=${voiceSession.mode})"
         )
 
         if (cmd is VoiceCommand.Stop) return VoiceExecResult.Stopped
@@ -1736,7 +1737,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
+    /**
+     * FIX 5.8.11-sort-fix:
+     * Разделение поведения:
+     *  - SEARCH — очередь и pin (как было).
+     *  - SORT   — плоский короткий ответ на все запросы сразу.
+     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
+        if (voiceSession.mode == VoiceSessionMode.SORT) {
+            return voiceSortFlat(queries)
+        }
+
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
 
@@ -1840,6 +1851,91 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             groups = emptyList(),
             queueSize = pinnedList.size
         )
+    }
+
+    /**
+     * FIX 5.8.11-sort-fix:
+     * SORT-режим: плоский короткий ответ. Без очереди, без pin.
+     *
+     * Пример:
+     *   Говорю: «13 66 и 109 00 31».
+     *   Ответ: «Скважина NV1366. Наряд №1. Скважина KPD1090031. Наряд №14.»
+     */
+    private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
+        voiceSession.isAutoMode = false
+        voiceSession.awaitingContinue = false
+        voiceSession.clearQueue()
+        voiceSession.unpin()
+
+        val source = VoiceSearchRepository(getApplication())
+        val all = source.loadAll()
+
+        val descriptions = mutableListOf<String>()
+
+        val selectedArea = state.selectedArea
+        val selectedOrder = state.selectedOrder
+
+        for (q in queries) {
+            val clean = q.trim()
+            if (clean.isEmpty()) continue
+
+            val candidates: List<String> = if (clean.all { it.isDigit() }) listOf(clean)
+            else voiceParser.parse(clean).candidates.map { it.replace("|", "") }
+                .filter { it.isNotBlank() }
+
+            if (candidates.isEmpty()) {
+                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                continue
+            }
+
+            try {
+                when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
+                    is UnifiedSearchResult.Found -> {
+                        val hit = r.hits.first()
+                        val subject = when (r.matchedKind) {
+                            UnifiedMatchKind.WELL ->
+                                "Скважина ${VoiceSpeaker.spellMimicry(hit.wellNumber)}"
+                            UnifiedMatchKind.SAMPLE ->
+                                "Проба ${VoiceSpeaker.spellMimicry(hit.sampleNumber)}"
+                            UnifiedMatchKind.NONE ->
+                                VoiceSpeaker.spellMimicry(hit.wellNumber)
+                        }
+                        val orderSpoken = VoiceSpeaker.spellNumber(
+                            hit.orderNumber.toIntOrNull() ?: 0
+                        )
+
+                        val conflict = when {
+                            selectedArea != null && hit.areaTitle != selectedArea ->
+                                "другой участок — $selectedArea"
+                            selectedOrder != null &&
+                                    "Наряд №${hit.orderNumber}" != selectedOrder ->
+                                "другой наряд"
+                            else -> null
+                        }
+
+                        when {
+                            !r.isUnique ->
+                                descriptions.add("$subject — найден в нескольких нарядах")
+                            conflict != null ->
+                                descriptions.add("$subject — $conflict")
+                            else ->
+                                descriptions.add("$subject, Наряд №$orderSpoken")
+                        }
+                    }
+                    UnifiedSearchResult.NotFound -> {
+                        descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "voiceSortFlat: проверка «$clean» упала", e)
+                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
+            }
+        }
+
+        val text = if (descriptions.isEmpty()) "Не понял." else descriptions.joinToString(". ") + "."
+        return VoiceExecResult.Message(text)
     }
 
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {

@@ -1370,12 +1370,17 @@ private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     }
 }
 
+/**
+ * FIX 5.8.11-sort-fix:
+ * Раньше было просто «1 · NV1366» — непонятно, что такое «1».
+ * Теперь «Наряд №1 · NV1366».
+ */
 private fun buildAnswerLine(qa: QuickAnswer): String {
     val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
     val value = qa.answerValue
     return when {
-        orderNum.isNotEmpty() && value != null -> "$orderNum · $value"
-        orderNum.isNotEmpty() -> orderNum
+        orderNum.isNotEmpty() && value != null -> "Наряд №$orderNum · $value"
+        orderNum.isNotEmpty() -> "Наряд №$orderNum"
         value != null -> value
         else -> ""
     }

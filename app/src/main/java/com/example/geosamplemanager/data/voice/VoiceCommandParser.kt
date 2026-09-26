@@ -6,6 +6,13 @@ package com.example.geosamplemanager.data.voice
  * FIX 5.8.11-e4-weight-queue:
  *  - Ветка AWAITING_WEIGHT_QUEUE в parseWithState.
  *  - parseForWeightQueue принимает вес, «пропустить», управление.
+ *
+ * FIX 5.8.11-sort-fix-2:
+ *  - Убран QueryTokenizer/QuerySplitter из парсера — он не понимает
+ *    слова-числительные («тринадцать», «шестьдесят»).
+ *  - Авто-split для голоса идёт через VoiceNumberParser: берём его
+ *    candidates с разделителями «|», склеиваем группы <4 цифр в одно
+ *    число, и если получилось 2+ числа — Sort.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -246,7 +253,67 @@ class VoiceCommandParser(
             if (parsed.all { it != null }) return VoiceCommand.Sort(parsed.filterNotNull())
         }
 
+        // FIX 5.8.11-sort-fix-2: авто-split без «и» через VoiceNumberParser.
+        val splitNumbers = trySplitByNumberBlocks(norm)
+        if (splitNumbers != null && splitNumbers.size >= 2) {
+            return VoiceCommand.Sort(splitNumbers)
+        }
+
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
+    }
+
+    /**
+     * FIX 5.8.11-sort-fix-2:
+     * Попробовать разбить голосовую фразу на 2+ числа.
+     *
+     * Идёт через VoiceNumberParser — его candidates содержат разделители
+     * «|» там, где в исходной фразе были границы блоков числительных.
+     * Берём первый кандидат, у которого после склейки коротких групп
+     * (<4 цифр) получается 2+ самостоятельных числа.
+     *
+     * Примеры:
+     *   «тринадцать шестьдесят шесть сто девять два ноля тридцать один»
+     *     candidates: [«13661090031», «13|66|109|00|31», «1366|109|00|31»]
+     *     третий → [«1366», «1090031»] → Sort.
+     *
+     *   «тысяча триста шестьдесят шесть тысяча триста шестьдесят семь»
+     *     candidates: [«13661367», «1366|1367»]
+     *     второй → [«1366», «1367»] → Sort.
+     *
+     *   «KPD1090031» (латиница) — numberParser не понимает, candidates пусто → null.
+     *
+     *   «сто девять ноль ноль тридцать один» — одно число → 1 результат → null.
+     */
+    private fun trySplitByNumberBlocks(norm: String): List<String>? {
+        return try {
+            val parsed = numberParser.parse(norm)
+            for (cand in parsed.candidates) {
+                if (!cand.contains("|")) continue
+                val groups = cand.split("|").filter { it.isNotBlank() }
+                if (groups.size < 2) continue
+
+                val result = mutableListOf<String>()
+                val cur = StringBuilder()
+                for (g in groups) {
+                    if (cur.isEmpty() && g.length >= 4) {
+                        result.add(g)
+                    } else {
+                        cur.append(g)
+                    }
+                }
+                if (cur.isNotEmpty()) {
+                    if (result.isEmpty()) continue
+                    result[result.size - 1] = result.last() + cur.toString()
+                }
+
+                if (result.size >= 2 && result.all { it.filter { c -> c.isDigit() }.isNotEmpty() }) {
+                    return result
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun parseMarkTail(tail: String): VoiceCommand {
@@ -340,7 +407,6 @@ class VoiceCommandParser(
                 }
             }
             VoiceState.AWAITING_WEIGHT -> parseForWeight(input)
-            // FIX 5.8.11-e4-weight-queue: очередь веса после массовой отметки.
             VoiceState.AWAITING_WEIGHT_QUEUE -> parseForWeightQueue(input)
             VoiceState.AWAITING_CHOICE -> parse(input, pendingChoice = true)
             VoiceState.AWAITING_CONTINUE -> parseForContinue(input)
@@ -352,17 +418,6 @@ class VoiceCommandParser(
         }
     }
 
-    /**
-     * FIX 5.8.11-e4-weight-queue:
-     * Разбор в AWAITING_WEIGHT_QUEUE.
-     *
-     * Принимаем:
-     *   - число-вес: «два пять» → SetWeight(2.5);
-     *   - «пропустить» / «пропусти» / «дальше» → SkipWeightItem;
-     *   - «стоп» → Stop;
-     *   - «пауза» → Pause;
-     *   - «отмена» → Undo.
-     */
     private fun parseForWeightQueue(input: String): VoiceCommand {
         val norm = numberParser.normalize(input).trim()
 

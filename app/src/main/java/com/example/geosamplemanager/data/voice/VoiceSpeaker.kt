@@ -7,17 +7,17 @@ import kotlin.math.roundToInt
  *
  * FIX 5.8.11-e4-speak-1:
  * - splitLikeHuman(digits) — разбивает слитную строку цифр так,
- *   как сказал бы человек: 1366 → 13|66, 1090031 → 109|00|31,
- *   109003101 → 109|00|31|01.
- * - spellMimicry(text) переписан: сначала простая ветка
- *   «префикс + цифры» без разделителей, потом fallback через
- *   QueryTokenizer + DigitGrouper.
+ *   как сказал бы человек: 1366 → 13|66, 1090031 → 109|00|31.
+ * - spellMimicry(text) — произнести строку-номер «как человек».
  *
  * FIX 5.8.11-e4-prefix-1:
  * - spellLetters разделяет буквы пробелом: «KPD» → «ка пэ дэ».
- *   Vosk в грамматике учит эти же звуки по отдельности, поэтому
- *   речь TTS и распознавание симметричны.
- * - Одна буква пробелом не округляется: «W» → «даблю».
+ *
+ * FIX 5.8.11-sort-fix-2:
+ * - spellMimicry больше НЕ падает в spellOut для кириллицы.
+ *   Раньше фраза «тринадцать шестьдесят шесть сто девять…»
+ *   превращалась в «т р и н а д ц а т ь…». Теперь возвращаем
+ *   исходную строку, если в ней нет распознаваемого номера.
  */
 object VoiceSpeaker {
 
@@ -87,17 +87,22 @@ object VoiceSpeaker {
             return spellPrefixAndDigits(prefix, digits)
         }
 
-        // Fallback: старый путь через токенизацию.
+        // FIX 5.8.11-sort-fix-2: fallback. Если строка не подходит
+        // под номер — вернуть как есть, а не произносить по буквам.
         return try {
             val tokens = QueryTokenizer().tokenize(text)
-            if (tokens.isEmpty()) return spellOut(text)
+            if (tokens.isEmpty()) return text
+
+            // Все токены — Unknown? Значит это слова (кириллица),
+            // а не номер. Возвращаем исходную строку.
+            if (tokens.all { it is QueryToken.Unknown }) return text
 
             val groups = DigitGrouper.group(tokens)
-            if (groups.isEmpty()) return spellOut(text)
+            if (groups.isEmpty()) return text
 
             spellOut(groups)
         } catch (_: Exception) {
-            spellOut(text)
+            text
         }
     }
 
@@ -173,9 +178,6 @@ object VoiceSpeaker {
      * FIX 5.8.11-e4-prefix-1:
      * Буквы — пробел между ними: «KPD» → «ка пэ дэ».
      * Одна буква — без пробела: «W» → «даблю».
-     *
-     * Vosk в грамматике учит эти же звуки отдельными словами,
-     * поэтому TTS и распознавание работают симметрично.
      */
     private fun spellLetters(text: String): String {
         val parts = mutableListOf<String>()

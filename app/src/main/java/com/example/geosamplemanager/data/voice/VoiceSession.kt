@@ -81,6 +81,11 @@ enum class ConfirmedAction {
  *   — очередь веса после массовой отметки;
  * - методы `startWeightQueue`, `currentWeightItem`,
  *   `advanceWeightQueue`, `clearWeightQueue`, `hasWeightQueue`.
+ *
+ * FIX 5.8.11-sort-fix:
+ * - `advanceToNext()` больше НЕ сбрасывает `mode` в SEARCH.
+ *   Режим ортогонален состоянию: если в SORT сказать «далее»,
+ *   пользователь остаётся в SORT.
  */
 class VoiceSession {
 
@@ -362,6 +367,12 @@ class VoiceSession {
         clearWeightQueue()
     }
 
+    /**
+     * FIX 5.8.11-sort-fix:
+     * Раньше здесь был `mode = VoiceSessionMode.SEARCH`. Это ломало
+     * SORT: пользователь говорил «далее» и незаметно возвращался
+     * в SEARCH. Режим ортогонален состоянию — не трогаем.
+     */
     fun advanceToNext() {
         currentQuery = null
         currentWellNumber = null
@@ -370,7 +381,6 @@ class VoiceSession {
         lastMarkedRowId = null
         lastMarkedSampleNumber = null
         isAutoMode = false
-        mode = VoiceSessionMode.SEARCH
         awaitingWeight = false
         awaitingContinue = false
         pendingMarkChoice = null
