@@ -9,6 +9,11 @@ import org.junit.Test
  *  - «следующая X» → Find(X) в любом состоянии;
  *  - вес «X сотни» → X.Y;
  *  - в FOUND_PINNED число → MarkOrdinal (без Search).
+ *
+ * FIX 5.8.11-sort-fix-5:
+ * Команда NextInQueue удалена. «Дальше» в FOUND_PINNED теперь даёт
+ * VoiceCommand.Next (унификация). Разбор «идти по очереди или сбросить
+ * контекст» — внутри voiceNext().
  */
 class VoiceCommandParserPin3Test {
 
@@ -91,11 +96,16 @@ class VoiceCommandParserPin3Test {
         assertEquals(VoiceCommand.MarkOrdinal(1524), cmd)
     }
 
+    /**
+     * FIX 5.8.11-sort-fix-5:
+     * «Дальше» в FOUND_PINNED теперь даёт VoiceCommand.Next.
+     * NextInQueue удалён. Логика очереди — в voiceNext().
+     */
     @Test
-    fun pinnedDalsheIsNextInQueue() {
+    fun pinnedDalsheIsNext() {
         val cmd = parser.parseWithState(
             "дальше", VoiceState.FOUND_PINNED, VoiceSessionMode.SEARCH
         )
-        assertEquals(VoiceCommand.NextInQueue, cmd)
+        assertEquals(VoiceCommand.Next, cmd)
     }
 }

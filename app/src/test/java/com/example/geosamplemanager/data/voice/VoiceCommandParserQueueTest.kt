@@ -4,25 +4,24 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * FIX 5.8.11-e4-pin-2:
- * Тесты «дальше» в FOUND_PINNED.
+ * FIX 5.8.11-e4-pin-2 / sort-fix-5:
+ * Тесты синонимов Next.
  *
- * Проверяем:
- *  - «дальше» → NextInQueue;
- *  - «следующая» / «далее» → Next (выход из очереди);
- *  - числа всё ещё MarkOrdinal;
- *  - «отмена» → Undo.
+ * FIX 5.8.11-sort-fix-5:
+ * Команда NextInQueue удалена. Все синонимы («дальше», «следующая»,
+ * «далее») дают VoiceCommand.Next в любом состоянии. Разбор «идти
+ * по очереди или сбросить контекст» — внутри voiceNext().
  */
 class VoiceCommandParserQueueTest {
 
     private val parser = VoiceCommandParser()
 
     @Test
-    fun pinnedDalsheIsNextInQueue() {
+    fun pinnedDalsheIsNext() {
         val cmd = parser.parseWithState(
             "дальше", VoiceState.FOUND_PINNED, VoiceSessionMode.SEARCH
         )
-        assertEquals(VoiceCommand.NextInQueue, cmd)
+        assertEquals(VoiceCommand.Next, cmd)
     }
 
     @Test
@@ -57,12 +56,25 @@ class VoiceCommandParserQueueTest {
         assertEquals(VoiceCommand.Undo, cmd)
     }
 
+    /**
+     * FIX 5.8.11-sort-fix-5:
+     * «Дальше» теперь универсальная команда — в LISTENING тоже Next.
+     * Раньше давало Unknown (не было в nextVerbWords). Логика voiceNext()
+     * сама решит: сбросить контекст или идти по очереди.
+     */
     @Test
-    fun listenDalsheIsUnknown() {
+    fun listenDalsheIsNext() {
         val cmd = parser.parseWithState(
             "дальше", VoiceState.LISTENING, VoiceSessionMode.SEARCH
         )
-        // В LISTENING «дальше» — не команда.
-        assertEquals(VoiceCommand.Unknown, cmd)
+        assertEquals(VoiceCommand.Next, cmd)
+    }
+
+    @Test
+    fun listenSleduyushchayaIsNext() {
+        val cmd = parser.parseWithState(
+            "следующая", VoiceState.LISTENING, VoiceSessionMode.SEARCH
+        )
+        assertEquals(VoiceCommand.Next, cmd)
     }
 }

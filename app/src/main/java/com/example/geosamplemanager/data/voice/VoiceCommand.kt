@@ -10,6 +10,12 @@ package com.example.geosamplemanager.data.voice
  * FIX 5.8.11-e4-weight-queue:
  * Добавлена команда SkipWeightItem — «пропустить» на вопросе веса
  * в очереди: оставить пробу неотмеченной, перейти к следующей.
+ *
+ * FIX 5.8.11-sort-fix-5:
+ * Убрана команда NextInQueue. Все синонимы («следующая», «далее»,
+ * «дальше») теперь дают одну команду Next. Внутри voiceNext() логика
+ * сама разбирается: если есть очередь — переключение к следующей
+ * скважине, иначе — полный сброс контекста.
  */
 sealed class VoiceCommand {
 
@@ -25,7 +31,6 @@ sealed class VoiceCommand {
     data class PostponeOrdinal(val ordinal: Int) : VoiceCommand()
     data object Unpostpone : VoiceCommand()
     data object Next : VoiceCommand()
-    data object NextInQueue : VoiceCommand()
     data object Undo : VoiceCommand()
     data object Redo : VoiceCommand()
     data object Pause : VoiceCommand()

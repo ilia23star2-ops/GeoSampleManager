@@ -94,7 +94,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private val voiceCommandLikeWords = setOf(
         "стоп", "хватит", "пауза", "паузу", "продолжить", "продолжай",
         "отмена", "отменить", "верни", "назад", "повтори", "вперёд", "вперед",
-        "следующая", "следующий", "следующую", "далее",
+        "следующая", "следующий", "следующую", "далее", "дальше",
         "помощь", "команда", "команды", "сколько", "осталось",
         "показать", "отложенные", "найденные"
     )
@@ -323,14 +323,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 1 -> {
                     val request = requests[0]
-                    // FIX 5.8.11-sort-fix-4: buildQueryString вместо joinToString(raw).
                     val requestStr = buildQueryString(request)
                     state.queryTokens = listOf(requestStr)
                     state.clearQueryGroups()
                     loadGroupsForQueryNew(request)
                 }
                 else -> {
-                    // FIX 5.8.11-sort-fix-4: buildQueryString вместо joinToString(raw).
                     val oldTokens = requests.map { req -> buildQueryString(req) }
                     state.queryTokens = oldTokens.take(MAX_QUERY_TOKENS)
                     buildMultiQueryGroups(oldTokens)
@@ -342,11 +340,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
         QuerySplitter.splitIntoRequests(tokens)
 
-    /**
-     * FIX 5.8.11-sort-fix-4:
-     * Собрать UI-строку запроса из токенов.
-     * Prefix + Number → без пробела («NV1366»), остальные — через пробел.
-     */
     private fun buildQueryString(tokens: List<QueryToken>): String {
         val parts = mutableListOf<String>()
         var i = 0
@@ -729,8 +722,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
             VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
 
+            // FIX 5.8.11-sort-fix-5: одна команда Next.
             VoiceCommand.Next -> voiceNext()
-            VoiceCommand.NextInQueue -> voiceNextInQueue()
 
             VoiceCommand.Undo -> {
                 voiceSession.unpin()
@@ -1731,10 +1724,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         voiceSession.lastMarkedSampleNumber = null
     }
 
-    private fun voiceNext(): VoiceExecResult {
-        // FIX 5.8.11-sort-fix-3: в SORT «далее» не имеет смысла.
+    /**
+     * FIX 5.8.11-sort-fix-5:
+     * Единая команда Next. Если есть очередь — идём по ней
+     * (voiceNextInQueue). Если нет — полный сброс контекста.
+     * mode SORT — команда неприменима.
+     */
+    private suspend fun voiceNext(): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
             return VoiceExecResult.Message("В режиме сортировки не используется.")
+        }
+        if (voiceSession.hasQueue) {
+            return voiceNextInQueue()
         }
         voiceSession.advanceToNext()
         state.query = ""
@@ -1880,13 +1881,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     /**
      * FIX 5.8.11-sort-ui:
      * Раньше метод возвращал только Message для TTS, не трогая state.query.
-     * UI оставался пустым. Теперь собираем канонические номера найденных
-     * скважин/проб и (для не найденных — сырой текст) пишем в state.query
-     * через setQuery. UI строит мультизапрос как при ручном вводе.
      *
      * FIX 5.8.11-sort-fix-4:
      * Возвращаем Message с display — каноническим номером для UI-поля
-     * «Распознано» (вместо сырого Vosk).
+     * «Распознано».
+     *
+     * FIX 5.8.11-sort-fix-5:
+     * Формируем text (канонический, для UI-поля «Результат») и spoken
+     * (фонетический, для TTS) параллельно. UI теперь видит
+     * «Скважина NV1366, Наряд №1.», а ухо слышит «Скважина эн вэ
+     * тринадцать шестьдесят шесть, Наряд №1.».
      */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
@@ -1897,7 +1901,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val source = VoiceSearchRepository(getApplication())
         val all = source.loadAll()
 
-        val descriptions = mutableListOf<String>()
+        val descriptionsUi = mutableListOf<String>()
+        val descriptionsSpoken = mutableListOf<String>()
         val uiTokens = mutableListOf<String>()
 
         val selectedArea = state.selectedArea
@@ -1912,7 +1917,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .filter { it.isNotBlank() }
 
             if (candidates.isEmpty()) {
-                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                descriptionsUi.add("$clean — не найдено")
+                descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
                 uiTokens.add(clean)
                 continue
             }
@@ -1921,7 +1927,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 when (val r = UnifiedSearch.search(all, candidates, filterMode = false)) {
                     is UnifiedSearchResult.Found -> {
                         val hit = r.hits.first()
-                        val subject = when (r.matchedKind) {
+
+                        val subjectUi = when (r.matchedKind) {
+                            UnifiedMatchKind.WELL -> "Скважина ${hit.wellNumber}"
+                            UnifiedMatchKind.SAMPLE -> "Проба ${hit.sampleNumber}"
+                            UnifiedMatchKind.NONE -> hit.wellNumber
+                        }
+                        val subjectSpoken = when (r.matchedKind) {
                             UnifiedMatchKind.WELL ->
                                 "Скважина ${VoiceSpeaker.spellMimicry(hit.wellNumber)}"
                             UnifiedMatchKind.SAMPLE ->
@@ -1929,6 +1941,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             UnifiedMatchKind.NONE ->
                                 VoiceSpeaker.spellMimicry(hit.wellNumber)
                         }
+
                         val orderSpoken = VoiceSpeaker.spellNumber(
                             hit.orderNumber.toIntOrNull() ?: 0
                         )
@@ -1944,15 +1957,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
                         when {
                             !r.isUnique -> {
-                                descriptions.add("$subject — найден в нескольких нарядах")
+                                descriptionsUi.add("$subjectUi — найден в нескольких нарядах")
+                                descriptionsSpoken.add(
+                                    "$subjectSpoken — найден в нескольких нарядах"
+                                )
                                 uiTokens.add(clean)
                             }
                             conflict != null -> {
-                                descriptions.add("$subject — $conflict")
+                                descriptionsUi.add("$subjectUi — $conflict")
+                                descriptionsSpoken.add("$subjectSpoken — $conflict")
                                 uiTokens.add(clean)
                             }
                             else -> {
-                                descriptions.add("$subject, Наряд №$orderSpoken")
+                                descriptionsUi.add("$subjectUi, Наряд №${hit.orderNumber}")
+                                descriptionsSpoken.add("$subjectSpoken, Наряд №$orderSpoken")
                                 val canonical = when (r.matchedKind) {
                                     UnifiedMatchKind.WELL -> hit.wellNumber
                                     UnifiedMatchKind.SAMPLE -> hit.sampleNumber
@@ -1963,7 +1981,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         }
                     }
                     UnifiedSearchResult.NotFound -> {
-                        descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
+                        descriptionsUi.add("$clean — не найдено")
+                        descriptionsSpoken.add(
+                            "${VoiceSpeaker.spellMimicry(clean)} — не найдено"
+                        )
                         uiTokens.add(clean)
                     }
                 }
@@ -1971,7 +1992,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "voiceSortFlat: проверка «$clean» упала", e)
-                descriptions.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
+                descriptionsUi.add("$clean — ошибка")
+                descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
                 uiTokens.add(clean)
             }
         }
@@ -1981,8 +2003,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             setQuery(uiQuery)
         }
 
-        val text = if (descriptions.isEmpty()) "Не понял." else descriptions.joinToString(". ") + "."
-        return VoiceExecResult.Message(text = text, display = uiQuery)
+        val textUi = if (descriptionsUi.isEmpty()) "Не понял."
+        else descriptionsUi.joinToString(". ") + "."
+        val textSpoken = if (descriptionsSpoken.isEmpty()) "Не понял."
+        else descriptionsSpoken.joinToString(". ") + "."
+
+        return VoiceExecResult.Message(
+            text = textUi,
+            spoken = textSpoken,
+            display = uiQuery
+        )
     }
 
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {

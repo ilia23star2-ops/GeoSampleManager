@@ -10,6 +10,11 @@ package com.example.geosamplemanager.data.voice
  * FIX 5.8.11-sort-fix-3:
  *  - Убран trySplitByNumberBlocks: авто-split без «и» невозможен,
  *    Vosk не даёт маркеров границ. С «и» / запятой работает.
+ *
+ * FIX 5.8.11-sort-fix-5:
+ *  - «дальше» присоединено к nextVerbWords.
+ *  - В parseForPinned убрана ветка NextInQueue: «дальше» теперь
+ *    идёт общей веткой Next. Унификация синонимов.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -18,7 +23,7 @@ class VoiceCommandParser(
     private val commandLikeWords = setOf(
         "стоп", "хватит", "пауза", "паузу", "продолжить", "продолжай",
         "отмена", "отменить", "верни", "назад", "повтори", "вперёд", "вперед",
-        "следующая", "следующий", "следующую", "далее",
+        "следующая", "следующий", "следующую", "далее", "дальше",
         "помощь", "команда", "команды", "сколько", "осталось",
         "показать", "отложенные", "найденные", "отложить", "отложи",
         "пропустить", "пропусти"
@@ -57,8 +62,11 @@ class VoiceCommandParser(
 
     private val findVerbWords = setOf("найди", "найти", "ищи", "искать", "поищи")
 
+    /**
+     * FIX 5.8.11-sort-fix-5: «дальше» добавлено в набор.
+     */
     private val nextVerbWords = setOf(
-        "следующая", "следующий", "следующую", "далее"
+        "следующая", "следующий", "следующую", "далее", "дальше"
     )
 
     private val ordinalJoinWords = setOf("и", "запятая", ",", ";")
@@ -143,7 +151,8 @@ class VoiceCommandParser(
             "продолжить", "продолжай" -> return VoiceCommand.Resume
             "отмена", "отменить", "назад", "верни" -> return VoiceCommand.Undo
             "вперёд", "вперед" -> return VoiceCommand.Redo
-            "следующая", "далее", "следующую", "следующий" -> return VoiceCommand.Next
+            "следующая", "далее", "следующую", "следующий", "дальше" ->
+                return VoiceCommand.Next
             "помощь", "команды", "команда" -> return VoiceCommand.Help
             "сколько осталось" -> return VoiceCommand.HowManyLeft
             "показать отложенные", "отложенные" -> return VoiceCommand.ShowPostponed
@@ -425,6 +434,12 @@ class VoiceCommandParser(
         }
     }
 
+    /**
+     * FIX 5.8.11-sort-fix-5:
+     * Убрана отдельная ветка NextInQueue. «Дальше» попадает в
+     * общую ветку nextVerbWords → VoiceCommand.Next. Разбор «идти
+     * по очереди или сбросить контекст» — в VoiceSession/ViewModel.
+     */
     private fun parseForPinned(input: String): VoiceCommand {
         val raw = input.trim()
         if (raw.isEmpty()) return VoiceCommand.Unknown
@@ -433,8 +448,6 @@ class VoiceCommandParser(
             .normalize(raw)
             .trim('.', ',', '!', '?', ';', ':')
             .trim()
-
-        if (norm == "дальше") return VoiceCommand.NextInQueue
 
         run {
             val words = norm.split(Regex("\\s+")).filter { it.isNotBlank() }
