@@ -18,6 +18,13 @@ package com.example.geosamplemanager.data.voice
  *   - команды — из [VoiceDictionary.commands] (общий набор);
  *   - разделители — [DEFAULT_SEPARATORS] (и / запятая / , / ;);
  *   - ординалы — через [VoiceOrdinals.match].
+ *
+ * FIX 5.8.11-sort-fix-4:
+ * Для слитного «prefix+number» поле raw у каждого токена теперь
+ * содержит свою часть («kpd» и «1090031»), а не исходный кусок
+ * целиком («kpd1090031»). Раньше при сборке UI-строки через
+ * joinToString(" "){it.raw} получалось «kpd1090031 kpd1090031» —
+ * задвоение в заголовках мультизапроса.
  */
 class QueryTokenizer(
     private val commandWords: Set<String> = VoiceDictionary.commands,
@@ -57,8 +64,9 @@ class QueryTokenizer(
             val match = LATIN_PREFIX_WITH_NUMBER.find(part)!!
             val prefix = match.groupValues[1].uppercase()
             val number = match.groupValues[2]
-            out.add(QueryToken.Prefix(prefix, part))
-            out.add(QueryToken.Number(number, part))
+            // FIX 5.8.11-sort-fix-4: raw — своя часть, не весь кусок.
+            out.add(QueryToken.Prefix(prefix, prefix.lowercase()))
+            out.add(QueryToken.Number(number, number))
             return
         }
 

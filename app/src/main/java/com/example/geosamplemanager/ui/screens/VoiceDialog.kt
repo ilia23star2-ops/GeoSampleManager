@@ -222,9 +222,15 @@ fun VoiceDialog(
     }
 }
 
+/**
+ * FIX 5.8.11-sort-fix-4:
+ * Для Message читаем display (канонический номер), если задан.
+ * Иначе — сырой Vosk. Для FoundOne — query, как было.
+ */
 private fun displayRecognized(rawText: String, result: VoiceExecResult): String {
     return when (result) {
         is VoiceExecResult.FoundOne -> result.query
+        is VoiceExecResult.Message -> result.display ?: rawText
         else -> rawText
     }
 }
@@ -363,7 +369,6 @@ private fun handleFeedback(
             ) {
                 fb.soundAttention()
             }
-            // FIX 5.8.11-sort-fix-3: TTS читает spoken ?: text.
             controller?.speak(result.spoken ?: result.text)
         }
 

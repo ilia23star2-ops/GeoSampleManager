@@ -74,7 +74,18 @@ sealed class VoiceExecResult {
 
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
-    data class Message(val text: String, val spoken: String? = null) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.11-sort-fix-4:
+     * Поле display — канонический номер для UI-поля «Распознано»
+     * (в SORT-режиме). spoken — озвучка для TTS. text — fallback для обоих.
+     */
+    data class Message(
+        val text: String,
+        val spoken: String? = null,
+        val display: String? = null
+    ) : VoiceExecResult()
+
     data class ModeChanged(val mode: VoiceSessionMode) : VoiceExecResult()
 
     data object Next : VoiceExecResult()

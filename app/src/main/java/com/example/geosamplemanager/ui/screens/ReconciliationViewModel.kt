@@ -323,15 +323,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
                 1 -> {
                     val request = requests[0]
-                    val requestStr = request.joinToString(" ") { it.raw }
+                    // FIX 5.8.11-sort-fix-4: buildQueryString вместо joinToString(raw).
+                    val requestStr = buildQueryString(request)
                     state.queryTokens = listOf(requestStr)
                     state.clearQueryGroups()
                     loadGroupsForQueryNew(request)
                 }
                 else -> {
-                    val oldTokens = requests.map { req ->
-                        req.joinToString(" ") { it.raw }
-                    }
+                    // FIX 5.8.11-sort-fix-4: buildQueryString вместо joinToString(raw).
+                    val oldTokens = requests.map { req -> buildQueryString(req) }
                     state.queryTokens = oldTokens.take(MAX_QUERY_TOKENS)
                     buildMultiQueryGroups(oldTokens)
                 }
@@ -341,6 +341,37 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
         QuerySplitter.splitIntoRequests(tokens)
+
+    /**
+     * FIX 5.8.11-sort-fix-4:
+     * Собрать UI-строку запроса из токенов.
+     * Prefix + Number → без пробела («NV1366»), остальные — через пробел.
+     */
+    private fun buildQueryString(tokens: List<QueryToken>): String {
+        val parts = mutableListOf<String>()
+        var i = 0
+        while (i < tokens.size) {
+            val t = tokens[i]
+            val next = tokens.getOrNull(i + 1)
+            if (t is QueryToken.Prefix && next is QueryToken.Number) {
+                parts.add(t.value + next.value)
+                i += 2
+                continue
+            }
+            parts.add(tokenToString(t))
+            i++
+        }
+        return parts.joinToString(" ")
+    }
+
+    private fun tokenToString(t: QueryToken): String = when (t) {
+        is QueryToken.Prefix -> t.value
+        is QueryToken.Number -> t.value
+        is QueryToken.Ordinal -> t.value.toString()
+        is QueryToken.CommandWord -> t.value
+        is QueryToken.Separator -> t.value
+        is QueryToken.Unknown -> t.raw
+    }
 
     private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
         try {
@@ -1852,6 +1883,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
      * UI оставался пустым. Теперь собираем канонические номера найденных
      * скважин/проб и (для не найденных — сырой текст) пишем в state.query
      * через setQuery. UI строит мультизапрос как при ручном вводе.
+     *
+     * FIX 5.8.11-sort-fix-4:
+     * Возвращаем Message с display — каноническим номером для UI-поля
+     * «Распознано» (вместо сырого Vosk).
      */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
@@ -1918,8 +1953,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             }
                             else -> {
                                 descriptions.add("$subject, Наряд №$orderSpoken")
-                                // Канонический номер — тот же, что показала бы UI
-                                // при ручном вводе.
                                 val canonical = when (r.matchedKind) {
                                     UnifiedMatchKind.WELL -> hit.wellNumber
                                     UnifiedMatchKind.SAMPLE -> hit.sampleNumber
@@ -1943,15 +1976,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             }
         }
 
-        // Записываем канонические номера в state.query через setQuery —
-        // это тот же путь, что при ручном вводе. UI построит мультизапрос.
-        if (uiTokens.isNotEmpty()) {
-            val uiQuery = uiTokens.joinToString(" ")
+        val uiQuery = uiTokens.joinToString(" ").ifEmpty { null }
+        if (uiQuery != null) {
             setQuery(uiQuery)
         }
 
         val text = if (descriptions.isEmpty()) "Не понял." else descriptions.joinToString(". ") + "."
-        return VoiceExecResult.Message(text)
+        return VoiceExecResult.Message(text = text, display = uiQuery)
     }
 
     private suspend fun oldSortBehaviour(queries: List<String>): VoiceExecResult {
