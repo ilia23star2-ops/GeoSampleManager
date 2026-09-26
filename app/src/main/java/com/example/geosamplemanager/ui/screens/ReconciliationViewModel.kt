@@ -339,11 +339,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.8.11-multi-query:
-     * Логика разбиения вынесена в QuerySplitter.
-     * Здесь — тонкая обёртка, чтобы не менять вызовы.
-     */
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
         QuerySplitter.splitIntoRequests(tokens)
 
@@ -1706,6 +1701,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     private fun voiceNext(): VoiceExecResult {
+        // FIX 5.8.11-sort-fix-3: в SORT «далее» не имеет смысла.
+        if (voiceSession.mode == VoiceSessionMode.SORT) {
+            return VoiceExecResult.Message("В режиме сортировки не используется.")
+        }
         voiceSession.advanceToNext()
         state.query = ""
         state.selectedArea = null
@@ -1737,12 +1736,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return VoiceExecResult.Message("Фильтр: $label")
     }
 
-    /**
-     * FIX 5.8.11-sort-fix:
-     * Разделение поведения:
-     *  - SEARCH — очередь и pin (как было).
-     *  - SORT   — плоский короткий ответ на все запросы сразу.
-     */
     private suspend fun voiceSort(queries: List<String>): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
             return voiceSortFlat(queries)
@@ -1853,14 +1846,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.11-sort-fix:
-     * SORT-режим: плоский короткий ответ. Без очереди, без pin.
-     *
-     * Пример:
-     *   Говорю: «13 66 и 109 00 31».
-     *   Ответ: «Скважина NV1366. Наряд №1. Скважина KPD1090031. Наряд №14.»
-     */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false

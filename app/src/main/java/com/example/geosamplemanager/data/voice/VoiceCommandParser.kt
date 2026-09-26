@@ -7,12 +7,9 @@ package com.example.geosamplemanager.data.voice
  *  - Ветка AWAITING_WEIGHT_QUEUE в parseWithState.
  *  - parseForWeightQueue принимает вес, «пропустить», управление.
  *
- * FIX 5.8.11-sort-fix-2:
- *  - Убран QueryTokenizer/QuerySplitter из парсера — он не понимает
- *    слова-числительные («тринадцать», «шестьдесят»).
- *  - Авто-split для голоса идёт через VoiceNumberParser: берём его
- *    candidates с разделителями «|», склеиваем группы <4 цифр в одно
- *    число, и если получилось 2+ числа — Sort.
+ * FIX 5.8.11-sort-fix-3:
+ *  - Убран trySplitByNumberBlocks: авто-split без «и» невозможен,
+ *    Vosk не даёт маркеров границ. С «и» / запятой работает.
  */
 class VoiceCommandParser(
     private val numberParser: VoiceNumberParser = VoiceNumberParser()
@@ -253,67 +250,7 @@ class VoiceCommandParser(
             if (parsed.all { it != null }) return VoiceCommand.Sort(parsed.filterNotNull())
         }
 
-        // FIX 5.8.11-sort-fix-2: авто-split без «и» через VoiceNumberParser.
-        val splitNumbers = trySplitByNumberBlocks(norm)
-        if (splitNumbers != null && splitNumbers.size >= 2) {
-            return VoiceCommand.Sort(splitNumbers)
-        }
-
         return if (looksLikeSearchQuery(norm)) VoiceCommand.Search(raw) else VoiceCommand.Unknown
-    }
-
-    /**
-     * FIX 5.8.11-sort-fix-2:
-     * Попробовать разбить голосовую фразу на 2+ числа.
-     *
-     * Идёт через VoiceNumberParser — его candidates содержат разделители
-     * «|» там, где в исходной фразе были границы блоков числительных.
-     * Берём первый кандидат, у которого после склейки коротких групп
-     * (<4 цифр) получается 2+ самостоятельных числа.
-     *
-     * Примеры:
-     *   «тринадцать шестьдесят шесть сто девять два ноля тридцать один»
-     *     candidates: [«13661090031», «13|66|109|00|31», «1366|109|00|31»]
-     *     третий → [«1366», «1090031»] → Sort.
-     *
-     *   «тысяча триста шестьдесят шесть тысяча триста шестьдесят семь»
-     *     candidates: [«13661367», «1366|1367»]
-     *     второй → [«1366», «1367»] → Sort.
-     *
-     *   «KPD1090031» (латиница) — numberParser не понимает, candidates пусто → null.
-     *
-     *   «сто девять ноль ноль тридцать один» — одно число → 1 результат → null.
-     */
-    private fun trySplitByNumberBlocks(norm: String): List<String>? {
-        return try {
-            val parsed = numberParser.parse(norm)
-            for (cand in parsed.candidates) {
-                if (!cand.contains("|")) continue
-                val groups = cand.split("|").filter { it.isNotBlank() }
-                if (groups.size < 2) continue
-
-                val result = mutableListOf<String>()
-                val cur = StringBuilder()
-                for (g in groups) {
-                    if (cur.isEmpty() && g.length >= 4) {
-                        result.add(g)
-                    } else {
-                        cur.append(g)
-                    }
-                }
-                if (cur.isNotEmpty()) {
-                    if (result.isEmpty()) continue
-                    result[result.size - 1] = result.last() + cur.toString()
-                }
-
-                if (result.size >= 2 && result.all { it.filter { c -> c.isDigit() }.isNotEmpty() }) {
-                    return result
-                }
-            }
-            null
-        } catch (_: Exception) {
-            null
-        }
     }
 
     private fun parseMarkTail(tail: String): VoiceCommand {

@@ -48,8 +48,6 @@ fun VoiceDialog(
 
     var status by remember { mutableStateOf("Инициализация...") }
     var partialText by remember { mutableStateOf("") }
-    // FIX 5.8.11-e4-fix-voice-1: заменяем finalText (сырой Vosk)
-    // на recognizedText (канонический номер из БД, если нашли).
     var recognizedText by remember { mutableStateOf("") }
     var resultText by remember { mutableStateOf("") }
     var controller by remember { mutableStateOf<VoiceController?>(null) }
@@ -123,8 +121,6 @@ fun VoiceDialog(
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
 
-                        // FIX 5.8.11-e4-fix-voice-1: канонический номер,
-                        // если найдено однозначно. Иначе — сырой Vosk.
                         recognizedText = displayRecognized(text, result)
                         resultText = describeResult(result, viewModel)
                         status = "Готово"
@@ -226,12 +222,6 @@ fun VoiceDialog(
     }
 }
 
-/**
- * FIX 5.8.11-e4-fix-voice-1:
- * В поле «Распознано» показываем канонический номер из БД,
- * если удалось однозначно найти скважину/пробу (FoundOne).
- * Иначе — сырой текст Vosk.
- */
 private fun displayRecognized(rawText: String, result: VoiceExecResult): String {
     return when (result) {
         is VoiceExecResult.FoundOne -> result.query
@@ -373,7 +363,8 @@ private fun handleFeedback(
             ) {
                 fb.soundAttention()
             }
-            controller?.speak(result.text)
+            // FIX 5.8.11-sort-fix-3: TTS читает spoken ?: text.
+            controller?.speak(result.spoken ?: result.text)
         }
 
         VoiceExecResult.Next -> {
@@ -399,11 +390,6 @@ private fun buildWeightQueueQuestionPhrase(r: VoiceExecResult.WeightQueueAsked):
     return "$prefix$type, $word. Вес?"
 }
 
-/**
- * FIX 5.8.11-e4-fix-voice-1:
- * Фраза завершения очереди веса.
- * Если ничего не пропущено — «Все пробы скважины отмечены.»
- */
 private fun buildWeightQueueDonePhrase(r: VoiceExecResult.WeightQueueDone): String {
     val parts = mutableListOf<String>()
 

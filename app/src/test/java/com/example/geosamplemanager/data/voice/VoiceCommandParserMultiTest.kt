@@ -4,18 +4,20 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * FIX 5.8.11-sort-fix:
- * Авто-разделитель для голосового ввода без «и».
+ * FIX 5.8.11-sort-fix-3:
+ * Авто-разделитель без «и» отключён. Vosk не даёт маркеров границ —
+ * «13 60 6 109 00 31» фонетически не отличить от «1366061 090031».
+ * Все попытки угадать сплит по длине групп ненадёжны.
  *
- * Если QuerySplitter видит 2+ самостоятельных запроса (числа >= 4 цифр),
- * парсер возвращает Sort с этим списком. Работает и в SEARCH, и в SORT.
+ * Явный разделитель («и», запятая) — работает: Sort.
+ * Без разделителя — Search (одна строка уходит в поиск).
  */
 class VoiceCommandParserMultiTest {
 
     private val parser = VoiceCommandParser()
 
     // ================================================================
-    // Явный разделитель
+    // Явный разделитель — Sort
     // ================================================================
 
     @Test
@@ -31,31 +33,31 @@ class VoiceCommandParserMultiTest {
     }
 
     // ================================================================
-    // Авто-разделение (без «и»)
+    // Без разделителя — Search (авто-split отключён)
     // ================================================================
 
     @Test
-    fun twoFourDigitNumbersNoSeparator() {
+    fun twoFourDigitNumbersNoSeparatorIsSearch() {
         val cmd = parser.parse("1366 1367")
-        assertEquals(VoiceCommand.Sort(listOf("1366", "1367")), cmd)
+        assertEquals(VoiceCommand.Search("1366 1367"), cmd)
     }
 
     @Test
-    fun twoSevenDigitNumbersNoSeparator() {
+    fun twoSevenDigitNumbersNoSeparatorIsSearch() {
         val cmd = parser.parse("1090031 1090032")
-        assertEquals(VoiceCommand.Sort(listOf("1090031", "1090032")), cmd)
+        assertEquals(VoiceCommand.Search("1090031 1090032"), cmd)
     }
 
     @Test
-    fun fourAndSevenDigitNumbersNoSeparator() {
+    fun fourAndSevenDigitNumbersNoSeparatorIsSearch() {
         val cmd = parser.parse("1366 1090031")
-        assertEquals(VoiceCommand.Sort(listOf("1366", "1090031")), cmd)
+        assertEquals(VoiceCommand.Search("1366 1090031"), cmd)
     }
 
     @Test
-    fun threeLongNumbers() {
+    fun threeLongNumbersIsSearch() {
         val cmd = parser.parse("1366 1367 1368")
-        assertEquals(VoiceCommand.Sort(listOf("1366", "1367", "1368")), cmd)
+        assertEquals(VoiceCommand.Search("1366 1367 1368"), cmd)
     }
 
     // ================================================================
