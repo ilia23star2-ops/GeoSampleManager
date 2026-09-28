@@ -13,9 +13,11 @@ import kotlinx.coroutines.flow.Flow
 interface SampleDao {
 
     @Query("SELECT * FROM samples WHERE order_id = :orderId ORDER BY serial_number")
+    fun getSamplesForOrder(orderId: Long): Flow<List<SampleEntity>>
+
+    @Query("SELECT * FROM samples WHERE order_id = :orderId ORDER BY serial_number")
     suspend fun getSamplesForOrderList(orderId: Long): List<SampleEntity>
 
-    
     /**
      * FIX 5.9-stats-reactive:
      * Flow всех проб — для реактивной статистики.
