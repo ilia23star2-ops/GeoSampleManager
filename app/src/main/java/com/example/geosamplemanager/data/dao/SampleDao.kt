@@ -13,6 +13,14 @@ import kotlinx.coroutines.flow.Flow
 interface SampleDao {
 
     @Query("SELECT * FROM samples WHERE order_id = :orderId ORDER BY serial_number")
+    
+    /**
+     * FIX 5.9-stats-reactive:
+     * Flow всех проб — для реактивной статистики.
+     * Room уведомляет при любом изменении samples.
+     */
+    @Query("SELECT * FROM samples ORDER BY order_id, serial_number")
+    fun getAllSamplesFlow(): Flow<List<SampleEntity>>
     fun getSamplesForOrder(orderId: Long): Flow<List<SampleEntity>>
 
     @Query("SELECT * FROM samples WHERE order_id = :orderId ORDER BY serial_number")
