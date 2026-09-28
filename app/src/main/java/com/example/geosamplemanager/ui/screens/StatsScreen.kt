@@ -1,5 +1,7 @@
 package com.example.geosamplemanager.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -18,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,21 +28,17 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.voice.AnswerState
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * FIX 5.9-stats-layout: master-detail, dropdown диаграмм.
+ * FIX 5.9-stats-order-status: чип, кружки, диалог формата.
  *
- * FIX 5.9-stats-search: поиск наряда/участка сверху.
- *
- * FIX 5.9-stats-search-2: FAB «Наверх» в правой панели.
- *
- * FIX 5.9-stats-order-status:
- *  - Чип «Скрыть готовые» рядом с фильтрами.
- *  - Иконка-кружок статуса слева от номера наряда в дереве.
- *  - Прогресс-бар с учётом ошибок (found / (total - errors)).
- *  - Пометки «⚠ N ошибок» и «⏸ M отложено» рядом со статусом.
- *  - Диалог формата отчёта: HTML (заглушка) + Excel (заглушка).
- *    PDF заменён на HTML — из HTML можно сохранить PDF браузером.
+ * FIX 5.9-report-html:
+ *  - Кнопка HTML в диалоге — запускает SAF CreateDocument, пишет
+ *    готовый .html через StatsViewModel.generateHtmlReport.
+ *  - Excel остаётся заглушкой.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -51,7 +50,28 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
     val message by viewModel.message.collectAsState()
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // FIX 5.9-report-html: SAF-лаунчер для HTML-отчёта.
+    var pendingOrderIdForReport by remember { mutableStateOf<Long?>(null) }
+
+    val htmlLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html")
+    ) { uri ->
+        val orderId = pendingOrderIdForReport
+        pendingOrderIdForReport = null
+        if (uri != null && orderId != null) {
+            scope.launch {
+                val ok = viewModel.generateHtmlReport(orderId, uri)
+                snackbarHostState.showSnackbar(
+                    if (ok) "Отчёт сохранён"
+                    else "Не удалось сохранить отчёт"
+                )
+            }
+        }
+    }
 
     LaunchedEffect(message) {
         message?.let {
@@ -99,6 +119,12 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     areaName = selectedOrderId?.let { viewModel.findAreaNameFor(it) },
                     showBackButton = false,
                     onBack = { viewModel.clearSelection() },
+                    onReportHtml = { orderId ->
+                        pendingOrderIdForReport = orderId
+                        val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+                            .format(Date())
+                        htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
+                    },
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
@@ -131,6 +157,12 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     areaName = viewModel.findAreaNameFor(order.orderId),
                     showBackButton = true,
                     onBack = { viewModel.clearSelection() },
+                    onReportHtml = { orderId ->
+                        pendingOrderIdForReport = orderId
+                        val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+                            .format(Date())
+                        htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
+                    },
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -483,7 +515,6 @@ private fun OrderHeaderCard(
     }
 }
 
-/** FIX 5.9-stats-order-status: цветной кружок статуса. */
 @Composable
 private fun StatusDot(status: OrderStatus) {
     val color = when (status) {
@@ -522,7 +553,10 @@ private enum class ChartType(val title: String) {
     WELLS("По скважинам")
 }
 
-private enum class ReportFormat(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+private enum class ReportFormat(
+    val title: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
+) {
     HTML("HTML", Icons.Filled.Language),
     EXCEL("Excel", Icons.Filled.TableView)
 }
@@ -535,6 +569,7 @@ private fun RightDetailsPanel(
     areaName: String?,
     showBackButton: Boolean,
     onBack: () -> Unit,
+    onReportHtml: (Long) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
 ) {
@@ -729,20 +764,17 @@ private fun RightDetailsPanel(
             onDismiss = { showReportDialog = false },
             onSelect = { format ->
                 showReportDialog = false
-                scope.launch {
-                    snackbarHostState.showSnackbar(
-                        when (format) {
-                            ReportFormat.HTML -> "HTML-отчёт — в разработке"
-                            ReportFormat.EXCEL -> "Excel-отчёт — в разработке"
-                        }
-                    )
+                when (format) {
+                    ReportFormat.HTML -> onReportHtml(order.orderId)
+                    ReportFormat.EXCEL -> scope.launch {
+                        snackbarHostState.showSnackbar("Excel-отчёт — в разработке")
+                    }
                 }
             }
         )
     }
 }
 
-/** FIX 5.9-stats-order-status: диалог выбора формата отчёта. */
 @Composable
 private fun ReportFormatDialog(
     onDismiss: () -> Unit,
