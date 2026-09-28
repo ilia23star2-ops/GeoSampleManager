@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,14 +29,12 @@ import kotlinx.coroutines.launch
 /**
  * FIX 5.9-stats-layout: master-detail, dropdown диаграмм.
  *
- * FIX 5.9-stats-layout/4: правая панель целиком в LazyColumn.
+ * FIX 5.9-stats-search: поиск наряда/участка сверху.
  *
- * FIX 5.9-stats-search:
- *  - Строка поиска сверху левой панели. Ищет по номеру наряда И
- *    по имени участка, подстрока, регистронезависимо.
- *  - Поиск складывается с чипами фильтра (Все / Найдено / Не найдено).
- *  - При непустом поиске участки и наряды раскрываются автоматически.
- *  - Если ничего не найдено — сообщение с текстом запроса.
+ * FIX 5.9-stats-search-2:
+ *  - В правой панели — кнопка «Наверх» (FAB), если прокрутили > 8.
+ *  - Порог small: 8 блоков до первой пробы (шапка, прогресс, сводка,
+ *    dropdown, диаграмма, разделитель, кнопка разворота, шапка таблицы).
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -476,6 +475,9 @@ private enum class ChartType(val title: String) {
     WELLS("По скважинам")
 }
 
+/** FIX 5.9-stats-search-2: порог показа кнопки «Наверх». */
+private const val SCROLL_TOP_THRESHOLD = 8
+
 @Composable
 private fun RightDetailsPanel(
     order: StatsOrderUi?,
@@ -509,140 +511,171 @@ private fun RightDetailsPanel(
 
     var chartType by remember { mutableStateOf(ChartType.PIE) }
     var samplesExpanded by rememberSaveable { mutableStateOf(true) }
+    val listState = rememberLazyListState()
 
-    LazyColumn(modifier = modifier.fillMaxSize()) {
+    val showScrollTop by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > SCROLL_TOP_THRESHOLD
+        }
+    }
 
-        item(key = "header_${order.orderId}") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (showBackButton) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
+    Box(modifier = modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+
+            item(key = "header_${order.orderId}") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (showBackButton) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Наряд №${order.orderNumber}",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (areaName != null) {
+                            Text(
+                                areaName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch { snackbarHostState.showSnackbar("Отчёты — в разработке") }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.PictureAsPdf,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Отчёт", style = MaterialTheme.typography.labelSmall)
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch { snackbarHostState.showSnackbar("Сравнение — в разработке") }
+                        },
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.CompareArrows,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Сравнить", style = MaterialTheme.typography.labelSmall)
                     }
                 }
-                Column(modifier = Modifier.weight(1f)) {
+            }
+
+            item(key = "progress_${order.orderId}") {
+                ProgressBarBlock(order.stats)
+            }
+
+            item(key = "summary_${order.orderId}") {
+                OrderSummaryRow(order.stats)
+            }
+
+            item(key = "div1_${order.orderId}") {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            }
+
+            item(key = "chartdrop_${order.orderId}") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        "Наряд №${order.orderNumber}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        "Тип диаграммы:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (areaName != null) {
+                    Spacer(Modifier.width(8.dp))
+                    ChartTypeDropdown(
+                        current = chartType,
+                        onSelect = { chartType = it }
+                    )
+                }
+            }
+
+            item(key = "chart_${order.orderId}") {
+                Spacer(Modifier.height(8.dp))
+                DiagramPlaceholder(chartType)
+                Spacer(Modifier.height(8.dp))
+            }
+
+            item(key = "div2_${order.orderId}") {
+                HorizontalDivider()
+            }
+
+            item(key = "toggle_${order.orderId}") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
+                        Icon(
+                            if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
                         Text(
-                            areaName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            if (samplesExpanded) "Свернуть список проб"
+                            else "Развернуть список проб (${order.group.rows.size})"
                         )
                     }
                 }
-                OutlinedButton(
-                    onClick = {
-                        scope.launch { snackbarHostState.showSnackbar("Отчёты — в разработке") }
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.PictureAsPdf,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("Отчёт", style = MaterialTheme.typography.labelSmall)
+            }
+
+            if (samplesExpanded) {
+                item(key = "thead_${order.orderId}") {
+                    TableHeadRow()
                 }
-                Spacer(Modifier.width(6.dp))
-                OutlinedButton(
-                    onClick = {
-                        scope.launch { snackbarHostState.showSnackbar("Сравнение — в разработке") }
-                    },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.CompareArrows,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text("Сравнить", style = MaterialTheme.typography.labelSmall)
+                items(order.group.rows, key = { "row_${it.id}" }) { row ->
+                    StatsSampleRow(row)
+                }
+                item(key = "tailspace_${order.orderId}") {
+                    Spacer(Modifier.height(24.dp))
                 }
             }
         }
 
-        item(key = "progress_${order.orderId}") {
-            ProgressBarBlock(order.stats)
-        }
-
-        item(key = "summary_${order.orderId}") {
-            OrderSummaryRow(order.stats)
-        }
-
-        item(key = "div1_${order.orderId}") {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-        }
-
-        item(key = "chartdrop_${order.orderId}") {
-            Row(
+        // FIX 5.9-stats-search-2: FAB «Наверх».
+        if (showScrollTop) {
+            SmallFloatingActionButton(
+                onClick = {
+                    scope.launch { listState.scrollToItem(0) }
+                },
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 16.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Text(
-                    "Тип диаграммы:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                Icon(
+                    Icons.Filled.KeyboardArrowUp,
+                    contentDescription = "Наверх"
                 )
-                Spacer(Modifier.width(8.dp))
-                ChartTypeDropdown(
-                    current = chartType,
-                    onSelect = { chartType = it }
-                )
-            }
-        }
-
-        item(key = "chart_${order.orderId}") {
-            Spacer(Modifier.height(8.dp))
-            DiagramPlaceholder(chartType)
-            Spacer(Modifier.height(8.dp))
-        }
-
-        item(key = "div2_${order.orderId}") {
-            HorizontalDivider()
-        }
-
-        item(key = "toggle_${order.orderId}") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
-                    Icon(
-                        if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (samplesExpanded) "Свернуть список проб"
-                        else "Развернуть список проб (${order.group.rows.size})"
-                    )
-                }
-            }
-        }
-
-        if (samplesExpanded) {
-            item(key = "thead_${order.orderId}") {
-                TableHeadRow()
-            }
-            items(order.group.rows, key = { "row_${it.id}" }) { row ->
-                StatsSampleRow(row)
-            }
-            item(key = "tailspace_${order.orderId}") {
-                Spacer(Modifier.height(24.dp))
             }
         }
     }
