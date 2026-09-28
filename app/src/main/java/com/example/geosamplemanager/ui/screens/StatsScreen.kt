@@ -31,15 +31,21 @@ import kotlinx.coroutines.launch
  *
  * FIX 5.9-stats-search: поиск наряда/участка сверху.
  *
- * FIX 5.9-stats-search-2:
- *  - В правой панели — кнопка «Наверх» (FAB), если прокрутили > 8.
- *  - Порог small: 8 блоков до первой пробы (шапка, прогресс, сводка,
- *    dropdown, диаграмма, разделитель, кнопка разворота, шапка таблицы).
+ * FIX 5.9-stats-search-2: FAB «Наверх» в правой панели.
+ *
+ * FIX 5.9-stats-order-status:
+ *  - Чип «Скрыть готовые» рядом с фильтрами.
+ *  - Иконка-кружок статуса слева от номера наряда в дереве.
+ *  - Прогресс-бар с учётом ошибок (found / (total - errors)).
+ *  - Пометки «⚠ N ошибок» и «⏸ M отложено» рядом со статусом.
+ *  - Диалог формата отчёта: HTML (заглушка) + Excel (заглушка).
+ *    PDF заменён на HTML — из HTML можно сохранить PDF браузером.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val data by viewModel.data.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val hideReady by viewModel.hideReady.collectAsState()
     val expandedAreas by viewModel.expandedAreaIds.collectAsState()
     val expandedOrders by viewModel.expandedOrderIds.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
@@ -71,10 +77,12 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 LeftTreePanel(
                     data = current,
                     searchQuery = searchQuery,
+                    hideReady = hideReady,
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = selectedOrderId,
                     onSearchChange = { viewModel.setSearchQuery(it) },
+                    onHideReadyChange = { viewModel.setHideReady(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
@@ -101,10 +109,12 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 LeftTreePanel(
                     data = current,
                     searchQuery = searchQuery,
+                    hideReady = hideReady,
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = null,
                     onSearchChange = { viewModel.setSearchQuery(it) },
+                    onHideReadyChange = { viewModel.setHideReady(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
@@ -142,10 +152,12 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 private fun LeftTreePanel(
     data: StatsData,
     searchQuery: String,
+    hideReady: Boolean,
     expandedAreaIds: Set<Long>,
     expandedOrderIds: Set<Long>,
     selectedOrderId: Long?,
     onSearchChange: (String) -> Unit,
+    onHideReadyChange: (Boolean) -> Unit,
     onToggleArea: (Long) -> Unit,
     onToggleOrder: (Long) -> Unit,
     onSelectOrder: (Long) -> Unit,
@@ -154,14 +166,13 @@ private fun LeftTreePanel(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
-        SearchField(
-            query = searchQuery,
-            onQueryChange = onSearchChange
-        )
+        SearchField(query = searchQuery, onQueryChange = onSearchChange)
         TotalsHeader(data.totals)
         FiltersRow(
             filter = data.filter,
+            hideReady = hideReady,
             onFilterChange = onFilterChange,
+            onHideReadyChange = onHideReadyChange,
             allExpanded = expandedAreaIds.isNotEmpty() || expandedOrderIds.isNotEmpty(),
             onToggleAll = onToggleAll
         )
@@ -180,13 +191,16 @@ private fun LeftTreePanel(
                     when {
                         searchQuery.isNotBlank() ->
                             "Ничего не найдено по запросу «$searchQuery»"
+                        hideReady && data.filter == StatsFilter.ALL ->
+                            "Нет активных нарядов"
                         data.filter == StatsFilter.ALL ->
                             "В базе пока нет данных"
                         else ->
                             "Нет проб, соответствующих фильтру"
                     },
                     style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
         } else {
@@ -321,7 +335,9 @@ private fun SmallStatChip(label: String, value: Int, color: Color?) {
 @Composable
 private fun FiltersRow(
     filter: StatsFilter,
+    hideReady: Boolean,
     onFilterChange: (StatsFilter) -> Unit,
+    onHideReadyChange: (Boolean) -> Unit,
     allExpanded: Boolean,
     onToggleAll: () -> Unit
 ) {
@@ -340,6 +356,14 @@ private fun FiltersRow(
                 label = { Text(f.title, fontSize = 12.sp) }
             )
         }
+        FilterChip(
+            selected = hideReady,
+            onClick = { onHideReadyChange(!hideReady) },
+            label = { Text("Скрыть готовые", fontSize = 12.sp) },
+            leadingIcon = if (hideReady) {
+                { Icon(Icons.Filled.Check, null, modifier = Modifier.size(16.dp)) }
+            } else null
+        )
         TextButton(onClick = onToggleAll, contentPadding = PaddingValues(horizontal = 6.dp)) {
             Icon(
                 if (allExpanded) Icons.Filled.UnfoldLess else Icons.Filled.UnfoldMore,
@@ -409,6 +433,8 @@ private fun OrderHeaderCard(
     onToggle: () -> Unit,
     onSelect: () -> Unit
 ) {
+    val status = computeOrderStatus(order.stats)
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -426,6 +452,8 @@ private fun OrderHeaderCard(
                 .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            StatusDot(status)
+            Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     "Наряд №${order.orderNumber}",
@@ -455,9 +483,28 @@ private fun OrderHeaderCard(
     }
 }
 
+/** FIX 5.9-stats-order-status: цветной кружок статуса. */
+@Composable
+private fun StatusDot(status: OrderStatus) {
+    val color = when (status) {
+        OrderStatus.READY -> Color(0xFF2E7D32)
+        OrderStatus.NEEDS_REVIEW -> Color(0xFF1976D2)
+        OrderStatus.IN_PROGRESS -> Color(0xFFF9A825)
+        OrderStatus.NOT_STARTED -> Color(0xFF9E9E9E)
+        OrderStatus.EMPTY -> Color(0xFF424242)
+    }
+    Box(
+        modifier = Modifier
+            .size(10.dp)
+            .clip(RoundedCornerShape(50))
+            .background(color)
+    )
+}
+
 private fun buildOrderShortSummary(s: GroupStats): String {
+    val active = s.total - s.errors
     val parts = mutableListOf<String>()
-    parts.add("${s.found}/${s.total}")
+    parts.add("${s.found}/${active}")
     if (s.blanks > 0) parts.add("хол: ${s.blanks}")
     if (s.weightControls > 0) parts.add("ВК: ${s.weightControls}")
     if (s.postponed > 0) parts.add("отл: ${s.postponed}")
@@ -475,7 +522,11 @@ private enum class ChartType(val title: String) {
     WELLS("По скважинам")
 }
 
-/** FIX 5.9-stats-search-2: порог показа кнопки «Наверх». */
+private enum class ReportFormat(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    HTML("HTML", Icons.Filled.Language),
+    EXCEL("Excel", Icons.Filled.TableView)
+}
+
 private const val SCROLL_TOP_THRESHOLD = 8
 
 @Composable
@@ -511,12 +562,11 @@ private fun RightDetailsPanel(
 
     var chartType by remember { mutableStateOf(ChartType.PIE) }
     var samplesExpanded by rememberSaveable { mutableStateOf(true) }
+    var showReportDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val showScrollTop by remember {
-        derivedStateOf {
-            listState.firstVisibleItemIndex > SCROLL_TOP_THRESHOLD
-        }
+        derivedStateOf { listState.firstVisibleItemIndex > SCROLL_TOP_THRESHOLD }
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -552,13 +602,11 @@ private fun RightDetailsPanel(
                         }
                     }
                     OutlinedButton(
-                        onClick = {
-                            scope.launch { snackbarHostState.showSnackbar("Отчёты — в разработке") }
-                        },
+                        onClick = { showReportDialog = true },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Icon(
-                            Icons.Filled.PictureAsPdf,
+                            Icons.Filled.Description,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp)
                         )
@@ -660,7 +708,6 @@ private fun RightDetailsPanel(
             }
         }
 
-        // FIX 5.9-stats-search-2: FAB «Наверх».
         if (showScrollTop) {
             SmallFloatingActionButton(
                 onClick = {
@@ -672,19 +719,71 @@ private fun RightDetailsPanel(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Icon(
-                    Icons.Filled.KeyboardArrowUp,
-                    contentDescription = "Наверх"
-                )
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Наверх")
             }
         }
     }
+
+    if (showReportDialog) {
+        ReportFormatDialog(
+            onDismiss = { showReportDialog = false },
+            onSelect = { format ->
+                showReportDialog = false
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        when (format) {
+                            ReportFormat.HTML -> "HTML-отчёт — в разработке"
+                            ReportFormat.EXCEL -> "Excel-отчёт — в разработке"
+                        }
+                    )
+                }
+            }
+        )
+    }
+}
+
+/** FIX 5.9-stats-order-status: диалог выбора формата отчёта. */
+@Composable
+private fun ReportFormatDialog(
+    onDismiss: () -> Unit,
+    onSelect: (ReportFormat) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Формат отчёта") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Из HTML-отчёта можно сохранить PDF: открыть в браузере → «Печать» → «Сохранить как PDF».",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(4.dp))
+                ReportFormat.values().forEach { fmt ->
+                    OutlinedButton(
+                        onClick = { onSelect(fmt) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(fmt.icon, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(fmt.title)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
 }
 
 @Composable
 private fun ProgressBarBlock(stats: GroupStats) {
-    val total = stats.total
-    val progress = if (total > 0) stats.found.toFloat() / total.toFloat() else 0f
+    val active = (stats.total - stats.errors).coerceAtLeast(0)
+    val progress = if (active > 0) stats.found.toFloat() / active.toFloat() else 0f
     val pct = (progress * 1000).toInt() / 10f
 
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
@@ -696,6 +795,18 @@ private fun ProgressBarBlock(stats: GroupStats) {
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold
             )
+            Spacer(Modifier.width(8.dp))
+            val extras = mutableListOf<String>()
+            if (stats.errors > 0) extras.add("⚠ ${stats.errors} ошибок")
+            if (stats.postponed > 0) extras.add("⏸ ${stats.postponed} отложено")
+            if (extras.isNotEmpty()) {
+                Text(
+                    extras.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
+            }
         }
         Spacer(Modifier.height(4.dp))
         LinearProgressIndicator(
@@ -707,22 +818,24 @@ private fun ProgressBarBlock(stats: GroupStats) {
 
 @Composable
 private fun StatusBadge(stats: GroupStats) {
-    val (label, bg) = when {
-        stats.total == 0 -> "Пустой" to MaterialTheme.colorScheme.surfaceVariant
-        stats.found == stats.total -> "Готов" to Color(0xFF2E7D32)
-        stats.found == 0 -> "Не начат" to MaterialTheme.colorScheme.surfaceVariant
-        else -> "В работе" to Color(0xFFF9A825)
+    val status = computeOrderStatus(stats)
+    val bg = when (status) {
+        OrderStatus.READY -> Color(0xFF2E7D32)
+        OrderStatus.NEEDS_REVIEW -> Color(0xFF1976D2)
+        OrderStatus.IN_PROGRESS -> Color(0xFFF9A825)
+        OrderStatus.NOT_STARTED -> MaterialTheme.colorScheme.surfaceVariant
+        OrderStatus.EMPTY -> MaterialTheme.colorScheme.surfaceVariant
     }
-    Surface(
-        color = bg,
-        shape = RoundedCornerShape(4.dp)
-    ) {
+    val fg = when (status) {
+        OrderStatus.NOT_STARTED, OrderStatus.EMPTY -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> Color.White
+    }
+    Surface(color = bg, shape = RoundedCornerShape(4.dp)) {
         Text(
-            label,
+            status.title,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
-            color = if (bg == MaterialTheme.colorScheme.surfaceVariant)
-                MaterialTheme.colorScheme.onSurfaceVariant else Color.White,
+            color = fg,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
         )
     }
