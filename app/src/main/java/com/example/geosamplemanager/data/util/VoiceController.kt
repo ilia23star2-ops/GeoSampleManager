@@ -1,6 +1,8 @@
 package com.example.geosamplemanager.data.util
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -28,6 +30,18 @@ import java.util.Locale
  * - вечный игнор одинаковых фраз заменён на time-based debounce 600 мс;
  * - теперь можно сказать «отмена» несколько раз подряд;
  * - дубликат в пределах 600 мс всё ещё подавляется.
+ *
+ * FIX 5.8.11-voice-24-debounce (И-24):
+ * - Vosk срабатывает endpoint по короткой паузе и отдаёт промежуточный
+ *   onResult до конца фразы. Юзер не успевает договорить длинный номер
+ *   «13 66 и 109 00 31» — команда исполняется на «13 66».
+ * - Решение: буфер + динамический таймер.
+ *   - Мгновенные команды (см. instantCommands) — отдаём сразу, без задержки.
+ *   - Всё остальное — копим в буфере, склеиваем через пробел.
+ *   - Таймер 800 мс перезапускается на каждый onPartial (юзер продолжает)
+ *     и на каждый новый onResult (склеиваем с предыдущим).
+ *   - Если 800 мс тишины — отдаём накопленное.
+ *   - onFinalResult — flush сразу (Vosk сам сказал финал).
  */
 class VoiceController(
     private val context: Context,
@@ -49,6 +63,19 @@ class VoiceController(
      * Время, до которого результаты Vosk считаются эхом TTS.
      */
     private var suppressUntil: Long = 0L
+
+    /**
+     * FIX 5.8.11-voice-24-debounce: буфер накопленного текста.
+     * Сюда копим onResult и onFinalResult, пока юзер продолжает говорить.
+     */
+    private var pendingText: String? = null
+
+    /**
+     * FIX 5.8.11-voice-24-debounce: таймер отложенного flush.
+     * Перезапускается на каждом onPartial/onResult.
+     */
+    private var pendingRunnable: Runnable? = null
+    private val handler = Handler(Looper.getMainLooper())
 
     init {
         initTts()
@@ -167,6 +194,9 @@ class VoiceController(
             lastFinalText = ""
             lastFinalAt = 0L
             suppressUntil = 0L
+            // FIX 5.8.11-voice-24-debounce: чистим буфер и таймер.
+            pendingText = null
+            cancelPendingTimer()
 
             val service = speechService ?: createService(model)
 
@@ -215,6 +245,10 @@ class VoiceController(
             Log.w(TAG, "stopListening ошибка", e)
         }
 
+        // FIX 5.8.11-voice-24-debounce: не отдаём pending после остановки.
+        pendingText = null
+        cancelPendingTimer()
+
         listening = false
     }
 
@@ -223,6 +257,12 @@ class VoiceController(
         override fun onPartialResult(hypothesis: String?) {
             val text = extractText(hypothesis, "partial")
             if (text.isEmpty()) return
+
+            // FIX 5.8.11-voice-24-debounce: юзер продолжает говорить —
+            // перезапускаем таймер, чтобы не отдать буфер раньше времени.
+            if (!pendingText.isNullOrBlank()) {
+                restartPendingTimer()
+            }
 
             callback.onPartial(text)
         }
@@ -237,14 +277,24 @@ class VoiceController(
 
             acceptFinal(text)
 
-            Log.e(TAG, "RESULT: «$text» → вызываю callback.onResult")
+            Log.e(TAG, "RESULT: «$text»")
 
-            try {
-                callback.onResult(text)
-                Log.e(TAG, "RESULT: callback.onResult отработал")
-            } catch (e: Exception) {
-                Log.e(TAG, "RESULT: callback.onResult УПАЛ", e)
+            // FIX 5.8.11-voice-24-debounce:
+            // Мгновенные команды — отдаём сразу, без склейки.
+            if (isInstantCommand(text)) {
+                Log.e(TAG, "RESULT: мгновенная команда → flush сразу")
+                pendingText = null
+                cancelPendingTimer()
+                deliverResult(text)
+                return
             }
+
+            // Иначе — в буфер со склейкой.
+            val merged = if (pendingText.isNullOrBlank()) text
+            else "${pendingText} $text"
+            pendingText = merged
+            Log.e(TAG, "RESULT: буфер = «$merged»")
+            restartPendingTimer()
         }
 
         override fun onFinalResult(hypothesis: String?) {
@@ -257,25 +307,74 @@ class VoiceController(
 
             acceptFinal(text)
 
-            Log.e(TAG, "FINAL: «$text» → вызываю callback.onResult")
+            Log.e(TAG, "FINAL: «$text»")
 
-            try {
-                callback.onResult(text)
-            } catch (e: Exception) {
-                Log.e(TAG, "FINAL: callback.onResult УПАЛ", e)
-            }
+            // FIX 5.8.11-voice-24-debounce: Vosk сам сказал финал —
+            // склеиваем с буфером и отдаём немедленно.
+            val merged = if (pendingText.isNullOrBlank()) text
+            else "${pendingText} $text"
+            pendingText = merged
+            flushPending()
         }
 
         override fun onError(e: Exception?) {
             listening = false
+            pendingText = null
+            cancelPendingTimer()
             Log.e(TAG, "VOSK onError: ${e?.message}", e)
             callback.onError("Ошибка распознавания: ${e?.message ?: "неизвестная"}")
         }
 
         override fun onTimeout() {
             listening = false
+            pendingText = null
+            cancelPendingTimer()
             Log.e(TAG, "VOSK onTimeout")
             callback.onError("Тишина в микрофоне")
+        }
+    }
+
+    // ================================================================
+    // FIX 5.8.11-voice-24-debounce: буфер + таймер
+    // ================================================================
+
+    private fun isInstantCommand(text: String): Boolean {
+        val norm = text.lowercase()
+            .trim('.', ',', '!', '?', ';', ':')
+            .trim()
+        return norm in INSTANT_COMMANDS
+    }
+
+    private fun restartPendingTimer() {
+        cancelPendingTimer()
+        val r = Runnable {
+            Log.e(TAG, "pending timer сработал (${DEBOUNCE_MS} мс)")
+            flushPending()
+        }
+        pendingRunnable = r
+        handler.postDelayed(r, DEBOUNCE_MS)
+    }
+
+    private fun cancelPendingTimer() {
+        pendingRunnable?.let { handler.removeCallbacks(it) }
+        pendingRunnable = null
+    }
+
+    private fun flushPending() {
+        cancelPendingTimer()
+        val text = pendingText ?: return
+        pendingText = null
+        if (text.isBlank()) return
+        Log.e(TAG, "flush: «$text» → callback.onResult")
+        deliverResult(text)
+    }
+
+    private fun deliverResult(text: String) {
+        try {
+            callback.onResult(text)
+            Log.e(TAG, "callback.onResult отработал")
+        } catch (e: Exception) {
+            Log.e(TAG, "callback.onResult УПАЛ", e)
         }
     }
 
@@ -331,6 +430,8 @@ class VoiceController(
         lastFinalText = ""
         lastFinalAt = 0L
         suppressUntil = 0L
+        pendingText = null
+        cancelPendingTimer()
 
         try {
             tts?.stop()
@@ -367,5 +468,112 @@ class VoiceController(
 
         // FIX 5.8.6-5c: окно подавления дубликатов.
         private const val DUPLICATE_WINDOW_MS = 600L
+
+        // FIX 5.8.11-voice-24-debounce: таймер склейки фраз.
+        private const val DEBOUNCE_MS = 1200L
+
+        /**
+         * FIX 5.8.11-voice-24-debounce:
+         * Команды, которые отдаются мгновенно — без задержки склейки.
+         * Всё, что не в этом списке, буферизуется и склеивается
+         * с debounce DEBOUNCE_MS.
+         */
+        private val INSTANT_COMMANDS: Set<String> = setOf(
+            // ----------------------------------------------------------
+            // Управление сессией
+            // ----------------------------------------------------------
+            "стоп",
+            "хатит",
+            "хватит",
+            "пауза",
+            "паузу",
+            "продолжить",
+            "продолжай",
+            "отмена",
+            "отменить",
+            "назад",
+            "верни",
+            "вперёд",
+            "вперед",
+            "следующая",
+            "далее",
+            "следующую",
+            "следующий",
+            "дальше",
+
+            // ----------------------------------------------------------
+            // Режим
+            // ----------------------------------------------------------
+            "поиск",
+            "режим поиск",
+            "сортировка",
+            "режим сортировка",
+            "режим сортировки",
+
+            // ----------------------------------------------------------
+            // Информация
+            // ----------------------------------------------------------
+            "помощь",
+            "команды",
+            "команда",
+            "сколько осталось",
+            "показать отложенные",
+            "отложенные",
+            "показать найденные",
+            "найденные",
+
+            // ----------------------------------------------------------
+            // Массовые
+            // ----------------------------------------------------------
+            "снять все",
+            "сбросить все",
+            "очистить все",
+            "все",
+            "отметь все",
+            "отметить все",
+            "отметьте все",
+            "снять последнюю",
+            "последнюю снять",
+            "снять отложенную",
+            "снять отложенную пробу",
+
+            // ----------------------------------------------------------
+            // Маркеры намерения (ждут продолжения, но команда уже
+            // распознана — её не надо склеивать с ответом)
+            // ----------------------------------------------------------
+            "отметь",
+            "отметить",
+            "отметьте",
+            "снять",
+            "сними",
+            "убрать",
+            "убери",
+            "удали",
+            "удалить",
+            "отложить",
+            "отложи",
+            "перенести",
+            "перенеси",
+
+            // ----------------------------------------------------------
+            // Подтверждение / выбор
+            // ----------------------------------------------------------
+            "подтверждаю",
+            "подтвердить",
+            "отменяю",
+            "пропустить",
+            "пропусти",
+            "эту",
+            "ее",
+            "её",
+            "найденную",
+            "найденное",
+            "отметь эту",
+            "отметить эту",
+            "отметь ее",
+            "отметить ее",
+            "отметь её",
+            "отметить её"
+        )
     }
 }
