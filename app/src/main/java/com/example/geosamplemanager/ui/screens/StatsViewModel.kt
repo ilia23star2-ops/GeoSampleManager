@@ -1,12 +1,20 @@
 package com.example.geosamplemanager.ui.screens
 
 import android.app.Application
+import android.net.Uri
+import android.util.Base64
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.report.ReportData
+import com.example.geosamplemanager.data.report.ReportHtmlGenerator
+import com.example.geosamplemanager.data.report.ReportNote
+import com.example.geosamplemanager.data.report.ReportPhoto
+import com.example.geosamplemanager.data.report.ReportSample
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -16,13 +24,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * FIX 5.9-stats-search-2: дебаунс 250 мс + фон.
+ * FIX 5.9-stats-order-status: hideReady + сортировка по статусу.
  *
- * FIX 5.9-stats-order-status:
- *  - hideReady flag — скрыть готовые наряды.
- *  - Сортировка нарядов по статусу в buildTree.
+ * FIX 5.9-report-html:
+ *  - generateHtmlReport(orderId, uri) — собирает заметки и фото проб,
+ *    кодирует фото в data:image/jpeg;base64, генерирует HTML, пишет
+ *    в Uri через SAF.
+ *  - Возвращает Boolean: успех/ошибка. UI показывает Snackbar.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -119,6 +133,8 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
+    // Пользовательские действия
+    // ================================================================
 
     fun setFilter(filter: StatsFilter) {
         currentFilter = filter
@@ -192,6 +208,104 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         }?.areaName
     }
 
+    // ================================================================
+    // FIX 5.9-report-html: генерация HTML-отчёта
+    // ================================================================
+
+    /**
+     * Собрать и записать HTML-отчёт по наряду в Uri (через SAF).
+     * Возвращает true при успехе.
+     */
+    suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
+        return try {
+            val raw = rawData ?: run {
+                _message.value = "Данные ещё не загружены"
+                return false
+            }
+
+            val areaName = raw.areas.firstOrNull { area ->
+                area.orders.any { it.orderId == orderId }
+            }?.areaName ?: "Без участка"
+
+            val order = raw.areas.asSequence()
+                .flatMap { it.orders.asSequence() }
+                .firstOrNull { it.orderId == orderId }
+                ?: run {
+                    _message.value = "Наряд не найден"
+                    return false
+                }
+
+            val html = withContext(Dispatchers.IO) {
+                val samples = buildReportSamples(order.group.rows)
+                val dateFormat = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
+                val data = ReportData(
+                    areaName = areaName,
+                    orderNumber = order.orderNumber,
+                    generatedAt = dateFormat.format(Date()),
+                    stats = order.stats,
+                    samples = samples
+                )
+                ReportHtmlGenerator.generate(data)
+            }
+
+            withContext(Dispatchers.IO) {
+                getApplication<Application>().contentResolver
+                    .openOutputStream(uri, "wt")
+                    ?.use { out ->
+                        out.write(html.toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    }
+                    ?: run {
+                        _message.value = "Не удалось открыть файл для записи"
+                        return@withContext false
+                    }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "generateHtmlReport failed", e)
+            _message.value = "Ошибка отчёта: ${e.message}"
+            false
+        }
+    }
+
+    private suspend fun buildReportSamples(rows: List<SampleRow>): List<ReportSample> {
+        return rows.map { row ->
+            val sampleId = row.id.toLongOrNull()
+            val note = if (sampleId != null) repo.getNote(sampleId) else null
+            val photoEntities = if (sampleId != null) {
+                repo.getPhotosForSample(sampleId)
+            } else emptyList()
+
+            val photos = photoEntities.mapNotNull { photo ->
+                readImageAsDataUri(photo.imagePath)?.let { ReportPhoto(it) }
+            }
+
+            val reportNote = note?.noteText
+                ?.takeIf { it.isNotBlank() }
+                ?.let { ReportNote(it) }
+
+            ReportSample(row = row, note = reportNote, photos = photos)
+        }
+    }
+
+    private fun readImageAsDataUri(path: String): String? {
+        return try {
+            val f = File(path)
+            if (!f.exists()) {
+                Log.w(TAG, "readImageAsDataUri: файл не найден: $path")
+                return null
+            }
+            val bytes = f.readBytes()
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            "data:image/jpeg;base64,$b64"
+        } catch (e: Exception) {
+            Log.e(TAG, "readImageAsDataUri: ошибка $path", e)
+            null
+        }
+    }
+
+    // ================================================================
+
     private fun buildTree(
         areas: List<AreaEntity>,
         orders: List<OrderEntity>,
@@ -225,6 +339,7 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
+        private const val TAG = "StatsViewModel"
         private const val SEARCH_DEBOUNCE_MS = 250L
     }
 }
