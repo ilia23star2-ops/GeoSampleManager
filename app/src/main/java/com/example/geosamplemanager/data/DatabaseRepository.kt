@@ -58,6 +58,13 @@ class DatabaseRepository(context: Context) {
 
     fun getSamplesForOrder(orderId: Long): Flow<List<SampleEntity>> =
         sampleDao.getSamplesForOrder(orderId)
+        
+    /**
+     * FIX 5.9-stats-reactive:
+     * Flow всех проб — для реактивной статистики.
+     */
+    fun getAllSamplesFlow(): Flow<List<SampleEntity>> =
+        sampleDao.getAllSamplesFlow()
 
     suspend fun getSamplesForOrderList(orderId: Long): List<SampleEntity> =
         sampleDao.getSamplesForOrderList(orderId)

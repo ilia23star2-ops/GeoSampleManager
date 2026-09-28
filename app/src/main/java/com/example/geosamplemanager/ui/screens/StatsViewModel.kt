@@ -4,20 +4,27 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
-import kotlinx.coroutines.Dispatchers
+import com.example.geosamplemanager.data.entity.AreaEntity
+import com.example.geosamplemanager.data.entity.OrderEntity
+import com.example.geosamplemanager.data.entity.SampleEntity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
  * FIX 5.9-stats-screen:
- * ViewModel экрана «Статистика».
+ * ViewModel экрана «Статистика». Дерево участок → наряд → проба.
  *
- * Грузит дерево участок → наряд → проба из БД.
- * Держит текущий фильтр и множества раскрытых id.
- * Дерево кэшируется в rawData — при смене фильтра не перезагружаем БД.
+ * FIX 5.9-stats-reactive:
+ * Отказ от разовых suspend-запросов. Теперь подписываемся на Room-Flow:
+ *   - getAreasFlow()
+ *   - getAllOrdersFlow()
+ *   - getAllSamplesFlow()   (новый)
+ *
+ * Дерево пересобирается автоматически при любом изменении в БД —
+ * пометил пробу в сверке → статистика обновилась сама.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -41,20 +48,35 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     fun clearMessage() { _message.value = null }
 
     init {
-        reload()
+        subscribeToDb()
     }
 
-    fun reload() {
+    private fun subscribeToDb() {
         viewModelScope.launch {
-            try {
-                val raw = withContext(Dispatchers.IO) { loadTree() }
+            combine(
+                repo.getAreasFlow(),
+                repo.getAllOrdersFlow(),
+                repo.getAllSamplesFlow()
+            ) { areas, orders, samples ->
+                buildTree(areas, orders, samples)
+            }.collect { raw ->
                 rawData = raw
                 val filter = _data.value?.filter ?: StatsFilter.ALL
                 _data.value = raw.withFilter(filter)
-            } catch (e: Exception) {
-                _message.value = "Ошибка загрузки: ${e.message}"
+                pruneExpandedIds(raw)
             }
         }
+    }
+
+    /**
+     * Убираем из expanded-множеств id, которых больше нет в дереве —
+     * чтобы они не копились при удалении участков/нарядов.
+     */
+    private fun pruneExpandedIds(raw: StatsData) {
+        val areaIds = raw.areas.map { it.areaId }.toSet()
+        val orderIds = raw.areas.flatMap { it.orders.map { o -> o.orderId } }.toSet()
+        _expandedAreaIds.value = _expandedAreaIds.value intersect areaIds
+        _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
     }
 
     fun setFilter(filter: StatsFilter) {
@@ -89,13 +111,23 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = emptySet()
     }
 
-    private suspend fun loadTree(): StatsData {
-        val areas = repo.getAreas()
+    /**
+     * Чистая функция — собирает дерево из трёх списков.
+     * Никаких suspend-запросов. Всё уже в памяти.
+     */
+    private fun buildTree(
+        areas: List<AreaEntity>,
+        orders: List<OrderEntity>,
+        samples: List<SampleEntity>
+    ): StatsData {
+        val ordersByArea = orders.groupBy { it.areaId }
+        val samplesByOrder = samples.groupBy { it.orderId }
+
         val areaUis = areas.map { area ->
-            val orders = repo.getOrdersForAreaList(area.id)
-            val orderUis = orders.map { order ->
-                val samples = repo.getSamplesForOrderList(order.id)
-                val group = buildSampleGroup(order, area, samples)
+            val areaOrders = ordersByArea[area.id].orEmpty()
+            val orderUis = areaOrders.map { order ->
+                val orderSamples = samplesByOrder[order.id].orEmpty()
+                val group = buildSampleGroup(order, area, orderSamples)
                 StatsOrderUi(
                     orderId = order.id,
                     orderNumber = order.orderNumber,
@@ -103,6 +135,7 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                     stats = calculateGroupStats(group)
                 )
             }.sortedBy { it.orderNumber }
+
             StatsAreaUi(
                 areaId = area.id,
                 areaName = area.areaName,
