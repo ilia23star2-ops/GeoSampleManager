@@ -14,17 +14,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.9-stats-screen:
- * ViewModel экрана «Статистика». Дерево участок → наряд → проба.
+ * FIX 5.9-stats-screen: ViewModel экрана «Статистика».
  *
  * FIX 5.9-stats-reactive:
- * Отказ от разовых suspend-запросов. Теперь подписываемся на Room-Flow:
- *   - getAreasFlow()
- *   - getAllOrdersFlow()
- *   - getAllSamplesFlow()   (новый)
+ * Room-Flow: getAreasFlow + getAllOrdersFlow + getAllSamplesFlow.
  *
- * Дерево пересобирается автоматически при любом изменении в БД —
- * пометил пробу в сверке → статистика обновилась сама.
+ * FIX 5.9-stats-layout:
+ * Добавлен selectedOrderId — выбранный наряд для правой панели
+ * (master-detail). Если выбранный наряд исчез из БД — сбрасываем.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -41,6 +38,13 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _expandedOrderIds = MutableStateFlow<Set<Long>>(emptySet())
     val expandedOrderIds: StateFlow<Set<Long>> = _expandedOrderIds.asStateFlow()
+
+    /**
+     * FIX 5.9-stats-layout: выбранный наряд для правой панели.
+     * null = ничего не выбрано (правая панель показывает подсказку).
+     */
+    private val _selectedOrderId = MutableStateFlow<Long?>(null)
+    val selectedOrderId: StateFlow<Long?> = _selectedOrderId.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -64,19 +68,26 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                 val filter = _data.value?.filter ?: StatsFilter.ALL
                 _data.value = raw.withFilter(filter)
                 pruneExpandedIds(raw)
+                pruneSelected(raw)
             }
         }
     }
 
-    /**
-     * Убираем из expanded-множеств id, которых больше нет в дереве —
-     * чтобы они не копились при удалении участков/нарядов.
-     */
     private fun pruneExpandedIds(raw: StatsData) {
         val areaIds = raw.areas.map { it.areaId }.toSet()
         val orderIds = raw.areas.flatMap { it.orders.map { o -> o.orderId } }.toSet()
         _expandedAreaIds.value = _expandedAreaIds.value intersect areaIds
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
+    }
+
+    /**
+     * FIX 5.9-stats-layout: если выбранный наряд удалён из БД —
+     * сбрасываем выбор, чтобы правая панель не показывала пустоту.
+     */
+    private fun pruneSelected(raw: StatsData) {
+        val sel = _selectedOrderId.value ?: return
+        val exists = raw.areas.any { area -> area.orders.any { it.orderId == sel } }
+        if (!exists) _selectedOrderId.value = null
     }
 
     fun setFilter(filter: StatsFilter) {
@@ -112,9 +123,44 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Чистая функция — собирает дерево из трёх списков.
-     * Никаких suspend-запросов. Всё уже в памяти.
+     * FIX 5.9-stats-layout: выбрать наряд (для правой панели).
+     * Одновременно раскрывает его в дереве.
      */
+    fun selectOrder(orderId: Long) {
+        _selectedOrderId.value = orderId
+        _expandedAreaIds.value = _expandedAreaIds.value // без изменений
+        val area = _data.value?.areas?.firstOrNull { a ->
+            a.orders.any { it.orderId == orderId }
+        } ?: return
+        // Раскрываем родительский участок.
+        _expandedAreaIds.value = _expandedAreaIds.value + area.areaId
+        // Раскрываем сам наряд.
+        _expandedOrderIds.value = _expandedOrderIds.value + orderId
+    }
+
+    fun clearSelection() {
+        _selectedOrderId.value = null
+    }
+
+    /**
+     * FIX 5.9-stats-layout: найти StatsOrderUi по id (для правой панели).
+     * Используем актуальные данные (с учётом фильтра).
+     */
+    fun findOrder(orderId: Long): StatsOrderUi? {
+        return _data.value?.areas?.asSequence()
+            ?.flatMap { it.orders.asSequence() }
+            ?.firstOrNull { it.orderId == orderId }
+    }
+
+    /**
+     * FIX 5.9-stats-layout: найти имя участка для наряда.
+     */
+    fun findAreaNameFor(orderId: Long): String? {
+        return _data.value?.areas?.firstOrNull { area ->
+            area.orders.any { it.orderId == orderId }
+        }?.areaName
+    }
+
     private fun buildTree(
         areas: List<AreaEntity>,
         orders: List<OrderEntity>,
