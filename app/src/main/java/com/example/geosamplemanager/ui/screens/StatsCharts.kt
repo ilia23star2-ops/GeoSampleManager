@@ -27,8 +27,11 @@ import kotlin.math.sqrt
 
 /**
  * FIX 5.9-stats-charts-2:
- * Единый срез для круга и столбцов. Drill-down идёт через payload.
- * Скважины — отдельный срез с фильтром и двухцветной полоской.
+ * Единый срез для круга и столбцов. Drill-down через payload строку.
+ *
+ * FIX 5.9-stats-charts-2/3:
+ * DrillLevel.Well упрощён до одного поля well.
+ * Категория и подкатегория уже отфильтрованы предыдущими уровнями стека.
  */
 
 enum class SliceKind { FOUND, NOT_FOUND, POSTPONED, ERRORS }
@@ -38,7 +41,7 @@ sealed class DrillLevel {
     data object Root : DrillLevel()
     data class Category(val kind: SliceKind) : DrillLevel()
     data class SubCategory(val cat: SliceKind, val sub: SubKind) : DrillLevel()
-    data class Well(val cat: SliceKind, val sub: SubKind?, val well: String) : DrillLevel()
+    data class Well(val well: String) : DrillLevel()
 }
 
 data class ChartDatum(
@@ -61,6 +64,36 @@ val COLOR_ERRORS = Color(0xFFB71C1C)
 val COLOR_NORMAL = Color(0xFF1976D2)
 val COLOR_BLANK = Color(0xFFF9A825)
 val COLOR_CONTROL = Color(0xFF7B1FA2)
+
+// ====================================================================
+// ФИЛЬТРАЦИЯ ПО СТЕКУ
+// ====================================================================
+
+fun filterRowsByDrillStack(rows: List<SampleRow>, stack: List<DrillLevel>): List<SampleRow> {
+    var result = rows
+    for (level in stack) {
+        result = when (level) {
+            is DrillLevel.Root -> result
+            is DrillLevel.Category -> result.filter { r ->
+                when (level.kind) {
+                    SliceKind.FOUND -> !r.hasImportError && !r.postponed && r.found
+                    SliceKind.NOT_FOUND -> !r.hasImportError && !r.postponed && !r.found
+                    SliceKind.POSTPONED -> r.postponed
+                    SliceKind.ERRORS -> r.hasImportError
+                }
+            }
+            is DrillLevel.SubCategory -> result.filter { r ->
+                when (level.sub) {
+                    SubKind.NORMAL -> r.status == SampleStatus.NORMAL
+                    SubKind.BLANK -> r.status == SampleStatus.BLANK
+                    SubKind.CONTROL -> r.status == SampleStatus.CONTROL
+                }
+            }
+            is DrillLevel.Well -> result.filter { it.wellNumber == level.well }
+        }
+    }
+    return result
+}
 
 // ====================================================================
 // ВЫЧИСЛЕНИЕ ДАННЫХ
