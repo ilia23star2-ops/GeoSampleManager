@@ -5,107 +5,44 @@ import kotlin.math.roundToInt
 /**
  * Произношение номеров, весов и счётных фраз для TTS.
  *
- * Основная идея:
- * - длинные номера диктуются парами цифр: «15 24 01»;
- * - веса произносятся по-человечески: «два и шесть», «два с половиной»;
- * - счётные фразы используют русские склонения: «1 проба», «2 пробы», «5 проб».
+ * FIX 5.8.11-e4-speak-1:
+ * - splitLikeHuman(digits) — разбивает слитную строку цифр так,
+ *   как сказал бы человек: 1366 → 13|66, 1090031 → 109|00|31.
+ * - spellMimicry(text) — произнести строку-номер «как человек».
  *
- * FIX 5.8.11-c (SEARCH_MODEL §5.5):
- * Добавлен spellOut(groups: List<DigitGroup>) — произношение номера
- * по группам, как ввёл пользователь.
+ * FIX 5.8.11-e4-prefix-1:
+ * - spellLetters разделяет буквы пробелом: «KPD» → «ка пэ дэ».
  *
- * Старый spellOut(text: String) сохранён — он разбивает строку на
- * пары слева направо (для обратной совместимости).
- *
- * FIX 5.8.11-e4e-a (мимикрия):
- * - spellOut(groups) — без запятых, разделитель пробел.
- * - spellLetters — одним словом: «KPD» → «капэдэ» (не «ка пэ дэ»).
- * - Канонический маппинг буква → звук в letterToSound.
- * - W → «даблю».
- *
- * FIX 5.8.11-e4e-bundle (после падения unit-теста):
- * - spellPlain для 4+ цифр возвращает словами, а не «15 24»:
- *   «1524» → «пятнадцать двадцать четыре» (было «15 24»).
- * - spellPlain с ведущим нулём (PLAIN «01») → по цифрам:
- *   «ноль один» (было «один»).
- * - Пары внутри spellPairsAsWords: если пара начинается с нуля,
- *   тоже по цифрам: «152401» → «пятнадцать двадцать четыре ноль один».
+ * FIX 5.8.11-sort-fix-2:
+ * - spellMimicry больше НЕ падает в spellOut для кириллицы.
+ *   Раньше фраза «тринадцать шестьдесят шесть сто девять…»
+ *   превращалась в «т р и н а д ц а т ь…». Теперь возвращаем
+ *   исходную строку, если в ней нет распознаваемого номера.
  */
 object VoiceSpeaker {
 
-    /**
-     * FIX 5.8.11-e4e-a: канонический маппинг «буква → звук»
-     * для мимикрии префикса.
-     */
     private val letterToSound: Map<Char, String> = mapOf(
-        'A' to "а",
-        'B' to "бэ",
-        'C' to "цэ",
-        'D' to "дэ",
-        'E' to "е",
-        'F' to "эф",
-        'G' to "гэ",
-        'H' to "аш",
-        'I' to "и",
-        'J' to "жэ",
-        'K' to "ка",
-        'L' to "эль",
-        'M' to "эм",
-        'N' to "эн",
-        'O' to "о",
-        'P' to "пэ",
-        'Q' to "ку",
-        'R' to "эр",
-        'S' to "эс",
-        'T' to "тэ",
-        'U' to "у",
-        'V' to "вэ",
-        'W' to "даблю",
-        'X' to "икс",
-        'Y' to "игрек",
-        'Z' to "зэт"
+        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
+        'F' to "эф", 'G' to "гэ", 'H' to "аш", 'I' to "и", 'J' to "жэ",
+        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
+        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
+        'U' to "у", 'V' to "вэ", 'W' to "даблю", 'X' to "икс",
+        'Y' to "игрек", 'Z' to "зэт"
     )
 
     private val letterNames: Map<Char, String> = mapOf(
-        'A' to "а",
-        'B' to "бэ",
-        'C' to "цэ",
-        'D' to "дэ",
-        'E' to "е",
-        'F' to "эф",
-        'G' to "жэ",
-        'H' to "аш",
-        'I' to "и",
-        'J' to "йот",
-        'K' to "ка",
-        'L' to "эль",
-        'M' to "эм",
-        'N' to "эн",
-        'O' to "о",
-        'P' to "пэ",
-        'Q' to "ку",
-        'R' to "эр",
-        'S' to "эс",
-        'T' to "тэ",
-        'U' to "у",
-        'V' to "вэ",
-        'W' to "дубль-вэ",
-        'X' to "икс",
-        'Y' to "игрек",
-        'Z' to "зэт"
+        'A' to "а", 'B' to "бэ", 'C' to "цэ", 'D' to "дэ", 'E' to "е",
+        'F' to "эф", 'G' to "жэ", 'H' to "аш", 'I' to "и", 'J' to "йот",
+        'K' to "ка", 'L' to "эль", 'M' to "эм", 'N' to "эн", 'O' to "о",
+        'P' to "пэ", 'Q' to "ку", 'R' to "эр", 'S' to "эс", 'T' to "тэ",
+        'U' to "у", 'V' to "вэ", 'W' to "дубль-вэ", 'X' to "икс",
+        'Y' to "игрек", 'Z' to "зэт"
     )
 
     private val digitNames: Map<Char, String> = mapOf(
-        '0' to "ноль",
-        '1' to "один",
-        '2' to "два",
-        '3' to "три",
-        '4' to "четыре",
-        '5' to "пять",
-        '6' to "шесть",
-        '7' to "семь",
-        '8' to "восемь",
-        '9' to "девять"
+        '0' to "ноль", '1' to "один", '2' to "два", '3' to "три",
+        '4' to "четыре", '5' to "пять", '6' to "шесть", '7' to "семь",
+        '8' to "восемь", '9' to "девять"
     )
 
     private val unitsMasculine = arrayOf(
@@ -134,29 +71,91 @@ object VoiceSpeaker {
     )
 
     // ================================================================
+    // Мимикрия для строки-номера
+    // ================================================================
+
+    private val SIMPLE_NUMBER = Regex("^([A-Za-z]+)?\\s*(\\d+)$")
+
+    fun spellMimicry(text: String): String {
+        if (text.isBlank()) return text
+
+        val trimmed = text.trim()
+        val match = SIMPLE_NUMBER.find(trimmed)
+        if (match != null) {
+            val prefix = match.groupValues[1]
+            val digits = match.groupValues[2]
+            return spellPrefixAndDigits(prefix, digits)
+        }
+
+        // FIX 5.8.11-sort-fix-2: fallback. Если строка не подходит
+        // под номер — вернуть как есть, а не произносить по буквам.
+        return try {
+            val tokens = QueryTokenizer().tokenize(text)
+            if (tokens.isEmpty()) return text
+
+            // Все токены — Unknown? Значит это слова (кириллица),
+            // а не номер. Возвращаем исходную строку.
+            if (tokens.all { it is QueryToken.Unknown }) return text
+
+            val groups = DigitGrouper.group(tokens)
+            if (groups.isEmpty()) return text
+
+            spellOut(groups)
+        } catch (_: Exception) {
+            text
+        }
+    }
+
+    private fun spellPrefixAndDigits(prefix: String, digits: String): String {
+        val groups = mutableListOf<DigitGroup>()
+
+        if (prefix.isNotEmpty()) {
+            groups.add(DigitGroup(prefix.uppercase(), GroupKind.PREFIX))
+        }
+
+        for (g in splitLikeHuman(digits)) {
+            val kind = when {
+                g.length >= 2 && g.all { it == '0' } -> GroupKind.LEADING_ZERO
+                g.length == 1 -> GroupKind.SINGLE
+                else -> GroupKind.PLAIN
+            }
+            groups.add(DigitGroup(g, kind))
+        }
+
+        return spellOut(groups)
+    }
+
+    /**
+     * FIX 5.8.11-e4-speak-1:
+     * Разбить слитную строку цифр так, как сказал бы человек.
+     *
+     * Правило:
+     *   длина ≤ 3   → как есть.
+     *   чётная      → пары слева: 2+2+2+...
+     *   нечётная    → первая 3, потом пары: 3+2+2+...
+     */
+    fun splitLikeHuman(digits: String): List<String> {
+        if (digits.isEmpty()) return emptyList()
+        if (digits.length <= 3) return listOf(digits)
+
+        val firstLen = if (digits.length % 2 == 0) 2 else 3
+
+        val result = mutableListOf<String>()
+        result.add(digits.substring(0, firstLen))
+
+        var i = firstLen
+        while (i < digits.length) {
+            val end = minOf(i + 2, digits.length)
+            result.add(digits.substring(i, end))
+            i = end
+        }
+        return result
+    }
+
+    // ================================================================
     // Произношение по группам
     // ================================================================
 
-    /**
-     * Произнести номер по группам ввода.
-     *
-     * Правила:
-     *   - PREFIX       → одним словом: «KPD» → «капэдэ».
-     *   - PLAIN, 1–3   → число словами: «109» → «сто девять».
-     *   - PLAIN, 4+    → по парам слева, каждая пара словами:
-     *                    «1524» → «пятнадцать двадцать четыре».
-     *   - PLAIN с ведущим нулём → по цифрам: «01» → «ноль один».
-     *   - LEADING_ZERO → по цифрам: «00» → «ноль ноль».
-     *   - SINGLE       → цифра словом: «7» → «семь».
-     *   - Между группами — пробел (без запятых).
-     *
-     * Примеры:
-     *   [15, 24]                → «пятнадцать двадцать четыре».
-     *   [109, 00, 31]           → «сто девять ноль ноль тридцать один».
-     *   [KPD, 109, 00, 31]      → «капэдэ сто девять ноль ноль тридцать один».
-     *   [NV, 1524, 01]          → «энвэ пятнадцать двадцать четыре ноль один».
-     *   [7]                     → «семь».
-     */
     fun spellOut(groups: List<DigitGroup>): String {
         if (groups.isEmpty()) return ""
 
@@ -172,22 +171,22 @@ object VoiceSpeaker {
             if (text.isNotEmpty()) parts.add(text)
         }
 
-        // FIX 5.8.11-e4e-a: пробел между группами, без запятых.
         return parts.joinToString(" ")
     }
 
     /**
-     * FIX 5.8.11-e4e-a: префикс одним словом.
-     * KPD → «капэдэ». Не по буквам.
+     * FIX 5.8.11-e4-prefix-1:
+     * Буквы — пробел между ними: «KPD» → «ка пэ дэ».
+     * Одна буква — без пробела: «W» → «даблю».
      */
     private fun spellLetters(text: String): String {
-        val sb = StringBuilder()
+        val parts = mutableListOf<String>()
         for (c in text) {
             val upper = c.uppercaseChar()
             val sound = letterToSound[upper] ?: continue
-            sb.append(sound)
+            parts.add(sound)
         }
-        return sb.toString()
+        return parts.joinToString(" ")
     }
 
     private fun spellDigitByDigit(digits: String): String {
@@ -204,17 +203,9 @@ object VoiceSpeaker {
         return unitsMasculine[d]
     }
 
-    /**
-     * PLAIN группа:
-     *   1–3 цифры без ведущего нуля → число словами: «109» → «сто девять».
-     *   С ведущим нулём → по цифрам: «01» → «ноль один».
-     *   4+ цифр → по парам слева, каждая пара словами:
-     *     «1524» → «пятнадцать двадцать четыре».
-     */
     private fun spellPlain(value: String): String {
         if (value.isEmpty()) return ""
 
-        // FIX 5.8.11-e4e-bundle: ведущий ноль → по цифрам.
         if (value.length > 1 && value.startsWith("0")) {
             return spellDigitByDigit(value)
         }
@@ -227,15 +218,6 @@ object VoiceSpeaker {
         return spellPairsAsWords(value)
     }
 
-    /**
-     * FIX 5.8.11-e4e-bundle:
-     * Разбить строку цифр на пары слева, каждую пару произнести словами.
-     * Если пара начинается с нуля — по цифрам.
-     *
-     * «1524»   → «пятнадцать двадцать четыре».
-     * «152401» → «пятнадцать двадцать четыре ноль один».
-     * «123»    → 3 цифры → «12» «3» → «двенадцать три».
-     */
     private fun spellPairsAsWords(digits: String): String {
         val words = mutableListOf<String>()
         var i = 0
@@ -259,15 +241,6 @@ object VoiceSpeaker {
     // Старый API: произношение строки
     // ================================================================
 
-    /**
-     * Произнести номер: буквы — по буквам, цифры — парами через пробел.
-     *
-     * «NV1524» → «эн вэ 15 24»
-     * «KPD1090031» → «ка пэ дэ 10 90 03 1»
-     * «1524» → «15 24»
-     *
-     * Оставлено для обратной совместимости.
-     */
     fun spellOut(text: String): String {
         if (text.isBlank()) return text
 
@@ -310,11 +283,6 @@ object VoiceSpeaker {
         return sb.toString().trim().replace(Regex(" +"), " ")
     }
 
-    /**
-     * Разбить строку цифр на пары слева направо, разделяя пробелом.
-     * Используется ТОЛЬКО для старого spellOut(String).
-     * Для групп — spellPairsAsWords (словами).
-     */
     private fun breakIntoPairs(digits: String): String {
         if (digits.length <= 2) return digits
 
@@ -328,10 +296,6 @@ object VoiceSpeaker {
         }
         return sb.toString()
     }
-
-    // ================================================================
-    // Остальной API — без изменений
-    // ================================================================
 
     fun spellNumber(value: Int): String {
         return if (value in 0..9999) {

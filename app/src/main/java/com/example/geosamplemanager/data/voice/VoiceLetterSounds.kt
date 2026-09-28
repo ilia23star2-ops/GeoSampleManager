@@ -7,6 +7,10 @@ package com.example.geosamplemanager.data.voice
  *
  * Разные варианты одной буквы — отдельные записи. При парсинге берётся
  * самое длинное совпадение с начала строки.
+ *
+ * FIX 5.8.11-e4-prefix-1:
+ * W: «дабл-ю» → «даблю» — синхронизация с VoiceSpeaker (TTS).
+ * TTS произносит «даблю», Vosk учит «даблю» — совпадает.
  */
 object VoiceLetterSounds {
 
@@ -79,7 +83,7 @@ object VoiceLetterSounds {
         put("ви", 'V')
         put("вэ", 'V')
         // W
-        put("дабл-ю", 'W')
+        put("даблю", 'W')
         // X
         put("икс", 'X')
         // Y

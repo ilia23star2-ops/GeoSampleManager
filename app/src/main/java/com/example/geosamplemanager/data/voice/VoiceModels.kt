@@ -11,6 +11,17 @@ sealed class VoiceStatus {
     data object Paused : VoiceStatus()
 }
 
+enum class WeightQueueKind {
+    BLANK,
+    WEIGHT_CONTROL
+}
+
+data class WeightQueueItem(
+    val sampleNumber: String,
+    val ordinal: Int,
+    val kind: WeightQueueKind
+)
+
 sealed class VoiceExecResult {
     data class FoundOne(
         val query: String,
@@ -25,20 +36,9 @@ sealed class VoiceExecResult {
         val attentionReason: AnswerReason? = null,
         val otherAreaTitle: String? = null,
         val otherOrderNumber: String? = null,
-        /**
-         * FIX 5.8.9f-2a-fix-6: true — ответ в режиме сортировки.
-         * VoiceDialog не выводит статистику (всего проб / отмечено /
-         * холостых / ВК / отложено) — только скважину и наряд.
-         */
         val isSortMode: Boolean = false,
-        /**
-         * FIX 5.8.11-e4e-bundle/2: структура ввода для мимикрии озвучки.
-         * Если заполнено — VoiceDialog использует VoiceSpeaker.spellOut(groups)
-         * вместо spellOut(query). Это даёт «капэдэ сто девять ноль ноль
-         * тридцать один» вместо «ка пэ дэ 10 90 03 1».
-         * Пустой список — старый путь (для обратной совместимости).
-         */
-        val groups: List<DigitGroup> = emptyList()
+        val groups: List<DigitGroup> = emptyList(),
+        val queueSize: Int = 0
     ) : VoiceExecResult()
 
     data class FoundMany(val query: String, val variants: Int) : VoiceExecResult()
@@ -50,13 +50,42 @@ sealed class VoiceExecResult {
         val needsWeight: Boolean
     ) : VoiceExecResult()
 
+    data class MarkOrdinalNotFound(
+        val ordinal: Int,
+        val hintOrdinal: Int?
+    ) : VoiceExecResult()
+
     data class MarkedMultiple(val sampleNumbers: List<String>) : VoiceExecResult()
 
     data class MarkedAll(val count: Int) : VoiceExecResult()
 
+    data class WeightQueueAsked(
+        val item: WeightQueueItem,
+        val index: Int,
+        val total: Int,
+        val marked: Int = 0,
+        val skipped: Int = 0
+    ) : VoiceExecResult()
+
+    data class WeightQueueDone(
+        val marked: Int,
+        val skipped: Int
+    ) : VoiceExecResult()
+
     data class WeightSet(val sampleNumber: String, val weight: Double) : VoiceExecResult()
     data class Unmarked(val sampleNumber: String) : VoiceExecResult()
-    data class Message(val text: String) : VoiceExecResult()
+
+    /**
+     * FIX 5.8.11-sort-fix-4:
+     * Поле display — канонический номер для UI-поля «Распознано»
+     * (в SORT-режиме). spoken — озвучка для TTS. text — fallback для обоих.
+     */
+    data class Message(
+        val text: String,
+        val spoken: String? = null,
+        val display: String? = null
+    ) : VoiceExecResult()
+
     data class ModeChanged(val mode: VoiceSessionMode) : VoiceExecResult()
 
     data object Next : VoiceExecResult()
