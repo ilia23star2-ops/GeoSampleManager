@@ -1,219 +1,158 @@
 package com.example.geosamplemanager.ui.screens
 
-import android.app.Application
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import com.example.geosamplemanager.GeoSampleApp
-import com.example.geosamplemanager.data.entity.AreaEntity
-import com.example.geosamplemanager.data.entity.OrderEntity
-import com.example.geosamplemanager.data.entity.SampleEntity
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.launch
-
 /**
- * FIX 5.9-stats-screen: ViewModel экрана «Статистика».
- *
- * FIX 5.9-stats-reactive: Room-Flow — реактивность.
- *
- * FIX 5.9-stats-layout: selectedOrderId для правой панели.
+ * FIX 5.9-stats-screen:
+ * Модели экрана «Статистика».
  *
  * FIX 5.9-stats-search:
- *  - searchQuery: StateFlow со строкой поиска.
- *  - applyFilters() применяет фильтр-чип + поиск + сохраняет в _data.
- *  - currentFilter хранится отдельно (переживает поиск).
- *  - findOrder и findAreaNameFor смотрят в rawData (сырое дерево) —
- *    выбранный наряд справа остаётся, даже если поиск его не показал.
- *  - При непустом поиске — авто-раскрытие всех найденных нарядов.
+ * Добавлена функция withSearch — фильтр дерева по строке запроса.
+ * Совпадение — подстрока, регистронезависимая. Ищем по номеру наряда
+ * ИЛИ по имени участка. Пустой запрос → дерево без изменений.
  */
-class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as GeoSampleApp).repository
+enum class StatsFilter(val title: String) {
+    ALL("Все"),
+    FOUND("Найдено"),
+    NOT_FOUND("Не найдено")
+}
 
-    /** Сырое дерево без фильтра и поиска. Источник для правой панели. */
-    private var rawData: StatsData? = null
+data class StatsData(
+    val totals: GroupStats,
+    val areas: List<StatsAreaUi>,
+    val filter: StatsFilter = StatsFilter.ALL
+)
 
-    /** Текущий фильтр-чип. Отдельно от дерева, чтобы не терять при поиске. */
-    private var currentFilter: StatsFilter = StatsFilter.ALL
+data class StatsAreaUi(
+    val areaId: Long,
+    val areaName: String,
+    val stats: GroupStats,
+    val orders: List<StatsOrderUi>
+)
 
-    private val _data = MutableStateFlow<StatsData?>(null)
-    val data: StateFlow<StatsData?> = _data.asStateFlow()
+data class StatsOrderUi(
+    val orderId: Long,
+    val orderNumber: String,
+    val group: SampleGroup,
+    val stats: GroupStats
+)
 
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+sealed interface StatsItem {
+    val key: String
 
-    private val _expandedAreaIds = MutableStateFlow<Set<Long>>(emptySet())
-    val expandedAreaIds: StateFlow<Set<Long>> = _expandedAreaIds.asStateFlow()
-
-    private val _expandedOrderIds = MutableStateFlow<Set<Long>>(emptySet())
-    val expandedOrderIds: StateFlow<Set<Long>> = _expandedOrderIds.asStateFlow()
-
-    private val _selectedOrderId = MutableStateFlow<Long?>(null)
-    val selectedOrderId: StateFlow<Long?> = _selectedOrderId.asStateFlow()
-
-    private val _message = MutableStateFlow<String?>(null)
-    val message: StateFlow<String?> = _message.asStateFlow()
-
-    fun clearMessage() { _message.value = null }
-
-    init {
-        subscribeToDb()
+    data class AreaHeader(val area: StatsAreaUi, val expanded: Boolean) : StatsItem {
+        override val key: String get() = "a_${area.areaId}"
     }
 
-    private fun subscribeToDb() {
-        viewModelScope.launch {
-            combine(
-                repo.getAreasFlow(),
-                repo.getAllOrdersFlow(),
-                repo.getAllSamplesFlow()
-            ) { areas, orders, samples ->
-                buildTree(areas, orders, samples)
-            }.collect { raw ->
-                rawData = raw
-                applyFilters()
-                pruneExpandedIds(raw)
-                pruneSelected(raw)
+    data class OrderHeader(
+        val areaId: Long,
+        val order: StatsOrderUi,
+        val expanded: Boolean
+    ) : StatsItem {
+        override val key: String get() = "o_${order.orderId}"
+    }
+
+    data class SampleRowItem(val orderId: Long, val row: SampleRow) : StatsItem {
+        override val key: String get() = "r_${row.id}"
+    }
+
+    data class TableHeadItem(val orderId: Long) : StatsItem {
+        override val key: String get() = "t_$orderId"
+    }
+}
+
+fun buildStatsItems(
+    data: StatsData,
+    expandedAreaIds: Set<Long>,
+    expandedOrderIds: Set<Long>
+): List<StatsItem> {
+    val result = ArrayList<StatsItem>(64)
+    for (area in data.areas) {
+        val areaExpanded = area.areaId in expandedAreaIds
+        result.add(StatsItem.AreaHeader(area, areaExpanded))
+        if (!areaExpanded) continue
+        for (order in area.orders) {
+            val orderExpanded = order.orderId in expandedOrderIds
+            result.add(StatsItem.OrderHeader(area.areaId, order, orderExpanded))
+            if (!orderExpanded) continue
+            result.add(StatsItem.TableHeadItem(order.orderId))
+            for (row in order.group.rows) {
+                result.add(StatsItem.SampleRowItem(order.orderId, row))
             }
         }
     }
+    return result
+}
 
-    /**
-     * Применить текущий фильтр-чип и поиск к сырому дереву.
-     * Результат — в _data. При непустом поиске — авто-раскрытие.
-     */
-    private fun applyFilters() {
-        val raw = rawData ?: return
-        val search = _searchQuery.value
-        val result = raw
-            .withFilter(currentFilter)
-            .withSearch(search)
-            .copy(filter = currentFilter)
-
-        _data.value = result
-
-        // Авто-раскрытие — только если поиск непустой.
-        if (search.isNotBlank()) {
-            expandAll()
+/**
+ * Применить фильтр (Все / Найдено / Не найдено) к дереву.
+ */
+fun StatsData.withFilter(filter: StatsFilter): StatsData {
+    if (filter == StatsFilter.ALL) return copy(filter = filter)
+    val filteredAreas = areas.mapNotNull { area ->
+        val orders = area.orders.mapNotNull { order ->
+            val rows = order.group.rows.filter { row ->
+                when (filter) {
+                    StatsFilter.ALL -> true
+                    StatsFilter.FOUND -> row.found
+                    StatsFilter.NOT_FOUND -> !row.found
+                }
+            }
+            if (rows.isEmpty()) null
+            else {
+                val newGroup = order.group.copy(rows = rows)
+                order.copy(group = newGroup, stats = calculateGroupStats(newGroup))
+            }
         }
+        if (orders.isEmpty()) null
+        else area.copy(orders = orders, stats = combineStats(orders.map { it.stats }))
+    }
+    val totals = combineStats(filteredAreas.map { it.stats })
+    return copy(areas = filteredAreas, totals = totals, filter = filter)
+}
+
+/**
+ * FIX 5.9-stats-search:
+ * Применить поиск по строке. Совпадение — подстрока, регистронезависимая.
+ * Ищем по номеру наряда ИЛИ по имени участка.
+ *
+ * Примеры:
+ *   «100»  → наряд №100 (в любом участке)
+ *   «ней»  → все наряды Нейвинского участка
+ *   «ней 100» → НЕ поддерживается (одна строка, не разбиваем)
+ *
+ * Если запрос пуст — дерево возвращается без изменений.
+ * Totals НЕ пересчитываются — они про всю БД, не про найденное.
+ */
+fun StatsData.withSearch(query: String): StatsData {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return this
+
+    val filteredAreas = areas.mapNotNull { area ->
+        val matchesArea = area.areaName.lowercase().contains(q)
+        val matchingOrders = area.orders.filter { order ->
+            matchesArea || order.orderNumber.lowercase().contains(q)
+        }
+        if (matchingOrders.isEmpty()) null
+        else area.copy(
+            orders = matchingOrders,
+            stats = combineStats(matchingOrders.map { it.stats })
+        )
     }
 
-    private fun pruneExpandedIds(raw: StatsData) {
-        val areaIds = raw.areas.map { it.areaId }.toSet()
-        val orderIds = raw.areas.flatMap { it.orders.map { o -> o.orderId } }.toSet()
-        _expandedAreaIds.value = _expandedAreaIds.value intersect areaIds
-        _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
+    return copy(areas = filteredAreas)
+}
+
+fun combineStats(list: List<GroupStats>): GroupStats {
+    var total = 0; var found = 0; var notFound = 0
+    var blanks = 0; var weightControls = 0; var postponed = 0; var errors = 0
+    list.forEach { s ->
+        total += s.total
+        found += s.found
+        notFound += s.notFound
+        blanks += s.blanks
+        weightControls += s.weightControls
+        postponed += s.postponed
+        errors += s.errors
     }
-
-    private fun pruneSelected(raw: StatsData) {
-        val sel = _selectedOrderId.value ?: return
-        val exists = raw.areas.any { area -> area.orders.any { it.orderId == sel } }
-        if (!exists) _selectedOrderId.value = null
-    }
-
-    // ================================================================
-    // Пользовательские действия
-    // ================================================================
-
-    fun setFilter(filter: StatsFilter) {
-        currentFilter = filter
-        applyFilters()
-    }
-
-    fun setSearchQuery(text: String) {
-        _searchQuery.value = text
-        applyFilters()
-    }
-
-    fun toggleArea(areaId: Long) {
-        _expandedAreaIds.value = if (areaId in _expandedAreaIds.value)
-            _expandedAreaIds.value - areaId
-        else
-            _expandedAreaIds.value + areaId
-    }
-
-    fun toggleOrder(orderId: Long) {
-        _expandedOrderIds.value = if (orderId in _expandedOrderIds.value)
-            _expandedOrderIds.value - orderId
-        else
-            _expandedOrderIds.value + orderId
-    }
-
-    fun expandAll() {
-        val data = _data.value ?: return
-        _expandedAreaIds.value = data.areas.map { it.areaId }.toSet()
-        _expandedOrderIds.value = data.areas
-            .flatMap { area -> area.orders.map { it.orderId } }
-            .toSet()
-    }
-
-    fun collapseAll() {
-        _expandedAreaIds.value = emptySet()
-        _expandedOrderIds.value = emptySet()
-    }
-
-    fun selectOrder(orderId: Long) {
-        _selectedOrderId.value = orderId
-        val area = _data.value?.areas?.firstOrNull { a ->
-            a.orders.any { it.orderId == orderId }
-        } ?: return
-        _expandedAreaIds.value = _expandedAreaIds.value + area.areaId
-        _expandedOrderIds.value = _expandedOrderIds.value + orderId
-    }
-
-    fun clearSelection() {
-        _selectedOrderId.value = null
-    }
-
-    /**
-     * FIX 5.9-stats-search: смотрю в rawData, не в _data.
-     * Так выбранный наряд справа остаётся, даже если поиск его не показал.
-     */
-    fun findOrder(orderId: Long): StatsOrderUi? {
-        return rawData?.areas?.asSequence()
-            ?.flatMap { it.orders.asSequence() }
-            ?.firstOrNull { it.orderId == orderId }
-    }
-
-    fun findAreaNameFor(orderId: Long): String? {
-        return rawData?.areas?.firstOrNull { area ->
-            area.orders.any { it.orderId == orderId }
-        }?.areaName
-    }
-
-    // ================================================================
-
-    private fun buildTree(
-        areas: List<AreaEntity>,
-        orders: List<OrderEntity>,
-        samples: List<SampleEntity>
-    ): StatsData {
-        val ordersByArea = orders.groupBy { it.areaId }
-        val samplesByOrder = samples.groupBy { it.orderId }
-
-        val areaUis = areas.map { area ->
-            val areaOrders = ordersByArea[area.id].orEmpty()
-            val orderUis = areaOrders.map { order ->
-                val orderSamples = samplesByOrder[order.id].orEmpty()
-                val group = buildSampleGroup(order, area, orderSamples)
-                StatsOrderUi(
-                    orderId = order.id,
-                    orderNumber = order.orderNumber,
-                    group = group,
-                    stats = calculateGroupStats(group)
-                )
-            }.sortedBy { it.orderNumber }
-
-            StatsAreaUi(
-                areaId = area.id,
-                areaName = area.areaName,
-                stats = combineStats(orderUis.map { it.stats }),
-                orders = orderUis
-            )
-        }.sortedBy { it.areaName }
-
-        val totals = combineStats(areaUis.map { it.stats })
-        return StatsData(totals = totals, areas = areaUis, filter = StatsFilter.ALL)
-    }
+    return GroupStats(total, found, notFound, blanks, weightControls, postponed, errors)
 }
