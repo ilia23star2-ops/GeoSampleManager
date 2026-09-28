@@ -16,22 +16,33 @@ import kotlinx.coroutines.launch
 /**
  * FIX 5.9-stats-screen: ViewModel экрана «Статистика».
  *
- * FIX 5.9-stats-reactive:
- * Room-Flow: getAreasFlow + getAllOrdersFlow + getAllSamplesFlow.
+ * FIX 5.9-stats-reactive: Room-Flow — реактивность.
  *
- * FIX 5.9-stats-layout:
- * Добавлен selectedOrderId — выбранный наряд для правой панели
- * (master-detail). Если выбранный наряд исчез из БД — сбрасываем.
+ * FIX 5.9-stats-layout: selectedOrderId для правой панели.
+ *
+ * FIX 5.9-stats-search:
+ *  - searchQuery: StateFlow со строкой поиска.
+ *  - applyFilters() применяет фильтр-чип + поиск + сохраняет в _data.
+ *  - currentFilter хранится отдельно (переживает поиск).
+ *  - findOrder и findAreaNameFor смотрят в rawData (сырое дерево) —
+ *    выбранный наряд справа остаётся, даже если поиск его не показал.
+ *  - При непустом поиске — авто-раскрытие всех найденных нарядов.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
 
-    /** Сырое дерево без фильтра. Кэш для быстрой смены фильтров. */
+    /** Сырое дерево без фильтра и поиска. Источник для правой панели. */
     private var rawData: StatsData? = null
+
+    /** Текущий фильтр-чип. Отдельно от дерева, чтобы не терять при поиске. */
+    private var currentFilter: StatsFilter = StatsFilter.ALL
 
     private val _data = MutableStateFlow<StatsData?>(null)
     val data: StateFlow<StatsData?> = _data.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _expandedAreaIds = MutableStateFlow<Set<Long>>(emptySet())
     val expandedAreaIds: StateFlow<Set<Long>> = _expandedAreaIds.asStateFlow()
@@ -39,10 +50,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     private val _expandedOrderIds = MutableStateFlow<Set<Long>>(emptySet())
     val expandedOrderIds: StateFlow<Set<Long>> = _expandedOrderIds.asStateFlow()
 
-    /**
-     * FIX 5.9-stats-layout: выбранный наряд для правой панели.
-     * null = ничего не выбрано (правая панель показывает подсказку).
-     */
     private val _selectedOrderId = MutableStateFlow<Long?>(null)
     val selectedOrderId: StateFlow<Long?> = _selectedOrderId.asStateFlow()
 
@@ -65,11 +72,30 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                 buildTree(areas, orders, samples)
             }.collect { raw ->
                 rawData = raw
-                val filter = _data.value?.filter ?: StatsFilter.ALL
-                _data.value = raw.withFilter(filter)
+                applyFilters()
                 pruneExpandedIds(raw)
                 pruneSelected(raw)
             }
+        }
+    }
+
+    /**
+     * Применить текущий фильтр-чип и поиск к сырому дереву.
+     * Результат — в _data. При непустом поиске — авто-раскрытие.
+     */
+    private fun applyFilters() {
+        val raw = rawData ?: return
+        val search = _searchQuery.value
+        val result = raw
+            .withFilter(currentFilter)
+            .withSearch(search)
+            .copy(filter = currentFilter)
+
+        _data.value = result
+
+        // Авто-раскрытие — только если поиск непустой.
+        if (search.isNotBlank()) {
+            expandAll()
         }
     }
 
@@ -80,19 +106,24 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
     }
 
-    /**
-     * FIX 5.9-stats-layout: если выбранный наряд удалён из БД —
-     * сбрасываем выбор, чтобы правая панель не показывала пустоту.
-     */
     private fun pruneSelected(raw: StatsData) {
         val sel = _selectedOrderId.value ?: return
         val exists = raw.areas.any { area -> area.orders.any { it.orderId == sel } }
         if (!exists) _selectedOrderId.value = null
     }
 
+    // ================================================================
+    // Пользовательские действия
+    // ================================================================
+
     fun setFilter(filter: StatsFilter) {
-        val raw = rawData ?: return
-        _data.value = raw.withFilter(filter)
+        currentFilter = filter
+        applyFilters()
+    }
+
+    fun setSearchQuery(text: String) {
+        _searchQuery.value = text
+        applyFilters()
     }
 
     fun toggleArea(areaId: Long) {
@@ -122,19 +153,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = emptySet()
     }
 
-    /**
-     * FIX 5.9-stats-layout: выбрать наряд (для правой панели).
-     * Одновременно раскрывает его в дереве.
-     */
     fun selectOrder(orderId: Long) {
         _selectedOrderId.value = orderId
-        _expandedAreaIds.value = _expandedAreaIds.value // без изменений
         val area = _data.value?.areas?.firstOrNull { a ->
             a.orders.any { it.orderId == orderId }
         } ?: return
-        // Раскрываем родительский участок.
         _expandedAreaIds.value = _expandedAreaIds.value + area.areaId
-        // Раскрываем сам наряд.
         _expandedOrderIds.value = _expandedOrderIds.value + orderId
     }
 
@@ -143,23 +167,22 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * FIX 5.9-stats-layout: найти StatsOrderUi по id (для правой панели).
-     * Используем актуальные данные (с учётом фильтра).
+     * FIX 5.9-stats-search: смотрю в rawData, не в _data.
+     * Так выбранный наряд справа остаётся, даже если поиск его не показал.
      */
     fun findOrder(orderId: Long): StatsOrderUi? {
-        return _data.value?.areas?.asSequence()
+        return rawData?.areas?.asSequence()
             ?.flatMap { it.orders.asSequence() }
             ?.firstOrNull { it.orderId == orderId }
     }
 
-    /**
-     * FIX 5.9-stats-layout: найти имя участка для наряда.
-     */
     fun findAreaNameFor(orderId: Long): String? {
-        return _data.value?.areas?.firstOrNull { area ->
+        return rawData?.areas?.firstOrNull { area ->
             area.orders.any { it.orderId == orderId }
         }?.areaName
     }
+
+    // ================================================================
 
     private fun buildTree(
         areas: List<AreaEntity>,
