@@ -25,10 +25,6 @@ import com.example.geosamplemanager.data.voice.AnswerState
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.9-stats-screen: экран «Статистика» — дерево + сводка + фильтры.
- *
- * FIX 5.9-stats-reactive: дерево из Room-Flow.
- *
  * FIX 5.9-stats-layout:
  *  - Master-detail layout.
  *  - Планшет (>=600dp): дерево слева (35%), рабочая зона справа (65%).
@@ -36,9 +32,10 @@ import kotlinx.coroutines.launch
  *    рабочая зона на весь экран + кнопка «назад».
  *  - Тап по строке наряда = выбрать + раскрыть. Тап по стрелке = только
  *    раскрыть/свернуть в дереве.
- *  - В правой панели: заголовок + кнопки Отчёт/Сравнить (заглушки),
- *    прогресс-бар (заглушка), dropdown выбора диаграммы, плейсхолдер
- *    диаграммы, разворачиваемый список проб.
+ *
+ * FIX 5.9-stats-layout/3:
+ *  - maxWidth (из BoxWithConstraints) сохраняется в локальные переменные
+ *    до Row — иначе теряется scope и компилятор ругается.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -67,6 +64,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWide = maxWidth >= 600.dp
+        val treeWidth = maxWidth * 0.35f   // ← сохраняем до Row
 
         if (isWide) {
             Row(modifier = Modifier.fillMaxSize()) {
@@ -83,7 +81,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                         val anyExpanded = expandedAreas.isNotEmpty() || expandedOrders.isNotEmpty()
                         if (anyExpanded) viewModel.collapseAll() else viewModel.expandAll()
                     },
-                    modifier = Modifier.fillMaxHeight().width(maxWidth * 0.35f)
+                    modifier = Modifier.fillMaxHeight().width(treeWidth)
                 )
                 VerticalDivider()
                 RightDetailsPanel(
@@ -507,7 +505,7 @@ private fun RightDetailsPanel(
             }
         }
 
-        // ============ Прогресс-бар (заглушка) ============
+        // ============ Прогресс-бар ============
         ProgressBarPlaceholder(order.stats)
 
         // ============ Сводка ============
@@ -737,7 +735,7 @@ private fun DiagramPlaceholder(type: ChartType) {
 }
 
 // ====================================================================
-// ТАБЛИЦА ПРОБ (переиспользуем из stats-screen)
+// ТАБЛИЦА ПРОБ
 // ====================================================================
 
 @Composable
