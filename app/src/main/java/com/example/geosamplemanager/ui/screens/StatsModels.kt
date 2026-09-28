@@ -4,11 +4,10 @@ package com.example.geosamplemanager.ui.screens
  * FIX 5.9-stats-screen:
  * Модели экрана «Статистика».
  *
- * Дерево: участок → наряд → проба.
- * Фильтры: Все / Найдено / Не найдено — глобальные чипы сверху.
- *
- * Переиспользуем GroupStats, SampleGroup, SampleRow из
- * ReconciliationModels — консистентность с экраном сверки.
+ * FIX 5.9-stats-search:
+ * Добавлена функция withSearch — фильтр дерева по строке запроса.
+ * Совпадение — подстрока, регистронезависимая. Ищем по номеру наряда
+ * ИЛИ по имени участка. Пустой запрос → дерево без изменений.
  */
 
 enum class StatsFilter(val title: String) {
@@ -37,10 +36,6 @@ data class StatsOrderUi(
     val stats: GroupStats
 )
 
-/**
- * Плоский список для LazyColumn.
- * Собирается на экране из дерева + Set<Long> раскрытых id.
- */
 sealed interface StatsItem {
     val key: String
 
@@ -89,9 +84,7 @@ fun buildStatsItems(
 }
 
 /**
- * Применить фильтр к дереву.
- * Оставляет только пробы, соответствующие фильтру, и пересчитывает
- * агрегаты. Участки/наряды без подходящих проб — выпадают.
+ * Применить фильтр (Все / Найдено / Не найдено) к дереву.
  */
 fun StatsData.withFilter(filter: StatsFilter): StatsData {
     if (filter == StatsFilter.ALL) return copy(filter = filter)
@@ -118,8 +111,37 @@ fun StatsData.withFilter(filter: StatsFilter): StatsData {
 }
 
 /**
- * Суммирование GroupStats.
+ * FIX 5.9-stats-search:
+ * Применить поиск по строке. Совпадение — подстрока, регистронезависимая.
+ * Ищем по номеру наряда ИЛИ по имени участка.
+ *
+ * Примеры:
+ *   «100»  → наряд №100 (в любом участке)
+ *   «ней»  → все наряды Нейвинского участка
+ *   «ней 100» → НЕ поддерживается (одна строка, не разбиваем)
+ *
+ * Если запрос пуст — дерево возвращается без изменений.
+ * Totals НЕ пересчитываются — они про всю БД, не про найденное.
  */
+fun StatsData.withSearch(query: String): StatsData {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return this
+
+    val filteredAreas = areas.mapNotNull { area ->
+        val matchesArea = area.areaName.lowercase().contains(q)
+        val matchingOrders = area.orders.filter { order ->
+            matchesArea || order.orderNumber.lowercase().contains(q)
+        }
+        if (matchingOrders.isEmpty()) null
+        else area.copy(
+            orders = matchingOrders,
+            stats = combineStats(matchingOrders.map { it.stats })
+        )
+    }
+
+    return copy(areas = filteredAreas)
+}
+
 fun combineStats(list: List<GroupStats>): GroupStats {
     var total = 0; var found = 0; var notFound = 0
     var blanks = 0; var weightControls = 0; var postponed = 0; var errors = 0
