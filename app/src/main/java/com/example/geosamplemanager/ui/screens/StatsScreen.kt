@@ -26,26 +26,21 @@ import com.example.geosamplemanager.data.voice.AnswerState
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.9-stats-layout:
- *  - Master-detail layout.
- *  - Планшет (>=600dp): дерево слева (35%), рабочая зона справа (65%).
- *  - Телефон: если наряд не выбран — дерево на весь экран; если выбран —
- *    рабочая зона на весь экран + кнопка «назад».
- *  - Тап по строке наряда = выбрать + раскрыть. Тап по стрелке = только
- *    раскрыть/свернуть в дереве.
+ * FIX 5.9-stats-layout: master-detail, dropdown диаграмм.
  *
- * FIX 5.9-stats-layout/3: maxWidth сохраняется до Row.
+ * FIX 5.9-stats-layout/4: правая панель целиком в LazyColumn.
  *
- * FIX 5.9-stats-layout/4:
- *  - Правая панель целиком — LazyColumn. Раньше верх (шапка, прогресс,
- *    сводка, диаграмма) был фиксированный, а список проб получал только
- *    остаток — влезала одна строка. Теперь всё скроллится вместе.
- *  - Состояние разворота списка проб (samplesExpanded) вынесено в
- *    rememberSaveable — не сбрасывается при переключении нарядов.
+ * FIX 5.9-stats-search:
+ *  - Строка поиска сверху левой панели. Ищет по номеру наряда И
+ *    по имени участка, подстрока, регистронезависимо.
+ *  - Поиск складывается с чипами фильтра (Все / Найдено / Не найдено).
+ *  - При непустом поиске участки и наряды раскрываются автоматически.
+ *  - Если ничего не найдено — сообщение с текстом запроса.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val data by viewModel.data.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
     val expandedAreas by viewModel.expandedAreaIds.collectAsState()
     val expandedOrders by viewModel.expandedOrderIds.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
@@ -76,9 +71,11 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
             Row(modifier = Modifier.fillMaxSize()) {
                 LeftTreePanel(
                     data = current,
+                    searchQuery = searchQuery,
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = selectedOrderId,
+                    onSearchChange = { viewModel.setSearchQuery(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
@@ -104,9 +101,11 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
             if (order == null) {
                 LeftTreePanel(
                     data = current,
+                    searchQuery = searchQuery,
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = null,
+                    onSearchChange = { viewModel.setSearchQuery(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
@@ -143,9 +142,11 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 @Composable
 private fun LeftTreePanel(
     data: StatsData,
+    searchQuery: String,
     expandedAreaIds: Set<Long>,
     expandedOrderIds: Set<Long>,
     selectedOrderId: Long?,
+    onSearchChange: (String) -> Unit,
     onToggleArea: (Long) -> Unit,
     onToggleOrder: (Long) -> Unit,
     onSelectOrder: (Long) -> Unit,
@@ -154,6 +155,10 @@ private fun LeftTreePanel(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
+        SearchField(
+            query = searchQuery,
+            onQueryChange = onSearchChange
+        )
         TotalsHeader(data.totals)
         FiltersRow(
             filter = data.filter,
@@ -173,10 +178,14 @@ private fun LeftTreePanel(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    if (data.filter == StatsFilter.ALL)
-                        "В базе пока нет данных"
-                    else
-                        "Нет проб, соответствующих фильтру",
+                    when {
+                        searchQuery.isNotBlank() ->
+                            "Ничего не найдено по запросу «$searchQuery»"
+                        data.filter == StatsFilter.ALL ->
+                            "В базе пока нет данных"
+                        else ->
+                            "Нет проб, соответствующих фильтру"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -207,6 +216,51 @@ private fun LeftTreePanel(
             }
         }
     }
+}
+
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        placeholder = {
+            Text(
+                "Поиск наряда или участка",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        leadingIcon = {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(
+                    onClick = { onQueryChange("") },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Очистить",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall
+    )
 }
 
 @Composable
@@ -422,13 +476,6 @@ private enum class ChartType(val title: String) {
     WELLS("По скважинам")
 }
 
-/**
- * FIX 5.9-stats-layout/4:
- * Вся правая панель — один LazyColumn. Скроллится целиком:
- * шапка, прогресс, сводка, dropdown, диаграмма, кнопка, заголовки
- * таблицы, строки проб. Раньше скроллилась только таблица проб —
- * она не влезала в остаток экрана.
- */
 @Composable
 private fun RightDetailsPanel(
     order: StatsOrderUi?,
@@ -465,7 +512,6 @@ private fun RightDetailsPanel(
 
     LazyColumn(modifier = modifier.fillMaxSize()) {
 
-        // ============ Шапка: заголовок + кнопки ============
         item(key = "header_${order.orderId}") {
             Row(
                 modifier = Modifier
@@ -524,12 +570,10 @@ private fun RightDetailsPanel(
             }
         }
 
-        // ============ Прогресс-бар + статус ============
         item(key = "progress_${order.orderId}") {
             ProgressBarBlock(order.stats)
         }
 
-        // ============ Сводка (2 строки) ============
         item(key = "summary_${order.orderId}") {
             OrderSummaryRow(order.stats)
         }
@@ -538,7 +582,6 @@ private fun RightDetailsPanel(
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
         }
 
-        // ============ Dropdown диаграммы ============
         item(key = "chartdrop_${order.orderId}") {
             Row(
                 modifier = Modifier
@@ -569,7 +612,6 @@ private fun RightDetailsPanel(
             HorizontalDivider()
         }
 
-        // ============ Кнопка разворота списка проб ============
         item(key = "toggle_${order.orderId}") {
             Row(
                 modifier = Modifier
@@ -592,7 +634,6 @@ private fun RightDetailsPanel(
             }
         }
 
-        // ============ Заголовки и строки таблицы проб ============
         if (samplesExpanded) {
             item(key = "thead_${order.orderId}") {
                 TableHeadRow()
