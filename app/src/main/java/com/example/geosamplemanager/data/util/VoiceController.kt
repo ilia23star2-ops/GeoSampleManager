@@ -470,7 +470,7 @@ class VoiceController(
         private const val DUPLICATE_WINDOW_MS = 600L
 
         // FIX 5.8.11-voice-24-debounce: таймер склейки фраз.
-        private const val DEBOUNCE_MS = 800L
+        private const val DEBOUNCE_MS = 1200L
 
         /**
          * FIX 5.8.11-voice-24-debounce:
