@@ -33,12 +33,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-report-html: SAF для HTML-отчёта.
- *
- * FIX 5.9-stats-charts:
- *  - Плейсхолдер «в разработке» заменён на реальные диаграммы.
- *  - ChartsArea выбирает PieChart / BarChart / WellProgressChart
- *    по выбранному типу и считает данные из проб наряда.
+ * FIX 5.9-stats-charts-2:
+ *  - Drill-down: клик по сектору / столбцу / скважине проваливает глубже.
+ *  - Хлебные крошки + «← Назад».
+ *  - «По скважинам» — с фильтром, двухцветной полоской и легендой.
+ *  - На уровне Well — сразу список проб этого среза.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -48,6 +47,8 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val expandedAreas by viewModel.expandedAreaIds.collectAsState()
     val expandedOrders by viewModel.expandedOrderIds.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val drillStack by viewModel.drillStack.collectAsState()
+    val wellFilter by viewModel.wellFilter.collectAsState()
     val message by viewModel.message.collectAsState()
 
     val context = LocalContext.current
@@ -116,8 +117,15 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 RightDetailsPanel(
                     order = selectedOrderId?.let { viewModel.findOrder(it) },
                     areaName = selectedOrderId?.let { viewModel.findAreaNameFor(it) },
+                    drillStack = drillStack,
+                    wellFilter = wellFilter,
                     showBackButton = false,
                     onBack = { viewModel.clearSelection() },
+                    onPushDrill = { viewModel.pushDrill(it) },
+                    onPopDrill = { viewModel.popDrill() },
+                    onPopToIndex = { viewModel.popToIndex(it) },
+                    onResetDrill = { viewModel.resetDrill() },
+                    onWellFilterChange = { viewModel.setWellFilter(it) },
                     onReportHtml = { orderId ->
                         pendingOrderIdForReport = orderId
                         val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
@@ -154,8 +162,15 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 RightDetailsPanel(
                     order = order,
                     areaName = viewModel.findAreaNameFor(order.orderId),
+                    drillStack = drillStack,
+                    wellFilter = wellFilter,
                     showBackButton = true,
                     onBack = { viewModel.clearSelection() },
+                    onPushDrill = { viewModel.pushDrill(it) },
+                    onPopDrill = { viewModel.popDrill() },
+                    onPopToIndex = { viewModel.popToIndex(it) },
+                    onResetDrill = { viewModel.resetDrill() },
+                    onWellFilterChange = { viewModel.setWellFilter(it) },
                     onReportHtml = { orderId ->
                         pendingOrderIdForReport = orderId
                         val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
@@ -566,8 +581,15 @@ private const val SCROLL_TOP_THRESHOLD = 8
 private fun RightDetailsPanel(
     order: StatsOrderUi?,
     areaName: String?,
+    drillStack: List<DrillLevel>,
+    wellFilter: String,
     showBackButton: Boolean,
     onBack: () -> Unit,
+    onPushDrill: (DrillLevel) -> Unit,
+    onPopDrill: () -> Unit,
+    onPopToIndex: (Int) -> Unit,
+    onResetDrill: () -> Unit,
+    onWellFilterChange: (String) -> Unit,
     onReportHtml: (Long) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
@@ -603,12 +625,16 @@ private fun RightDetailsPanel(
         derivedStateOf { listState.firstVisibleItemIndex > SCROLL_TOP_THRESHOLD }
     }
 
+    val isDeepLevel = drillStack.isNotEmpty()
+    val isWellLevel = drillStack.lastOrNull() is DrillLevel.Well
+
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize()
         ) {
 
+            // ---------- Шапка ----------
             item(key = "header_${order.orderId}") {
                 Row(
                     modifier = Modifier
@@ -616,7 +642,7 @@ private fun RightDetailsPanel(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (showBackButton) {
+                    if (showBackButton && !isDeepLevel) {
                         IconButton(onClick = onBack) {
                             Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
                         }
@@ -665,41 +691,64 @@ private fun RightDetailsPanel(
                 }
             }
 
+            // ---------- Прогресс + сводка ----------
             item(key = "progress_${order.orderId}") {
                 ProgressBarBlock(order.stats)
             }
-
             item(key = "summary_${order.orderId}") {
                 OrderSummaryRow(order.stats)
             }
-
             item(key = "div1_${order.orderId}") {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             }
 
-            item(key = "chartdrop_${order.orderId}") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Тип диаграммы:",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    ChartTypeDropdown(
-                        current = chartType,
-                        onSelect = { chartType = it }
+            // ---------- Хлебные крошки (только в drill-down) ----------
+            if (isDeepLevel) {
+                item(key = "crumbs_${order.orderId}") {
+                    BreadcrumbsRow(
+                        orderNumber = order.orderNumber,
+                        drillStack = drillStack,
+                        onRootClick = { onResetDrill() },
+                        onIndexClick = { onPopToIndex(it) },
+                        onBack = { onPopDrill() }
                     )
                 }
             }
 
+            // ---------- Dropdown типа диаграммы ----------
+            if (!isWellLevel) {
+                item(key = "chartdrop_${order.orderId}") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Тип диаграммы:",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        ChartTypeDropdown(
+                            current = chartType,
+                            onSelect = { chartType = it }
+                        )
+                    }
+                }
+            }
+
+            // ---------- Область диаграммы / списка по уровню ----------
             item(key = "chart_${order.orderId}") {
                 Spacer(Modifier.height(8.dp))
-                ChartsArea(rows = order.group.rows, chartType = chartType)
+                ChartsArea(
+                    allRows = order.group.rows,
+                    drillStack = drillStack,
+                    chartType = chartType,
+                    wellFilter = wellFilter,
+                    onWellFilterChange = onWellFilterChange,
+                    onPushDrill = onPushDrill
+                )
                 Spacer(Modifier.height(8.dp))
             }
 
@@ -707,38 +756,42 @@ private fun RightDetailsPanel(
                 HorizontalDivider()
             }
 
-            item(key = "toggle_${order.orderId}") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
-                        Icon(
-                            if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            if (samplesExpanded) "Свернуть список проб"
-                            else "Развернуть список проб (${order.group.rows.size})"
-                        )
+            // ---------- На корневом уровне — разворачиваемый полный список ----------
+            if (!isDeepLevel) {
+                item(key = "toggle_${order.orderId}") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
+                            Icon(
+                                if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (samplesExpanded) "Свернуть список проб"
+                                else "Развернуть список проб (${order.group.rows.size})"
+                            )
+                        }
+                    }
+                }
+
+                if (samplesExpanded) {
+                    item(key = "thead_${order.orderId}") {
+                        TableHeadRow()
+                    }
+                    items(order.group.rows, key = { "row_${it.id}" }) { row ->
+                        StatsSampleRow(row)
                     }
                 }
             }
 
-            if (samplesExpanded) {
-                item(key = "thead_${order.orderId}") {
-                    TableHeadRow()
-                }
-                items(order.group.rows, key = { "row_${it.id}" }) { row ->
-                    StatsSampleRow(row)
-                }
-                item(key = "tailspace_${order.orderId}") {
-                    Spacer(Modifier.height(24.dp))
-                }
+            item(key = "tailspace_${order.orderId}") {
+                Spacer(Modifier.height(24.dp))
             }
         }
 
@@ -774,15 +827,101 @@ private fun RightDetailsPanel(
     }
 }
 
-/**
- * FIX 5.9-stats-charts:
- * Область диаграммы. Считает данные из проб и рисует нужный тип.
- */
+// ====================================================================
+// ХЛЕБНЫЕ КРОШКИ
+// ====================================================================
+
+@Composable
+private fun BreadcrumbsRow(
+    orderNumber: String,
+    drillStack: List<DrillLevel>,
+    onRootClick: () -> Unit,
+    onIndexClick: (Int) -> Unit,
+    onBack: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+            Icon(
+                Icons.Filled.ArrowBack,
+                contentDescription = "Назад",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Наряд №$orderNumber",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { onRootClick() }
+                    .padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+            drillStack.forEachIndexed { idx, level ->
+                Text(
+                    "  ›  ",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                val label = levelLabel(level)
+                val isLast = idx == drillStack.lastIndex
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isLast)
+                        MaterialTheme.colorScheme.onSurface
+                    else
+                        MaterialTheme.colorScheme.primary,
+                    modifier = if (isLast) {
+                        Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    } else {
+                        Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable { onIndexClick(idx) }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    }
+                )
+            }
+        }
+    }
+}
+
+private fun levelLabel(level: DrillLevel): String = when (level) {
+    is DrillLevel.Root -> "Наряд"
+    is DrillLevel.Category -> sliceKindLabel(level.kind)
+    is DrillLevel.SubCategory -> subKindLabel(level.sub)
+    is DrillLevel.Well -> level.well
+}
+
+// ====================================================================
+// ОБЛАСТЬ ДИАГРАММЫ / СПИСКА ПО УРОВНЮ
+// ====================================================================
+
 @Composable
 private fun ChartsArea(
-    rows: List<SampleRow>,
-    chartType: ChartType
+    allRows: List<SampleRow>,
+    drillStack: List<DrillLevel>,
+    chartType: ChartType,
+    wellFilter: String,
+    onWellFilterChange: (String) -> Unit,
+    onPushDrill: (DrillLevel) -> Unit
 ) {
+    val filteredRows = remember(allRows, drillStack) {
+        filterRowsByDrillStack(allRows, drillStack)
+    }
+    val last = drillStack.lastOrNull()
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -791,14 +930,157 @@ private fun ChartsArea(
         shape = RoundedCornerShape(8.dp)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            when (chartType) {
-                ChartType.PIE -> PieChart(slices = computePieSlices(rows))
-                ChartType.BARS -> BarChart(bars = computeBarData(rows))
-                ChartType.WELLS -> WellProgressChart(items = computeWellProgress(rows))
+            when {
+                // ============ Уровень Well: список проб ============
+                last is DrillLevel.Well -> {
+                    Text(
+                        "Пробы скважины ${last.well}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    if (filteredRows.isEmpty()) {
+                        Text(
+                            "Нет проб по текущему фильтру",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    } else {
+                        TableHeadRow()
+                        filteredRows.forEach { row ->
+                            StatsSampleRow(row)
+                        }
+                    }
+                }
+
+                // ============ Уровень SubCategory или Category(Postponed/Errors): скважины ============
+                last is DrillLevel.SubCategory ||
+                        (last is DrillLevel.Category &&
+                                (last.kind == SliceKind.POSTPONED || last.kind == SliceKind.ERRORS)) -> {
+                    WellFilterRow(wellFilter, onWellFilterChange)
+                    Spacer(Modifier.height(8.dp))
+                    WellProgressChart(
+                        items = computeWellProgress(filteredRows),
+                        filter = wellFilter,
+                        onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
+                    )
+                }
+
+                // ============ Уровень Category(FOUND/NOT_FOUND): подкатегории ============
+                last is DrillLevel.Category -> {
+                    val data = computeSubCategoryData(filteredRows)
+                    when (chartType) {
+                        ChartType.PIE -> PieChart(
+                            data = data,
+                            centerLabel = sliceKindLabel(last.kind),
+                            onSliceClick = { payload ->
+                                val sub = runCatching { SubKind.valueOf(payload) }.getOrNull()
+                                if (sub != null) onPushDrill(DrillLevel.SubCategory(last.kind, sub))
+                            }
+                        )
+                        ChartType.BARS -> BarChart(
+                            data = data,
+                            onBarClick = { payload ->
+                                val sub = runCatching { SubKind.valueOf(payload) }.getOrNull()
+                                if (sub != null) onPushDrill(DrillLevel.SubCategory(last.kind, sub))
+                            }
+                        )
+                        ChartType.WELLS -> {
+                            WellFilterRow(wellFilter, onWellFilterChange)
+                            Spacer(Modifier.height(8.dp))
+                            WellProgressChart(
+                                items = computeWellProgress(filteredRows),
+                                filter = wellFilter,
+                                onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
+                            )
+                        }
+                    }
+                }
+
+                // ============ Корень: категории ============
+                else -> {
+                    val data = computeCategoryData(filteredRows)
+                    when (chartType) {
+                        ChartType.PIE -> PieChart(
+                            data = data,
+                            centerLabel = "проб",
+                            onSliceClick = { payload ->
+                                val kind = runCatching { SliceKind.valueOf(payload) }.getOrNull()
+                                if (kind != null) onPushDrill(DrillLevel.Category(kind))
+                            }
+                        )
+                        ChartType.BARS -> BarChart(
+                            data = data,
+                            onBarClick = { payload ->
+                                val kind = runCatching { SliceKind.valueOf(payload) }.getOrNull()
+                                if (kind != null) onPushDrill(DrillLevel.Category(kind))
+                            }
+                        )
+                        ChartType.WELLS -> {
+                            WellFilterRow(wellFilter, onWellFilterChange)
+                            Spacer(Modifier.height(8.dp))
+                            WellProgressChart(
+                                items = computeWellProgress(filteredRows),
+                                filter = wellFilter,
+                                onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+@Composable
+private fun WellFilterRow(
+    value: String,
+    onChange: (String) -> Unit
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        placeholder = {
+            Text(
+                "Фильтр по скважине",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        leadingIcon = {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        trailingIcon = {
+            if (value.isNotEmpty()) {
+                IconButton(
+                    onClick = { onChange("") },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Очистить",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        textStyle = MaterialTheme.typography.bodySmall
+    )
+}
+
+// ====================================================================
+// ДИАЛОГ ОТЧЁТА
+// ====================================================================
 
 @Composable
 private fun ReportFormatDialog(
@@ -836,6 +1118,10 @@ private fun ReportFormatDialog(
         }
     )
 }
+
+// ====================================================================
+// ПРОГРЕСС + СВОДКА + БЕЙДЖ
+// ====================================================================
 
 @Composable
 private fun ProgressBarBlock(stats: GroupStats) {
