@@ -1,19 +1,76 @@
 package com.example.geosamplemanager.ui.screens
 
 /**
- * FIX 5.9-stats-screen:
- * Модели экрана «Статистика».
+ * FIX 5.9-stats-search: withSearch.
  *
- * FIX 5.9-stats-search:
- * Добавлена функция withSearch — фильтр дерева по строке запроса.
- * Совпадение — подстрока, регистронезависимая. Ищем по номеру наряда
- * ИЛИ по имени участка. Пустой запрос → дерево без изменений.
+ * FIX 5.9-stats-order-status:
+ *  - OrderStatus enum + computeOrderStatus — статус наряда с учётом
+ *    ошибок импорта и отложенных.
+ *  - sortOrdersByStatus — готовые сверху, пустые внизу.
  */
 
 enum class StatsFilter(val title: String) {
     ALL("Все"),
     FOUND("Найдено"),
     NOT_FOUND("Не найдено")
+}
+
+/**
+ * FIX 5.9-stats-order-status: статус наряда для иконки-кружка и
+ * сортировки в дереве.
+ *
+ * EMPTY       — в наряде нет проб.
+ * NOT_STARTED — есть пробы, но ни одна не отмечена.
+ * IN_PROGRESS — часть отмечена, ещё есть неотложенные.
+ * NEEDS_REVIEW — отмечено всё, кроме отложенных. Осталось проверить.
+ * READY       — все активные (не ошибки) отмечены.
+ */
+enum class OrderStatus(val title: String) {
+    EMPTY("Пустой"),
+    NOT_STARTED("Не начат"),
+    IN_PROGRESS("В работе"),
+    NEEDS_REVIEW("Проверить"),
+    READY("Готов")
+}
+
+/**
+ * FIX 5.9-stats-order-status:
+ * Логика статуса:
+ *  - ошибки импорта не портят картину (вычитаются из total);
+ *  - если отмечено всё, кроме отложенных — NEEDS_REVIEW;
+ *  - иначе — IN_PROGRESS.
+ */
+fun computeOrderStatus(stats: GroupStats): OrderStatus {
+    val active = stats.total - stats.errors
+    return when {
+        stats.total == 0 -> OrderStatus.EMPTY
+        active <= 0 -> OrderStatus.READY
+        stats.found >= active -> OrderStatus.READY
+        stats.found == 0 -> OrderStatus.NOT_STARTED
+        stats.found + stats.postponed >= active -> OrderStatus.NEEDS_REVIEW
+        else -> OrderStatus.IN_PROGRESS
+    }
+}
+
+/**
+ * FIX 5.9-stats-order-status:
+ * Сортировка нарядов внутри участка — готовые сверху, пустые внизу.
+ * Внутри одной группы — по номеру.
+ */
+fun sortOrdersByStatus(orders: List<StatsOrderUi>): List<StatsOrderUi> {
+    val orderRank = mapOf(
+        OrderStatus.READY to 0,
+        OrderStatus.NEEDS_REVIEW to 1,
+        OrderStatus.IN_PROGRESS to 2,
+        OrderStatus.NOT_STARTED to 3,
+        OrderStatus.EMPTY to 4
+    )
+    return orders.sortedWith(
+        compareBy(
+            { orderRank[computeOrderStatus(it.stats)] ?: 5 },
+            { it.orderNumber }
+        )
+    )
 }
 
 data class StatsData(
@@ -83,9 +140,6 @@ fun buildStatsItems(
     return result
 }
 
-/**
- * Применить фильтр (Все / Найдено / Не найдено) к дереву.
- */
 fun StatsData.withFilter(filter: StatsFilter): StatsData {
     if (filter == StatsFilter.ALL) return copy(filter = filter)
     val filteredAreas = areas.mapNotNull { area ->
@@ -111,22 +165,23 @@ fun StatsData.withFilter(filter: StatsFilter): StatsData {
 }
 
 /**
- * FIX 5.9-stats-search:
- * Применить поиск по строке. Совпадение — подстрока, регистронезависимая.
- * Ищем по номеру наряда ИЛИ по имени участка.
- *
- * Примеры:
- *   «100»  → наряд №100 (в любом участке)
- *   «ней»  → все наряды Нейвинского участка
- *   «ней 100» → НЕ поддерживается (одна строка, не разбиваем)
- *
- * Если запрос пуст — дерево возвращается без изменений.
- * Totals НЕ пересчитываются — они про всю БД, не про найденное.
+ * FIX 5.9-stats-order-status: скрыть готовые наряды.
  */
+fun StatsData.withHideReady(hideReady: Boolean): StatsData {
+    if (!hideReady) return this
+    val filteredAreas = areas.mapNotNull { area ->
+        val orders = area.orders.filter {
+            computeOrderStatus(it.stats) != OrderStatus.READY
+        }
+        if (orders.isEmpty()) null
+        else area.copy(orders = orders, stats = combineStats(orders.map { it.stats }))
+    }
+    return copy(areas = filteredAreas)
+}
+
 fun StatsData.withSearch(query: String): StatsData {
     val q = query.trim().lowercase()
     if (q.isEmpty()) return this
-
     val filteredAreas = areas.mapNotNull { area ->
         val matchesArea = area.areaName.lowercase().contains(q)
         val matchingOrders = area.orders.filter { order ->
@@ -138,7 +193,6 @@ fun StatsData.withSearch(query: String): StatsData {
             stats = combineStats(matchingOrders.map { it.stats })
         )
     }
-
     return copy(areas = filteredAreas)
 }
 

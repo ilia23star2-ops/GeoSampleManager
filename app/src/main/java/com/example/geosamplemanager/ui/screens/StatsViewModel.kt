@@ -18,35 +18,28 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.9-stats-screen: ViewModel экрана «Статистика».
+ * FIX 5.9-stats-search-2: дебаунс 250 мс + фон.
  *
- * FIX 5.9-stats-reactive: Room-Flow — реактивность.
- *
- * FIX 5.9-stats-layout: selectedOrderId для правой панели.
- *
- * FIX 5.9-stats-search: searchQuery, слияние с фильтром.
- *
- * FIX 5.9-stats-search-2:
- *  - Дебаунс 250 мс на setSearchQuery. Печать не тормозит UI.
- *  - applyFilters() перенесён в Dispatchers.Default — тяжёлая
- *    пересборка дерева не блокирует главный поток.
- *  - Запись в _data происходит в главном потоке (StateFlow-safe).
+ * FIX 5.9-stats-order-status:
+ *  - hideReady flag — скрыть готовые наряды.
+ *  - Сортировка нарядов по статусу в buildTree.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
 
-    /** Сырое дерево без фильтра и поиска. Источник для правой панели. */
     private var rawData: StatsData? = null
-
-    /** Текущий фильтр-чип. Отдельно от дерева, чтобы не терять при поиске. */
     private var currentFilter: StatsFilter = StatsFilter.ALL
+    private var currentHideReady: Boolean = false
 
     private val _data = MutableStateFlow<StatsData?>(null)
     val data: StateFlow<StatsData?> = _data.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _hideReady = MutableStateFlow(false)
+    val hideReady: StateFlow<Boolean> = _hideReady.asStateFlow()
 
     private val _expandedAreaIds = MutableStateFlow<Set<Long>>(emptySet())
     val expandedAreaIds: StateFlow<Set<Long>> = _expandedAreaIds.asStateFlow()
@@ -62,10 +55,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearMessage() { _message.value = null }
 
-    /**
-     * FIX 5.9-stats-search-2: job для отмены дебаунса поиска.
-     * Каждое нажатие клавиши отменяет предыдущий запуск и стартует новый.
-     */
     private var searchJob: Job? = null
 
     init {
@@ -79,7 +68,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                 repo.getAllOrdersFlow(),
                 repo.getAllSamplesFlow()
             ) { areas, orders, samples ->
-                // Построение дерева — в фоне.
                 withContext(Dispatchers.Default) {
                     buildTree(areas, orders, samples)
                 }
@@ -92,28 +80,20 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-stats-search-2:
-     * Асинхронно применяет фильтр + поиск в фоне. Запись в _data — в Main.
-     */
     private fun applyFiltersAsync() {
-        viewModelScope.launch {
-            applyFilters()
-        }
+        viewModelScope.launch { applyFilters() }
     }
 
-    /**
-     * Применить текущий фильтр-чип и поиск к сырому дереву.
-     * Тяжёлые вычисления — в Dispatchers.Default.
-     */
     private suspend fun applyFilters() {
         val raw = rawData ?: return
         val search = _searchQuery.value
         val filter = currentFilter
+        val hideReady = currentHideReady
 
         val result = withContext(Dispatchers.Default) {
             raw
                 .withFilter(filter)
+                .withHideReady(hideReady)
                 .withSearch(search)
                 .copy(filter = filter)
         }
@@ -139,19 +119,18 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Пользовательские действия
-    // ================================================================
 
     fun setFilter(filter: StatsFilter) {
         currentFilter = filter
         applyFiltersAsync()
     }
 
-    /**
-     * FIX 5.9-stats-search-2:
-     * Дебаунс 250 мс. Строка запроса обновляется сразу (UI поля),
-     * а пересборка дерева — через 250 мс после последнего нажатия.
-     */
+    fun setHideReady(value: Boolean) {
+        currentHideReady = value
+        _hideReady.value = value
+        applyFiltersAsync()
+    }
+
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
         searchJob?.cancel()
@@ -213,8 +192,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         }?.areaName
     }
 
-    // ================================================================
-
     private fun buildTree(
         areas: List<AreaEntity>,
         orders: List<OrderEntity>,
@@ -234,13 +211,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                     group = group,
                     stats = calculateGroupStats(group)
                 )
-            }.sortedBy { it.orderNumber }
-
+            }
             StatsAreaUi(
                 areaId = area.id,
                 areaName = area.areaName,
                 stats = combineStats(orderUis.map { it.stats }),
-                orders = orderUis
+                orders = sortOrdersByStatus(orderUis)
             )
         }.sortedBy { it.areaName }
 
@@ -249,7 +225,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        /** FIX 5.9-stats-search-2: дебаунс поиска. */
         private const val SEARCH_DEBOUNCE_MS = 250L
     }
 }
