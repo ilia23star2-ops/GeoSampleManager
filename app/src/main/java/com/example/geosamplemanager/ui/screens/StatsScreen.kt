@@ -33,12 +33,12 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-order-status: чип, кружки, диалог формата.
+ * FIX 5.9-report-html: SAF для HTML-отчёта.
  *
- * FIX 5.9-report-html:
- *  - Кнопка HTML в диалоге — запускает SAF CreateDocument, пишет
- *    готовый .html через StatsViewModel.generateHtmlReport.
- *  - Excel остаётся заглушкой.
+ * FIX 5.9-stats-charts:
+ *  - Плейсхолдер «в разработке» заменён на реальные диаграммы.
+ *  - ChartsArea выбирает PieChart / BarChart / WellProgressChart
+ *    по выбранному типу и считает данные из проб наряда.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -54,7 +54,6 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // FIX 5.9-report-html: SAF-лаунчер для HTML-отчёта.
     var pendingOrderIdForReport by remember { mutableStateOf<Long?>(null) }
 
     val htmlLauncher = rememberLauncherForActivityResult(
@@ -700,7 +699,7 @@ private fun RightDetailsPanel(
 
             item(key = "chart_${order.orderId}") {
                 Spacer(Modifier.height(8.dp))
-                DiagramPlaceholder(chartType)
+                ChartsArea(rows = order.group.rows, chartType = chartType)
                 Spacer(Modifier.height(8.dp))
             }
 
@@ -772,6 +771,32 @@ private fun RightDetailsPanel(
                 }
             }
         )
+    }
+}
+
+/**
+ * FIX 5.9-stats-charts:
+ * Область диаграммы. Считает данные из проб и рисует нужный тип.
+ */
+@Composable
+private fun ChartsArea(
+    rows: List<SampleRow>,
+    chartType: ChartType
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            when (chartType) {
+                ChartType.PIE -> PieChart(slices = computePieSlices(rows))
+                ChartType.BARS -> BarChart(bars = computeBarData(rows))
+                ChartType.WELLS -> WellProgressChart(items = computeWellProgress(rows))
+            }
+        }
     }
 }
 
@@ -946,35 +971,6 @@ private fun ChartTypeDropdown(
                         onSelect(t)
                         expanded = false
                     }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DiagramPlaceholder(type: ChartType) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .height(180.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Filled.BarChart,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "${type.title} — в разработке",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
