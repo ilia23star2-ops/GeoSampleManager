@@ -33,9 +33,14 @@ import kotlinx.coroutines.launch
  *  - Тап по строке наряда = выбрать + раскрыть. Тап по стрелке = только
  *    раскрыть/свернуть в дереве.
  *
- * FIX 5.9-stats-layout/3:
- *  - maxWidth (из BoxWithConstraints) сохраняется в локальные переменные
- *    до Row — иначе теряется scope и компилятор ругается.
+ * FIX 5.9-stats-layout/3: maxWidth сохраняется до Row.
+ *
+ * FIX 5.9-stats-layout/4:
+ *  - Правая панель целиком — LazyColumn. Раньше верх (шапка, прогресс,
+ *    сводка, диаграмма) был фиксированный, а список проб получал только
+ *    остаток — влезала одна строка. Теперь всё скроллится вместе.
+ *  - Состояние разворота списка проб (samplesExpanded) вынесено в
+ *    rememberSaveable — не сбрасывается при переключении нарядов.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -64,7 +69,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWide = maxWidth >= 600.dp
-        val treeWidth = maxWidth * 0.35f   // ← сохраняем до Row
+        val treeWidth = maxWidth * 0.35f
 
         if (isWide) {
             Row(modifier = Modifier.fillMaxSize()) {
@@ -416,6 +421,13 @@ private enum class ChartType(val title: String) {
     WELLS("По скважинам")
 }
 
+/**
+ * FIX 5.9-stats-layout/4:
+ * Вся правая панель — один LazyColumn. Скроллится целиком:
+ * шапка, прогресс, сводка, dropdown, диаграмма, кнопка, заголовки
+ * таблицы, строки проб. Раньше скроллилась только таблица проб —
+ * она не влезала в остаток экрана.
+ */
 @Composable
 private fun RightDetailsPanel(
     order: StatsOrderUi?,
@@ -447,140 +459,155 @@ private fun RightDetailsPanel(
         return
     }
 
-    Column(modifier = modifier) {
+    var chartType by remember { mutableStateOf(ChartType.PIE) }
+    var samplesExpanded by rememberSaveable { mutableStateOf(true) }
+
+    LazyColumn(modifier = modifier.fillMaxSize()) {
+
         // ============ Шапка: заголовок + кнопки ============
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (showBackButton) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
+        item(key = "header_${order.orderId}") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (showBackButton) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Наряд №${order.orderNumber}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (areaName != null) {
+                        Text(
+                            areaName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = {
+                        scope.launch { snackbarHostState.showSnackbar("Отчёты — в разработке") }
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.PictureAsPdf,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Отчёт", style = MaterialTheme.typography.labelSmall)
+                }
+                Spacer(Modifier.width(6.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch { snackbarHostState.showSnackbar("Сравнение — в разработке") }
+                    },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.CompareArrows,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Сравнить", style = MaterialTheme.typography.labelSmall)
                 }
             }
-            Column(modifier = Modifier.weight(1f)) {
+        }
+
+        // ============ Прогресс-бар + статус ============
+        item(key = "progress_${order.orderId}") {
+            ProgressBarBlock(order.stats)
+        }
+
+        // ============ Сводка (2 строки) ============
+        item(key = "summary_${order.orderId}") {
+            OrderSummaryRow(order.stats)
+        }
+
+        item(key = "div1_${order.orderId}") {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        }
+
+        // ============ Dropdown диаграммы ============
+        item(key = "chartdrop_${order.orderId}") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    "Наряд №${order.orderNumber}",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    "Тип диаграммы:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (areaName != null) {
+                Spacer(Modifier.width(8.dp))
+                ChartTypeDropdown(
+                    current = chartType,
+                    onSelect = { chartType = it }
+                )
+            }
+        }
+
+        item(key = "chart_${order.orderId}") {
+            Spacer(Modifier.height(8.dp))
+            DiagramPlaceholder(chartType)
+            Spacer(Modifier.height(8.dp))
+        }
+
+        item(key = "div2_${order.orderId}") {
+            HorizontalDivider()
+        }
+
+        // ============ Кнопка разворота списка проб ============
+        item(key = "toggle_${order.orderId}") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
+                    Icon(
+                        if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
                     Text(
-                        areaName,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (samplesExpanded) "Свернуть список проб"
+                        else "Развернуть список проб (${order.group.rows.size})"
                     )
                 }
             }
-            OutlinedButton(
-                onClick = {
-                    scope.launch { snackbarHostState.showSnackbar("Отчёты — в разработке") }
-                },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Icon(
-                    Icons.Filled.PictureAsPdf,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text("Отчёт", style = MaterialTheme.typography.labelSmall)
-            }
-            Spacer(Modifier.width(6.dp))
-            OutlinedButton(
-                onClick = {
-                    scope.launch { snackbarHostState.showSnackbar("Сравнение — в разработке") }
-                },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Icon(
-                    Icons.Filled.CompareArrows,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text("Сравнить", style = MaterialTheme.typography.labelSmall)
-            }
         }
 
-        // ============ Прогресс-бар ============
-        ProgressBarPlaceholder(order.stats)
-
-        // ============ Сводка ============
-        OrderSummaryRow(order.stats)
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-        // ============ Диаграмма ============
-        var chartType by remember { mutableStateOf(ChartType.PIE) }
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "Тип диаграммы:",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.width(8.dp))
-            ChartTypeDropdown(
-                current = chartType,
-                onSelect = { chartType = it }
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-
-        DiagramPlaceholder(chartType)
-
-        Spacer(Modifier.height(8.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(8.dp))
-
-        // ============ Разворачиваемый список проб ============
-        var samplesExpanded by remember { mutableStateOf(false) }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = { samplesExpanded = !samplesExpanded }) {
-                Icon(
-                    if (samplesExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    if (samplesExpanded) "Свернуть список проб"
-                    else "Развернуть список проб (${order.group.rows.size})"
-                )
-            }
-        }
-
+        // ============ Заголовки и строки таблицы проб ============
         if (samplesExpanded) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            item(key = "thead_${order.orderId}") {
                 TableHeadRow()
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 16.dp)
-                ) {
-                    items(order.group.rows, key = { it.id }) { row ->
-                        StatsSampleRow(row)
-                    }
-                }
+            }
+            items(order.group.rows, key = { "row_${it.id}" }) { row ->
+                StatsSampleRow(row)
+            }
+            item(key = "tailspace_${order.orderId}") {
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
 }
 
 @Composable
-private fun ProgressBarPlaceholder(stats: GroupStats) {
+private fun ProgressBarBlock(stats: GroupStats) {
     val total = stats.total
     val progress = if (total > 0) stats.found.toFloat() / total.toFloat() else 0f
     val pct = (progress * 1000).toInt() / 10f
