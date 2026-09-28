@@ -7,11 +7,15 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * FIX 5.9-stats-screen: ViewModel экрана «Статистика».
@@ -20,13 +24,13 @@ import kotlinx.coroutines.launch
  *
  * FIX 5.9-stats-layout: selectedOrderId для правой панели.
  *
- * FIX 5.9-stats-search:
- *  - searchQuery: StateFlow со строкой поиска.
- *  - applyFilters() применяет фильтр-чип + поиск + сохраняет в _data.
- *  - currentFilter хранится отдельно (переживает поиск).
- *  - findOrder и findAreaNameFor смотрят в rawData (сырое дерево) —
- *    выбранный наряд справа остаётся, даже если поиск его не показал.
- *  - При непустом поиске — авто-раскрытие всех найденных нарядов.
+ * FIX 5.9-stats-search: searchQuery, слияние с фильтром.
+ *
+ * FIX 5.9-stats-search-2:
+ *  - Дебаунс 250 мс на setSearchQuery. Печать не тормозит UI.
+ *  - applyFilters() перенесён в Dispatchers.Default — тяжёлая
+ *    пересборка дерева не блокирует главный поток.
+ *  - Запись в _data происходит в главном потоке (StateFlow-safe).
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -58,6 +62,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearMessage() { _message.value = null }
 
+    /**
+     * FIX 5.9-stats-search-2: job для отмены дебаунса поиска.
+     * Каждое нажатие клавиши отменяет предыдущий запуск и стартует новый.
+     */
+    private var searchJob: Job? = null
+
     init {
         subscribeToDb()
     }
@@ -69,10 +79,13 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                 repo.getAllOrdersFlow(),
                 repo.getAllSamplesFlow()
             ) { areas, orders, samples ->
-                buildTree(areas, orders, samples)
+                // Построение дерева — в фоне.
+                withContext(Dispatchers.Default) {
+                    buildTree(areas, orders, samples)
+                }
             }.collect { raw ->
                 rawData = raw
-                applyFilters()
+                applyFiltersAsync()
                 pruneExpandedIds(raw)
                 pruneSelected(raw)
             }
@@ -80,20 +93,33 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Применить текущий фильтр-чип и поиск к сырому дереву.
-     * Результат — в _data. При непустом поиске — авто-раскрытие.
+     * FIX 5.9-stats-search-2:
+     * Асинхронно применяет фильтр + поиск в фоне. Запись в _data — в Main.
      */
-    private fun applyFilters() {
+    private fun applyFiltersAsync() {
+        viewModelScope.launch {
+            applyFilters()
+        }
+    }
+
+    /**
+     * Применить текущий фильтр-чип и поиск к сырому дереву.
+     * Тяжёлые вычисления — в Dispatchers.Default.
+     */
+    private suspend fun applyFilters() {
         val raw = rawData ?: return
         val search = _searchQuery.value
-        val result = raw
-            .withFilter(currentFilter)
-            .withSearch(search)
-            .copy(filter = currentFilter)
+        val filter = currentFilter
+
+        val result = withContext(Dispatchers.Default) {
+            raw
+                .withFilter(filter)
+                .withSearch(search)
+                .copy(filter = filter)
+        }
 
         _data.value = result
 
-        // Авто-раскрытие — только если поиск непустой.
         if (search.isNotBlank()) {
             expandAll()
         }
@@ -118,12 +144,21 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setFilter(filter: StatsFilter) {
         currentFilter = filter
-        applyFilters()
+        applyFiltersAsync()
     }
 
+    /**
+     * FIX 5.9-stats-search-2:
+     * Дебаунс 250 мс. Строка запроса обновляется сразу (UI поля),
+     * а пересборка дерева — через 250 мс после последнего нажатия.
+     */
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
-        applyFilters()
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            applyFilters()
+        }
     }
 
     fun toggleArea(areaId: Long) {
@@ -166,10 +201,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _selectedOrderId.value = null
     }
 
-    /**
-     * FIX 5.9-stats-search: смотрю в rawData, не в _data.
-     * Так выбранный наряд справа остаётся, даже если поиск его не показал.
-     */
     fun findOrder(orderId: Long): StatsOrderUi? {
         return rawData?.areas?.asSequence()
             ?.flatMap { it.orders.asSequence() }
@@ -215,5 +246,10 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
         val totals = combineStats(areaUis.map { it.stats })
         return StatsData(totals = totals, areas = areaUis, filter = StatsFilter.ALL)
+    }
+
+    companion object {
+        /** FIX 5.9-stats-search-2: дебаунс поиска. */
+        private const val SEARCH_DEBOUNCE_MS = 250L
     }
 }
