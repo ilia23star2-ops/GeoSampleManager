@@ -21,12 +21,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.data.voice.AnswerState
+import kotlinx.coroutines.launch
 
 /**
  * FIX 5.9-stats-screen:
  * Экран «Статистика» — дерево участок → наряд → проба.
  * Сводка сверху, чипы фильтров, кнопка «Сформировать отчёт»
  * (пока заглушка — появится в report-pdf / report-xlsx).
+ *
+ * FIX 5.9-stats-screen/4:
+ * Добавлены импорты AnswerState и kotlinx.coroutines.launch —
+ * без них CI падал на compileDebugKotlin.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -36,6 +42,8 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val message by viewModel.message.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
     LaunchedEffect(message) {
         message?.let {
             snackbarHostState.showSnackbar(it)
@@ -69,7 +77,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     if (allExpanded) viewModel.collapseAll()
                     else viewModel.expandAll()
                 },
-                onReportClick = { scope ->
+                onReportClick = {
                     scope.launch {
                         snackbarHostState.showSnackbar("Отчёты — в разработке")
                     }
@@ -202,9 +210,8 @@ private fun FiltersAndActions(
     onFilterChange: (StatsFilter) -> Unit,
     allExpanded: Boolean,
     onToggleAll: () -> Unit,
-    onReportClick: (kotlinx.coroutines.CoroutineScope) -> Unit
+    onReportClick: () -> Unit
 ) {
-    val scope = rememberCoroutineScope()
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -234,7 +241,7 @@ private fun FiltersAndActions(
             )
         }
         OutlinedButton(
-            onClick = { onReportClick(scope) },
+            onClick = onReportClick,
             contentPadding = PaddingValues(horizontal = 10.dp)
         ) {
             Icon(
@@ -461,7 +468,6 @@ private fun StatsSampleRow(row: SampleRow) {
         )
         Spacer(Modifier.weight(1f))
 
-        // Иконки статуса
         if (row.weightControl) {
             Icon(
                 Icons.Filled.Scale,
