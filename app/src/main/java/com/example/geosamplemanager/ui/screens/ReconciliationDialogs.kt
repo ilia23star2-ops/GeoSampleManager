@@ -1034,12 +1034,68 @@ fun ImportErrorDialog(
 }
 
 @Composable
+/**
+ * FIX 5.9-sverka-fixes (C):
+ * Переработан по образцу AlreadyFoundDialog — список действий.
+ *  - «Отметить как найденную» — setPostponed(false) + setFound(true).
+ *  - «Снять отложенную» — setPostponed(false), остаётся ненайденной.
+ *  - «Заметка и фото» — если есть.
+ *  - «Редактировать пробу».
+ */
+@Composable
 fun PostponedDialog(
     row: SampleRow,
-    onConfirm: () -> Unit,
+    onMarkFound: () -> Unit,
+    onUnpostpone: () -> Unit,
     onViewNote: () -> Unit,
+    onEdit: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Проба отложена") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.PauseCircle, null,
+                        tint = MaterialTheme.colorScheme.tertiary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Проба ${row.sampleNumber} отложена",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text("Что сделать?",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold)
+
+                TextButton(onClick = onMarkFound) {
+                    Icon(Icons.Filled.CheckCircle, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Отметить как найденную")
+                }
+                TextButton(onClick = onUnpostpone) {
+                    Icon(Icons.Filled.Undo, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Снять отложенную (оставить ненайденной)")
+                }
+                if (row.hasNote || row.hasPhoto) {
+                    TextButton(onClick = onViewNote) {
+                        Icon(Icons.Filled.EditNote, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Заметка и фото")
+                    }
+                }
+                TextButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Редактировать пробу")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
+    )
+}
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Проба отложена") },
