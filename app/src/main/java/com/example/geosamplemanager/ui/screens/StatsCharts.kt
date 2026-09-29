@@ -33,13 +33,15 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * FIX 5.9-stats-charts-3 (финал):
- *  - 5 категорий с приоритетом found > postponed > control > blank > not_found.
- *  - Круг: цифры на секторах (≥25°), без числа в центре.
- *  - Столбцы: цифра внутри полоски.
- *  - По скважинам: сегментированный бар + легенда X/Y.
- *  - DrillLevel — уровни drill-down.
- *  - filterRowsByDrillStack — применение стека.
+ * FIX 5.9-stats-charts-3/6:
+ *  - Легенда скважин в формате X\Y через слеш, порядок:
+ *    Найдено → Холостые → ВК → Отложено.
+ *    X — найдено из категории, Y — всего в категории.
+ *    «Не найдено» не пишем — видно из бара.
+ *  - Показываем категорию только если Y > 0.
+ *  - Цифры на секторах круга; центр пустой.
+ *  - Столбцы — цифры внутри полоски.
+ *  - DrillLevel + filterRowsByDrillStack.
  */
 
 // ====================================================================
@@ -56,7 +58,6 @@ sealed class DrillLevel {
     data class Well(val well: String) : DrillLevel()
 }
 
-/** Порядок отображения в круге и столбцах. */
 val CATEGORY_ORDER = listOf(
     CategoryKey.FOUND,
     CategoryKey.NOT_FOUND,
@@ -99,10 +100,6 @@ fun subOrder(): List<SubKey> = listOf(
     SubKey.NORMAL, SubKey.BLANK, SubKey.CONTROL, SubKey.POSTPONED
 )
 
-/**
- * Приоритет отнесения пробы к категории.
- * Первое совпадение выигрывает. Проба попадает ровно в одну категорию.
- */
 fun categoryOf(row: SampleRow): CategoryKey = when {
     row.found -> CategoryKey.FOUND
     row.postponed -> CategoryKey.POSTPONED
@@ -111,9 +108,6 @@ fun categoryOf(row: SampleRow): CategoryKey = when {
     else -> CategoryKey.NOT_FOUND
 }
 
-/**
- * Приоритет подкатегории внутри уже отфильтрованного набора.
- */
 fun subOf(row: SampleRow): SubKey = when {
     row.postponed -> SubKey.POSTPONED
     row.weightControl -> SubKey.CONTROL
@@ -142,7 +136,7 @@ fun filterRowsByDrillStack(
 }
 
 // ====================================================================
-// ДАННЫЕ ДЛЯ КРУГА / СТОЛБЦОВ
+// ДАННЫЕ
 // ====================================================================
 
 data class CategoryDatum(
@@ -191,10 +185,6 @@ fun computeSubCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
         )
     }
 }
-
-// ====================================================================
-// ДАННЫЕ ДЛЯ СКВАЖИН
-// ====================================================================
 
 data class WellBarSegment(val key: CategoryKey, val color: Color, val value: Int)
 
@@ -566,14 +556,19 @@ private fun WellRow(wp: WellStats, onClick: (String) -> Unit) {
     }
 }
 
+/**
+ * FIX 5.9-stats-charts-3/6:
+ * Формат легенды X\Y через слеш. Порядок: Найдено → Холостые → ВК → Отложено.
+ * Показываем категорию, только если Y > 0.
+ * «Не найдено» не пишем — видно из бара и из Найдено X\Y.
+ */
 private fun buildWellLegend(wp: WellStats): String {
     val parts = mutableListOf<String>()
-    parts.add("Найдено ${wp.found}/${wp.total}")
-    parts.add("Не найдено ${wp.notFound}/${wp.total}")
-    if (wp.control > 0) parts.add("ВК ${wp.controlFound}/${wp.control}")
-    if (wp.blank > 0) parts.add("Холостые ${wp.blankFound}/${wp.blank}")
-    if (wp.postponed > 0) parts.add("Отложено ${wp.postponedFound}/${wp.postponed}")
-    return parts.joinToString(" · ")
+    parts.add("Найдено ${wp.found}\\${wp.total}")
+    if (wp.blank > 0) parts.add("Холостые ${wp.blankFound}\\${wp.blank}")
+    if (wp.control > 0) parts.add("ВК ${wp.controlFound}\\${wp.control}")
+    if (wp.postponed > 0) parts.add("Отложено ${wp.postponedFound}\\${wp.postponed}")
+    return parts.joinToString("  ")
 }
 
 // ====================================================================
