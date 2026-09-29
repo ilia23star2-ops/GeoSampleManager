@@ -4,27 +4,17 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 2 (xlsx-cells):
- * Сборка листов .xlsx из ReportData.
+ * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
+ * Назначение стилей строкам.
  *
- * Что делает:
- *  - лист с нарядом: шапка + таблица проб (п/п, № пробы, скважина,
- *    интервал, вес, характеристика, тип, найдена);
- *  - отдельный лист «Приложения» — если есть пробы с заметками/фото.
- *
- * Что НЕ делает (следующие подзаходы):
- *  - стили (цвет строк, жирный шрифт) — подзаход 3;
- *  - гиперссылки из строки на лист приложений — подзаход 4;
- *  - мультинарядный (N листов) — подзаход 5;
- *  - UI-кнопка — подзаход 6.
- *
- * Ссылки на фото пока не делаем: у ReportPhoto нет имени файла,
- * только dataUri. Пишем количество: «3 шт.».
+ * Изменения:
+ *  - заголовок «Отчёт по наряду» — BOLD;
+ *  - шапка таблицы — HEADER (жирный + фон);
+ *  - строки данных — по статусу пробы (styleForRow).
  */
 
 object XlsxReportBuilder {
 
-    /** Статус → строка для колонки «Тип». */
     private fun displayType(row: SampleRow): String = when (row.status) {
         SampleStatus.BLANK -> "Холостая"
         SampleStatus.CONTROL -> "Весовой контроль"
@@ -48,70 +38,73 @@ object XlsxReportBuilder {
         }
     }
 
-    /**
-     * Собрать все листы для отчёта по одному наряду.
-     * Первый лист — наряд. Второй — приложения (если есть).
-     */
     fun build(data: ReportData): List<XlsxSheet> {
         val result = mutableListOf<XlsxSheet>()
 
         // ============================================================
         // ЛИСТ 1 — НАРЯД
         // ============================================================
-        val orderRows = mutableListOf<List<XlsxCell>>()
-
-        orderRows.add(listOf(XlsxCell.Text("Отчёт по наряду")))
-        orderRows.add(
-            listOf(
-                XlsxCell.Text("Участок:"),
-                XlsxCell.Text(data.areaName)
-            )
-        )
-        orderRows.add(
-            listOf(
-                XlsxCell.Text("Наряд:"),
-                XlsxCell.Text("№${data.orderNumber}")
-            )
-        )
-        orderRows.add(
-            listOf(
-                XlsxCell.Text("Дата:"),
-                XlsxCell.Text(data.generatedAt)
-            )
-        )
-        orderRows.add(listOf(XlsxCell.Empty))
+        val orderRows = mutableListOf<XlsxRow>()
 
         orderRows.add(
-            listOf(
-                XlsxCell.Text("п/п"),
-                XlsxCell.Text("№ пробы"),
-                XlsxCell.Text("Скважина"),
-                XlsxCell.Text("Интервал"),
-                XlsxCell.Text("Вес"),
-                XlsxCell.Text("Характеристика"),
-                XlsxCell.Text("Тип"),
-                XlsxCell.Text("Найдена")
+            XlsxRow(
+                listOf(XlsxCell.Text("Отчёт по наряду")),
+                styleId = XlsxStyles.BOLD
+            )
+        )
+        orderRows.add(
+            XlsxRow(
+                listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName))
+            )
+        )
+        orderRows.add(
+            XlsxRow(
+                listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}"))
+            )
+        )
+        orderRows.add(
+            XlsxRow(
+                listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt))
+            )
+        )
+        orderRows.add(XlsxRow(listOf(XlsxCell.Empty)))
+
+        orderRows.add(
+            XlsxRow(
+                listOf(
+                    XlsxCell.Text("п/п"),
+                    XlsxCell.Text("№ пробы"),
+                    XlsxCell.Text("Скважина"),
+                    XlsxCell.Text("Интервал"),
+                    XlsxCell.Text("Вес"),
+                    XlsxCell.Text("Характеристика"),
+                    XlsxCell.Text("Тип"),
+                    XlsxCell.Text("Найдена")
+                ),
+                styleId = XlsxStyles.HEADER
             )
         )
 
         data.samples.forEach { sample ->
             val row = sample.row
             orderRows.add(
-                listOf(
-                    XlsxCell.Number(row.serialNumber.toDouble()),
-                    XlsxCell.Text(row.sampleNumber),
-                    XlsxCell.Text(row.wellNumber),
-                    XlsxCell.Text(intervalText(row)),
-                    XlsxCell.Text(weightText(row)),
-                    XlsxCell.Text(row.characteristic),
-                    XlsxCell.Text(displayType(row)),
-                    XlsxCell.Text(if (row.found) "✓" else "")
+                XlsxRow(
+                    listOf(
+                        XlsxCell.Number(row.serialNumber.toDouble()),
+                        XlsxCell.Text(row.sampleNumber),
+                        XlsxCell.Text(row.wellNumber),
+                        XlsxCell.Text(intervalText(row)),
+                        XlsxCell.Text(weightText(row)),
+                        XlsxCell.Text(row.characteristic),
+                        XlsxCell.Text(displayType(row)),
+                        XlsxCell.Text(if (row.found) "✓" else "")
+                    ),
+                    styleId = XlsxStyles.styleForRow(row)
                 )
             )
         }
 
-        val orderSheetName = "Наряд ${data.orderNumber}"
-        result.add(XlsxSheet(name = orderSheetName, rows = orderRows))
+        result.add(XlsxSheet(name = "Наряд ${data.orderNumber}", rows = orderRows))
 
         // ============================================================
         // ЛИСТ 2 — ПРИЛОЖЕНИЯ (если есть)
@@ -119,44 +112,56 @@ object XlsxReportBuilder {
         val withAppendix = data.samples.filter { it.hasAppendix }
 
         if (withAppendix.isNotEmpty()) {
-            val appRows = mutableListOf<List<XlsxCell>>()
-            appRows.add(listOf(XlsxCell.Text("Приложения")))
-            appRows.add(listOf(XlsxCell.Empty))
+            val appRows = mutableListOf<XlsxRow>()
+            appRows.add(
+                XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.BOLD)
+            )
+            appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
             withAppendix.forEachIndexed { idx, sample ->
-                appRows.add(listOf(XlsxCell.Text("Приложение ${idx + 1}")))
                 appRows.add(
-                    listOf(
-                        XlsxCell.Text("№ пробы:"),
-                        XlsxCell.Text(sample.row.sampleNumber)
+                    XlsxRow(listOf(XlsxCell.Text("Приложение ${idx + 1}")), styleId = XlsxStyles.BOLD)
+                )
+                appRows.add(
+                    XlsxRow(
+                        listOf(
+                            XlsxCell.Text("№ пробы:"),
+                            XlsxCell.Text(sample.row.sampleNumber)
+                        )
                     )
                 )
                 appRows.add(
-                    listOf(
-                        XlsxCell.Text("Скважина:"),
-                        XlsxCell.Text(sample.row.wellNumber)
+                    XlsxRow(
+                        listOf(
+                            XlsxCell.Text("Скважина:"),
+                            XlsxCell.Text(sample.row.wellNumber)
+                        )
                     )
                 )
 
                 sample.note?.let { note ->
                     appRows.add(
-                        listOf(
-                            XlsxCell.Text("Заметка:"),
-                            XlsxCell.Text(note.text)
+                        XlsxRow(
+                            listOf(
+                                XlsxCell.Text("Заметка:"),
+                                XlsxCell.Text(note.text)
+                            )
                         )
                     )
                 }
 
                 if (sample.photos.isNotEmpty()) {
                     appRows.add(
-                        listOf(
-                            XlsxCell.Text("Фото:"),
-                            XlsxCell.Text("${sample.photos.size} шт.")
+                        XlsxRow(
+                            listOf(
+                                XlsxCell.Text("Фото:"),
+                                XlsxCell.Text("${sample.photos.size} шт.")
+                            )
                         )
                     )
                 }
 
-                appRows.add(listOf(XlsxCell.Empty))
+                appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
             }
 
             result.add(XlsxSheet(name = "Приложения", rows = appRows))
