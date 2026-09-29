@@ -314,7 +314,7 @@ fun SearchScreen(
         val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
             val marked = viewModel.applyBulkMarkFoundForRows(
-                groupId, rowIds, emptyMap(), emptyMap()
+                groupId, rowIds, emptyMap(), emptyMap(), emptyMap()
             )
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
         } else {
