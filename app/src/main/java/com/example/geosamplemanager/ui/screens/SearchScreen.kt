@@ -475,9 +475,16 @@ fun SearchScreen(
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
                                     onClearAllClick = {
                                         val rowIds = state.visibleRowsForGroup(item.group.id)
+                                            .filter { it.found }
                                             .map { it.id }
                                             .toSet()
-                                        clearAllData = item.group.id to rowIds
+                                        if (rowIds.isEmpty()) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Нет отмеченных проб")
+                                            }
+                                        } else {
+                                            clearAllData = item.group.id to rowIds
+                                        }
                                     },
                                     onAddSample = {
                                         scope.launch {
@@ -782,9 +789,9 @@ fun SearchScreen(
         val decisions = state.collectBulkDecisionsForRows(gid, rowIds)
         BulkActionsDialog(
             decisions = decisions,
-            onApply = { weights, postponedActions ->
+            onApply = { controlWeights, blankWeights, postponedActions ->
                 val marked = viewModel.applyBulkMarkFoundForRows(
-                    gid, rowIds, weights, postponedActions
+                    gid, rowIds, controlWeights, blankWeights, postponedActions
                 )
                 bulkDialogGroupId = null
                 bulkDialogRowIds = emptySet()
