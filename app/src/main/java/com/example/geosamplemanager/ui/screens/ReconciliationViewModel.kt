@@ -2191,6 +2191,33 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return marked
     }
 
+        /**
+     * FIX 5.9-search-bulk:
+     * Отметить все видимые строки группы. Используется кнопкой
+     * «Отметить все» в заголовке — с учётом фильтров и поиска.
+     */
+    fun applyBulkMarkFoundForRows(
+        groupId: String,
+        rowIds: Set<String>,
+        weights: Map<String, Double>,
+        postponedActions: Map<String, Boolean>
+    ): Int {
+        val marked = state.applyBulkMarkFoundForRows(
+            groupId, rowIds, weights, postponedActions
+        )
+        persistGroup(groupId)
+        return marked
+    }
+
+    /**
+     * FIX 5.9-search-bulk:
+     * Снять отметки только с видимых строк группы.
+     */
+    fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
+        state.clearAllFoundForRows(groupId, rowIds)
+        persistGroup(groupId)
+    }
+
     fun clearAllFound(groupId: String) {
         state.clearAllFound(groupId)
         persistGroup(groupId)
