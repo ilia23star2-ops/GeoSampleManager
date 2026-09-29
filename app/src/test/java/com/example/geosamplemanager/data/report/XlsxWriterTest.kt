@@ -9,14 +9,10 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 1 (xlsx-core):
- * Тесты низкоуровневого генератора .xlsx.
+ * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
+ * Тесты генератора с поддержкой стилей.
  */
 class XlsxWriterTest {
-
-    // ================================================================
-    // Хелперы
-    // ================================================================
 
     private fun write(sheets: List<XlsxSheet>): ByteArray {
         val out = ByteArrayOutputStream()
@@ -37,22 +33,19 @@ class XlsxWriterTest {
         return result
     }
 
-    // ================================================================
-    // Базовое
-    // ================================================================
-
     @Test
     fun outputLooksLikeZip() {
         val bytes = write(
             listOf(
                 XlsxSheet(
                     name = "Test",
-                    rows = listOf(listOf(XlsxCell.Text("Hello")))
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("Hello")))
+                    )
                 )
             )
         )
         assertTrue(bytes.size > 0)
-        // Zip magic number "PK"
         assertEquals('P'.code.toByte(), bytes[0])
         assertEquals('K'.code.toByte(), bytes[1])
     }
@@ -61,7 +54,10 @@ class XlsxWriterTest {
     fun requiredEntriesPresent() {
         val bytes = write(
             listOf(
-                XlsxSheet(name = "Test", rows = listOf(listOf(XlsxCell.Text("x"))))
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
             )
         )
         val entries = readEntries(bytes)
@@ -70,17 +66,17 @@ class XlsxWriterTest {
         assertTrue(entries.containsKey("xl/workbook.xml"))
         assertTrue(entries.containsKey("xl/_rels/workbook.xml.rels"))
         assertTrue(entries.containsKey("xl/worksheets/sheet1.xml"))
+        assertTrue(entries.containsKey("xl/styles.xml"))
     }
-
-    // ================================================================
-    // Ячейки
-    // ================================================================
 
     @Test
     fun textCellIncluded() {
         val bytes = write(
             listOf(
-                XlsxSheet(name = "Test", rows = listOf(listOf(XlsxCell.Text("Hello"))))
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("Hello"))))
+                )
             )
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
@@ -92,7 +88,10 @@ class XlsxWriterTest {
     fun intNumberWrittenWithoutDecimal() {
         val bytes = write(
             listOf(
-                XlsxSheet(name = "Test", rows = listOf(listOf(XlsxCell.Number(2.0))))
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Number(2.0))))
+                )
             )
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
@@ -104,7 +103,10 @@ class XlsxWriterTest {
     fun decimalNumberWrittenWithDot() {
         val bytes = write(
             listOf(
-                XlsxSheet(name = "Test", rows = listOf(listOf(XlsxCell.Number(2.5))))
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Number(2.5))))
+                )
             )
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
@@ -118,7 +120,7 @@ class XlsxWriterTest {
                 XlsxSheet(
                     name = "Test",
                     rows = listOf(
-                        listOf(XlsxCell.Empty, XlsxCell.Text("Only"))
+                        XlsxRow(listOf(XlsxCell.Empty, XlsxCell.Text("Only")))
                     )
                 )
             )
@@ -128,16 +130,12 @@ class XlsxWriterTest {
         assertTrue(sheet.contains("r=\"B1\""))
     }
 
-    // ================================================================
-    // Несколько листов
-    // ================================================================
-
     @Test
     fun multipleSheets() {
         val bytes = write(
             listOf(
-                XlsxSheet(name = "First", rows = listOf(listOf(XlsxCell.Text("A")))),
-                XlsxSheet(name = "Second", rows = listOf(listOf(XlsxCell.Text("B"))))
+                XlsxSheet(name = "First", rows = listOf(XlsxRow(listOf(XlsxCell.Text("A"))))),
+                XlsxSheet(name = "Second", rows = listOf(XlsxRow(listOf(XlsxCell.Text("B")))))
             )
         )
         val entries = readEntries(bytes)
@@ -149,9 +147,56 @@ class XlsxWriterTest {
         assertTrue(entries["xl/workbook.xml"]!!.contains("Second"))
     }
 
-    // ================================================================
-    // Утилиты
-    // ================================================================
+    @Test
+    fun stylesXmlContainsAllStyles() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        assertTrue(styles.contains("<cellXfs count=\"8\">"))
+        assertTrue(styles.contains("A5D6A7"))
+        assertTrue(styles.contains("EF9A9A"))
+        assertTrue(styles.contains("90CAF9"))
+        assertTrue(styles.contains("FFF59D"))
+        assertTrue(styles.contains("CE93D8"))
+    }
+
+    @Test
+    fun styleIdWrittenToCell() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(
+                            listOf(XlsxCell.Text("Styled")),
+                            styleId = XlsxStyles.FOUND
+                        )
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("s=\"3\""))
+    }
+
+    @Test
+    fun defaultStyleNotWritten() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("Plain")))
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertFalse(sheet.contains("s=\"0\""))
+    }
 
     @Test
     fun escapeXmlSpecials() {

@@ -5,28 +5,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 1 (xlsx-core):
- * Низкоуровневый генератор .xlsx без внешних библиотек.
+ * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
+ * Добавлена поддержка стилей (xl/styles.xml) и строк со стилями.
  *
- * .xlsx — это ZIP-архив с XML-файлами. Минимальный набор:
- *   [Content_Types].xml
- *   _rels/.rels
- *   xl/workbook.xml
- *   xl/_rels/workbook.xml.rels
- *   xl/worksheets/sheetN.xml
- *
- * Возможности этого подзахода:
- *   - текст (через inlineStr — без sharedStrings);
- *   - числа (целые и дробные);
- *   - пустые ячейки (не пишутся);
- *   - несколько листов.
- *
- * Чего НЕТ (следующие подзаходы):
- *   - стилей (цвет строк, жирный шрифт);
- *   - гиперссылок;
- *   - формул;
- *   - объединённых ячеек;
- *   - ширины колонок.
+ * Изменения относительно подзахода 1:
+ *  - XlsxSheet.rows теперь List<XlsxRow>, а не List<List<XlsxCell>>.
+ *  - XlsxRow хранит styleId для всей строки.
+ *  - Пишется xl/styles.xml с фиксированным набором стилей.
+ *  - Каждая ячейка получает атрибут s="N", если стиль не DEFAULT.
  */
 
 // ====================================================================
@@ -48,11 +34,20 @@ sealed class XlsxCell {
 }
 
 /**
+ * Строка листа. styleId — индекс стиля из xl/styles.xml.
+ * Если styleId == XlsxStyles.DEFAULT, атрибут s не пишется.
+ */
+data class XlsxRow(
+    val cells: List<XlsxCell>,
+    val styleId: Int = XlsxStyles.DEFAULT
+)
+
+/**
  * Лист. Порядок строк и ячеек сохраняется как есть.
  */
 data class XlsxSheet(
     val name: String,
-    val rows: List<List<XlsxCell>>
+    val rows: List<XlsxRow>
 )
 
 // ====================================================================
@@ -80,6 +75,7 @@ object XlsxWriter {
         writeEntry(zip, "_rels/.rels", buildRootRels())
         writeEntry(zip, "xl/workbook.xml", buildWorkbook(sanitized))
         writeEntry(zip, "xl/_rels/workbook.xml.rels", buildWorkbookRels(sanitized))
+        writeEntry(zip, "xl/styles.xml", buildStyles())
 
         sanitized.forEachIndexed { idx, sheet ->
             val path = "xl/worksheets/sheet${idx + 1}.xml"
@@ -102,6 +98,8 @@ object XlsxWriter {
         sb.append("<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
         sb.append("<Override PartName=\"/xl/workbook.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>")
+        sb.append("<Override PartName=\"/xl/styles.xml\" ")
+        sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>")
         sheets.forEachIndexed { idx, _ ->
             sb.append("<Override PartName=\"/xl/worksheets/sheet${idx + 1}.xml\" ")
             sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
@@ -150,6 +148,76 @@ object XlsxWriter {
         return sb.toString()
     }
 
+    /**
+     * xl/styles.xml с фиксированным набором стилей из XlsxStyles.all.
+     */
+    private fun buildStyles(): String {
+        val styles = XlsxStyles.all
+        val sb = StringBuilder(2048)
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+        sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+
+        // fonts
+        sb.append("<fonts count=\"2\">")
+        sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
+        sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
+        sb.append("</fonts>")
+
+        // fills: 0 — none, 1 — gray125 (обязательные), далее — наши цвета
+        sb.append("<fills count=\"8\">")
+        sb.append("<fill><patternFill patternType=\"none\"/></fill>")
+        sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
+        styles.forEachIndexed { idx, def ->
+            if (idx == 0) return@forEachIndexed
+            val color = def.fillColor ?: "FFFFFF"
+            sb.append("<fill><patternFill patternType=\"solid\">")
+            sb.append("<fgColor rgb=\"FF").append(color).append("\"/>")
+            sb.append("<bgColor indexed=\"64\"/>")
+            sb.append("</patternFill></fill>")
+        }
+        sb.append("</fills>")
+
+        // borders: 0 — none, 1 — thin
+        sb.append("<borders count=\"2\">")
+        sb.append("<border><left/><right/><top/><bottom/><diagonal/></border>")
+        sb.append("<border>")
+        sb.append("<left style=\"thin\"/><right style=\"thin\"/>")
+        sb.append("<top style=\"thin\"/><bottom style=\"thin\"/>")
+        sb.append("<diagonal/></border>")
+        sb.append("</borders>")
+
+        // cellStyleXfs (обязательный, один)
+        sb.append("<cellStyleXfs count=\"1\">")
+        sb.append("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>")
+        sb.append("</cellStyleXfs>")
+
+        // cellXfs — по одному на каждый StyleDef
+        sb.append("<cellXfs count=\"").append(styles.size).append("\">")
+        styles.forEach { def ->
+            sb.append("<xf numFmtId=\"0\" ")
+            sb.append("fontId=\"").append(if (def.bold) 1 else 0).append("\" ")
+            sb.append("fillId=\"").append(fillIdFor(def)).append("\" ")
+            sb.append("borderId=\"").append(if (def.border) 1 else 0).append("\" ")
+            sb.append("xfId=\"0\"/>")
+        }
+        sb.append("</cellXfs>")
+
+        sb.append("</styleSheet>")
+        return sb.toString()
+    }
+
+    private fun fillIdFor(def: StyleDef): Int {
+        return when {
+            def.fillColor == "F0F0F0" -> 2
+            def.fillColor == "A5D6A7" -> 3
+            def.fillColor == "EF9A9A" -> 4
+            def.fillColor == "90CAF9" -> 5
+            def.fillColor == "FFF59D" -> 6
+            def.fillColor == "CE93D8" -> 7
+            else -> 0
+        }
+    }
+
     private fun buildSheet(sheet: XlsxSheet): String {
         val sb = StringBuilder(1024)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -158,17 +226,20 @@ object XlsxWriter {
         sheet.rows.forEachIndexed { rowIdx, row ->
             val rowNum = rowIdx + 1
             sb.append("<row r=\"").append(rowNum).append("\">")
-            row.forEachIndexed { colIdx, cell ->
+            row.cells.forEachIndexed { colIdx, cell ->
                 if (cell is XlsxCell.Empty) return@forEachIndexed
                 val ref = cellRef(colIdx, rowNum)
+                val styleAttr = if (row.styleId != XlsxStyles.DEFAULT)
+                    " s=\"${row.styleId}\"" else ""
                 when (cell) {
                     is XlsxCell.Text -> {
-                        sb.append("<c r=\"").append(ref).append("\" t=\"inlineStr\">")
+                        sb.append("<c r=\"").append(ref).append("\"").append(styleAttr)
+                            .append(" t=\"inlineStr\">")
                         sb.append("<is><t>").append(escapeXml(cell.value)).append("</t></is>")
                         sb.append("</c>")
                     }
                     is XlsxCell.Number -> {
-                        sb.append("<c r=\"").append(ref).append("\">")
+                        sb.append("<c r=\"").append(ref).append("\"").append(styleAttr).append(">")
                         sb.append("<v>").append(formatNumber(cell.value)).append("</v>")
                         sb.append("</c>")
                     }
@@ -193,9 +264,6 @@ object XlsxWriter {
         zip.closeEntry()
     }
 
-    /**
-     * A1, B1, ..., Z1, AA1, AB1, ... — 0-based колонка + 1-based строка.
-     */
     internal fun cellRef(colIdx: Int, rowNum: Int): String {
         var col = colIdx
         val letters = StringBuilder()
@@ -207,9 +275,6 @@ object XlsxWriter {
         return "$letters$rowNum"
     }
 
-    /**
-     * Целые без `.0`, дробные с точкой. `2.0` → `2`, `2.5` → `2.5`.
-     */
     internal fun formatNumber(value: Double): String {
         if (value.isNaN() || value.isInfinite()) return "0"
         return if (value == value.toLong().toDouble()) {
@@ -219,10 +284,6 @@ object XlsxWriter {
         }
     }
 
-    /**
-     * XML-escape для `<`, `>`, `&`, `"`, `'`. Также убираем управляющие
-     * символы (Excel их не принимает).
-     */
     internal fun escapeXml(s: String): String {
         if (s.isEmpty()) return s
         val sb = StringBuilder(s.length + 8)
@@ -240,10 +301,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * Excel: имя листа ≤31 символа, без `\ / ? * [ ] :`.
-     * Если после очистки пусто — "SheetN".
-     */
     internal fun sanitizeSheetName(name: String, index: Int): String {
         val cleaned = name.map { c ->
             when (c) {

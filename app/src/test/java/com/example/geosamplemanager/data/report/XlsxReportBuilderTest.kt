@@ -11,8 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 2 (xlsx-cells):
- * Тесты построителя листов из ReportData.
+ * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
+ * Тесты построителя листов с проверкой назначения стилей.
  */
 class XlsxReportBuilderTest {
 
@@ -102,13 +102,13 @@ class XlsxReportBuilderTest {
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
 
-        assertEquals("Отчёт по наряду", cellText(rows[0][0]))
-        assertEquals("Участок:", cellText(rows[1][0]))
-        assertEquals("Актайский", cellText(rows[1][1]))
-        assertEquals("Наряд:", cellText(rows[2][0]))
-        assertEquals("№13", cellText(rows[2][1]))
-        assertEquals("Дата:", cellText(rows[3][0]))
-        assertEquals("29.09.2026 21:00", cellText(rows[3][1]))
+        assertEquals("Отчёт по наряду", cellText(rows[0].cells[0]))
+        assertEquals("Участок:", cellText(rows[1].cells[0]))
+        assertEquals("Актайский", cellText(rows[1].cells[1]))
+        assertEquals("Наряд:", cellText(rows[2].cells[0]))
+        assertEquals("№13", cellText(rows[2].cells[1]))
+        assertEquals("Дата:", cellText(rows[3].cells[0]))
+        assertEquals("29.09.2026 21:00", cellText(rows[3].cells[1]))
     }
 
     @Test
@@ -121,14 +121,14 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
 
         val headerRow = rows[5]
-        assertEquals("п/п", cellText(headerRow[0]))
-        assertEquals("№ пробы", cellText(headerRow[1]))
-        assertEquals("Скважина", cellText(headerRow[2]))
-        assertEquals("Интервал", cellText(headerRow[3]))
-        assertEquals("Вес", cellText(headerRow[4]))
-        assertEquals("Характеристика", cellText(headerRow[5]))
-        assertEquals("Тип", cellText(headerRow[6]))
-        assertEquals("Найдена", cellText(headerRow[7]))
+        assertEquals("п/п", cellText(headerRow.cells[0]))
+        assertEquals("№ пробы", cellText(headerRow.cells[1]))
+        assertEquals("Скважина", cellText(headerRow.cells[2]))
+        assertEquals("Интервал", cellText(headerRow.cells[3]))
+        assertEquals("Вес", cellText(headerRow.cells[4]))
+        assertEquals("Характеристика", cellText(headerRow.cells[5]))
+        assertEquals("Тип", cellText(headerRow.cells[6]))
+        assertEquals("Найдена", cellText(headerRow.cells[7]))
     }
 
     @Test
@@ -151,14 +151,14 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
 
         val dataRow = rows[6]
-        assertEquals(3.0, cellNumber(dataRow[0])!!, 0.0001)
-        assertEquals("NV136703", cellText(dataRow[1]))
-        assertEquals("NV1367", cellText(dataRow[2]))
-        assertEquals("1.5–3.0", cellText(dataRow[3]))
-        assertEquals("2.7", cellText(dataRow[4]))
-        assertEquals("Элювий", cellText(dataRow[5]))
-        assertEquals("Бороздовая", cellText(dataRow[6]))
-        assertEquals("✓", cellText(dataRow[7]))
+        assertEquals(3.0, cellNumber(dataRow.cells[0])!!, 0.0001)
+        assertEquals("NV136703", cellText(dataRow.cells[1]))
+        assertEquals("NV1367", cellText(dataRow.cells[2]))
+        assertEquals("1.5–3.0", cellText(dataRow.cells[3]))
+        assertEquals("2.7", cellText(dataRow.cells[4]))
+        assertEquals("Элювий", cellText(dataRow.cells[5]))
+        assertEquals("Бороздовая", cellText(dataRow.cells[6]))
+        assertEquals("✓", cellText(dataRow.cells[7]))
     }
 
     @Test
@@ -173,8 +173,8 @@ class XlsxReportBuilderTest {
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
         val dataRow = rows[6]
-        assertEquals("Холостая", cellText(dataRow[6]))
-        assertEquals("", cellText(dataRow[7]))
+        assertEquals("Холостая", cellText(dataRow.cells[6]))
+        assertEquals("", cellText(dataRow.cells[7]))
     }
 
     @Test
@@ -188,7 +188,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("Весовой контроль", cellText(rows[6][6]))
+        assertEquals("Весовой контроль", cellText(rows[6].cells[6]))
     }
 
     @Test
@@ -198,7 +198,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("2.5 (2.3)", cellText(rows[6][4]))
+        assertEquals("2.5 (2.3)", cellText(rows[6].cells[4]))
     }
 
     @Test
@@ -208,7 +208,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("—", cellText(rows[6][4]))
+        assertEquals("—", cellText(rows[6].cells[4]))
     }
 
     @Test
@@ -218,7 +218,59 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("—", cellText(rows[6][3]))
+        assertEquals("—", cellText(rows[6].cells[3]))
+    }
+
+    // ================================================================
+    // Стили
+    // ================================================================
+
+    @Test
+    fun titleRowStyleIsBold() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.BOLD, rows[0].styleId)
+    }
+
+    @Test
+    fun tableHeaderStyleIsHeader() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.HEADER, rows[5].styleId)
+    }
+
+    @Test
+    fun foundRowStyle() {
+        val row = makeRow(found = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.FOUND, rows[6].styleId)
+    }
+
+    @Test
+    fun blankRowStyle() {
+        val row = makeRow(status = SampleStatus.BLANK, found = false)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.BLANK, rows[6].styleId)
+    }
+
+    @Test
+    fun postponedRowStyle() {
+        val row = makeRow(found = false, postponed = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.POSTPONED, rows[6].styleId)
     }
 
     // ================================================================
@@ -267,16 +319,16 @@ class XlsxReportBuilderTest {
         )
         val appRows = XlsxReportBuilder.build(data)[1].rows
 
-        assertEquals("Приложения", cellText(appRows[0][0]))
-        assertEquals("Приложение 1", cellText(appRows[2][0]))
-        assertEquals("№ пробы:", cellText(appRows[3][0]))
-        assertEquals("NV136601", cellText(appRows[3][1]))
-        assertEquals("Скважина:", cellText(appRows[4][0]))
-        assertEquals("NV1366", cellText(appRows[4][1]))
-        assertEquals("Заметка:", cellText(appRows[5][0]))
-        assertEquals("Дубль", cellText(appRows[5][1]))
-        assertEquals("Фото:", cellText(appRows[6][0]))
-        assertEquals("1 шт.", cellText(appRows[6][1]))
+        assertEquals("Приложения", cellText(appRows[0].cells[0]))
+        assertEquals("Приложение 1", cellText(appRows[2].cells[0]))
+        assertEquals("№ пробы:", cellText(appRows[3].cells[0]))
+        assertEquals("NV136601", cellText(appRows[3].cells[1]))
+        assertEquals("Скважина:", cellText(appRows[4].cells[0]))
+        assertEquals("NV1366", cellText(appRows[4].cells[1]))
+        assertEquals("Заметка:", cellText(appRows[5].cells[0]))
+        assertEquals("Дубль", cellText(appRows[5].cells[1]))
+        assertEquals("Фото:", cellText(appRows[6].cells[0]))
+        assertEquals("1 шт.", cellText(appRows[6].cells[1]))
     }
 
     @Test
@@ -301,8 +353,7 @@ class XlsxReportBuilderTest {
             )
         )
         val appRows = XlsxReportBuilder.build(data)[1].rows
-        // Проверяем, что оба приложения в листе
-        val text = appRows.flatten().mapNotNull { cellText(it) }.joinToString("|")
+        val text = appRows.flatMap { it.cells }.mapNotNull { cellText(it) }.joinToString("|")
         assertTrue(text.contains("Приложение 1"))
         assertTrue(text.contains("Приложение 2"))
         assertTrue(text.contains("NV136601"))
@@ -334,7 +385,6 @@ class XlsxReportBuilderTest {
         assertEquals('P'.code.toByte(), bytes[0])
         assertEquals('K'.code.toByte(), bytes[1])
 
-        // Проверим, что оба листа в архиве
         val names = mutableListOf<String>()
         java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
             var e = zip.nextEntry
@@ -346,5 +396,6 @@ class XlsxReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet1.xml"))
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
+        assertNotNull(names.find { it == "xl/styles.xml" })
     }
 }
