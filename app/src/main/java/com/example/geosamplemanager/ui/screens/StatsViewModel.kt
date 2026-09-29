@@ -30,14 +30,13 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-charts-3:
- *  - drill stack: Root / Category / SubCategory / Well.
- *  - wellFilter — фильтр по номеру скважины на уровне скважин.
- *  - Сброс drill при смене наряда.
- *
- * ВАЖНО: этот ViewModel НЕ знает про CategoryKey/SubKey —
- * stack хранит готовые DrillLevel. Фильтрация проб по стеку
- * делается чистой функцией filterRowsByDrillStack в StatsCharts.kt.
+ * FIX 5.9-stats-fixes:
+ *  - selectedAreaId: Long? — выбор участка в дереве.
+ *  - selectArea(areaId) — устанавливает выбор области (сбрасывает наряд).
+ *  - selectOrder(orderId) — устанавливает выбор наряда (сбрасывает область).
+ *  - clearSelection() — сбрасывает оба.
+ *  - findArea(areaId): StatsAreaUi? — поиск по дереву.
+ *  - pruneSelected — при удалении области тоже сбрасываем выбор.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -64,6 +63,9 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedOrderId = MutableStateFlow<Long?>(null)
     val selectedOrderId: StateFlow<Long?> = _selectedOrderId.asStateFlow()
+
+    private val _selectedAreaId = MutableStateFlow<Long?>(null)
+    val selectedAreaId: StateFlow<Long?> = _selectedAreaId.asStateFlow()
 
     private val _drillStack = MutableStateFlow<List<DrillLevel>>(emptyList())
     val drillStack: StateFlow<List<DrillLevel>> = _drillStack.asStateFlow()
@@ -130,11 +132,21 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun pruneSelected(raw: StatsData) {
-        val sel = _selectedOrderId.value ?: return
-        val exists = raw.areas.any { area -> area.orders.any { it.orderId == sel } }
-        if (!exists) {
-            _selectedOrderId.value = null
-            resetDrill()
+        val selOrder = _selectedOrderId.value
+        if (selOrder != null) {
+            val exists = raw.areas.any { area -> area.orders.any { it.orderId == selOrder } }
+            if (!exists) {
+                _selectedOrderId.value = null
+                resetDrill()
+            }
+        }
+
+        val selArea = _selectedAreaId.value
+        if (selArea != null) {
+            val exists = raw.areas.any { it.areaId == selArea }
+            if (!exists) {
+                _selectedAreaId.value = null
+            }
         }
     }
 
@@ -189,8 +201,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = emptySet()
     }
 
+    /**
+     * FIX 5.9-stats-fixes: выбрать наряд (и сбросить выбор участка).
+     */
     fun selectOrder(orderId: Long) {
         _selectedOrderId.value = orderId
+        _selectedAreaId.value = null
         resetDrill()
         val area = _data.value?.areas?.firstOrNull { a ->
             a.orders.any { it.orderId == orderId }
@@ -199,8 +215,20 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value + orderId
     }
 
+    /**
+     * FIX 5.9-stats-fixes: выбрать участок (и сбросить выбор наряда).
+     */
+    fun selectArea(areaId: Long) {
+        _selectedAreaId.value = areaId
+        _selectedOrderId.value = null
+        resetDrill()
+        // Раскрываем участок, чтобы сразу видеть его наряды.
+        _expandedAreaIds.value = _expandedAreaIds.value + areaId
+    }
+
     fun clearSelection() {
         _selectedOrderId.value = null
+        _selectedAreaId.value = null
         resetDrill()
     }
 
@@ -208,6 +236,10 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         return rawData?.areas?.asSequence()
             ?.flatMap { it.orders.asSequence() }
             ?.firstOrNull { it.orderId == orderId }
+    }
+
+    fun findArea(areaId: Long): StatsAreaUi? {
+        return rawData?.areas?.firstOrNull { it.areaId == areaId }
     }
 
     fun findAreaNameFor(orderId: Long): String? {
