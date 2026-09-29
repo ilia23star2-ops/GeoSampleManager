@@ -7,7 +7,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -35,12 +34,13 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-fixes:
- *  - Левая панель: скролл + FAB «Наверх» (порог >8).
- *  - Тап по строке участка — выбрать участок (подсветка).
- *    Тап по стрелке — раскрыть/свернуть.
- *  - Правая панель: если выбран наряд — сводка наряда (как раньше).
- *    Если выбран участок — сводка участка (общая статистика + наряды).
+ * FIX 5.9-stats-fixes: скролл левой панели + сводка участка.
+ *
+ * FIX 5.9-stats-compare:
+ *  - Кнопка «Сравнить» в правой панели наряда открывает CompareDialog.
+ *
+ * FIX 5.9-stats-compare-2:
+ *  - CompareTarget.Order требует поле status — передаём computeOrderStatus.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -60,6 +60,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val snackbarHostState = remember { SnackbarHostState() }
 
     var pendingOrderIdForReport by remember { mutableStateOf<Long?>(null) }
+    var compareLeft by remember { mutableStateOf<CompareTarget?>(null) }
 
     val htmlLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/html")
@@ -135,6 +136,14 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     onPopToIndex = { viewModel.popToIndex(it) },
                     onResetDrill = { viewModel.resetDrill() },
                     onWellFilterChange = { viewModel.setWellFilter(it) },
+                    onCompareClick = { order ->
+                        compareLeft = CompareTarget.Order(
+                            id = "order_${order.orderId}",
+                            displayTitle = "Наряд №${order.orderNumber}",
+                            subtitle = viewModel.findAreaNameFor(order.orderId).orEmpty(),
+                            status = computeOrderStatus(order.stats)
+                        )
+                    },
                     onReportHtml = { orderId ->
                         pendingOrderIdForReport = orderId
                         val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
@@ -186,6 +195,14 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     onPopToIndex = { viewModel.popToIndex(it) },
                     onResetDrill = { viewModel.resetDrill() },
                     onWellFilterChange = { viewModel.setWellFilter(it) },
+                    onCompareClick = { o ->
+                        compareLeft = CompareTarget.Order(
+                            id = "order_${o.orderId}",
+                            displayTitle = "Наряд №${o.orderNumber}",
+                            subtitle = viewModel.findAreaNameFor(o.orderId).orEmpty(),
+                            status = computeOrderStatus(o.stats)
+                        )
+                    },
                     onReportHtml = { orderId ->
                         pendingOrderIdForReport = orderId
                         val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
@@ -201,6 +218,16 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
+        )
+    }
+
+    val left = compareLeft
+    if (left != null) {
+        CompareDialog(
+            data = current,
+            initialLeft = left,
+            initialRight = null,
+            onDismiss = { compareLeft = null }
         )
     }
 }
@@ -653,6 +680,7 @@ private fun RightDetailsPanel(
     onPopToIndex: (Int) -> Unit,
     onResetDrill: () -> Unit,
     onWellFilterChange: (String) -> Unit,
+    onCompareClick: (StatsOrderUi) -> Unit,
     onReportHtml: (Long) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
@@ -670,6 +698,7 @@ private fun RightDetailsPanel(
             onPopToIndex = onPopToIndex,
             onResetDrill = onResetDrill,
             onWellFilterChange = onWellFilterChange,
+            onCompareClick = { onCompareClick(order) },
             onReportHtml = onReportHtml,
             snackbarHostState = snackbarHostState,
             modifier = modifier
@@ -915,6 +944,7 @@ private fun OrderDetailsPanel(
     onPopToIndex: (Int) -> Unit,
     onResetDrill: () -> Unit,
     onWellFilterChange: (String) -> Unit,
+    onCompareClick: () -> Unit,
     onReportHtml: (Long) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
@@ -979,9 +1009,7 @@ private fun OrderDetailsPanel(
                     }
                     Spacer(Modifier.width(6.dp))
                     OutlinedButton(
-                        onClick = {
-                            scope.launch { snackbarHostState.showSnackbar("Сравнение — в разработке") }
-                        },
+                        onClick = onCompareClick,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Icon(
