@@ -793,23 +793,36 @@ fun ConfirmResetWeightControlDialog(
 // Массовая отметка
 // ====================================================================
 
+/**
+ * FIX 5.9-bulk-confirm-2:
+ * Три секции:
+ *   1. ВК без веса — ввод controlWeight.
+ *   2. Холостые без веса — ввод weight (раньше их не было).
+ *   3. Отложенные — галка «отметить как найденную».
+ *
+ * onApply получает три мапы.
+ */
 @Composable
 fun BulkActionsDialog(
     decisions: List<ReconciliationState.BulkDecision>,
     onApply: (
-        weights: Map<String, Double>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val weights = remember { mutableStateMapOf<String, String>() }
+    val controlWeights = remember { mutableStateMapOf<String, String>() }
+    val blankWeights = remember { mutableStateMapOf<String, String>() }
     val postponedMark = remember { mutableStateMapOf<String, Boolean>() }
 
     LaunchedEffect(decisions) {
         decisions.forEach { d ->
             when (d) {
                 is ReconciliationState.BulkDecision.WeightControlNeedsWeight ->
-                    weights.putIfAbsent(d.row.id, "")
+                    controlWeights.putIfAbsent(d.row.id, "")
+                is ReconciliationState.BulkDecision.BlankNeedsWeight ->
+                    blankWeights.putIfAbsent(d.row.id, "")
                 is ReconciliationState.BulkDecision.PostponedNeedsAction ->
                     postponedMark.putIfAbsent(d.row.id, false)
             }
@@ -818,6 +831,9 @@ fun BulkActionsDialog(
 
     val vkCount = decisions.count {
         it is ReconciliationState.BulkDecision.WeightControlNeedsWeight
+    }
+    val blankCount = decisions.count {
+        it is ReconciliationState.BulkDecision.BlankNeedsWeight
     }
     val postCount = decisions.count {
         it is ReconciliationState.BulkDecision.PostponedNeedsAction
@@ -830,7 +846,7 @@ fun BulkActionsDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -848,27 +864,27 @@ fun BulkActionsDialog(
                     )
                     decisions.filterIsInstance<ReconciliationState.BulkDecision.WeightControlNeedsWeight>()
                         .forEach { d ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(d.row.sampleNumber,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium)
-                                    Text("скв. ${d.row.wellNumber}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                OutlinedTextField(
-                                    value = weights[d.row.id] ?: "",
-                                    onValueChange = { weights[d.row.id] = it },
-                                    label = { Text("Вес, кг") },
-                                    singleLine = true,
-                                    modifier = Modifier.width(120.dp)
-                                )
-                            }
+                            WeightInputRow(
+                                row = d.row,
+                                value = controlWeights[d.row.id] ?: "",
+                                onValueChange = { controlWeights[d.row.id] = it }
+                            )
+                        }
+                }
+
+                if (blankCount > 0) {
+                    Text(
+                        "Холостые без веса ($blankCount):",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    decisions.filterIsInstance<ReconciliationState.BulkDecision.BlankNeedsWeight>()
+                        .forEach { d ->
+                            WeightInputRow(
+                                row = d.row,
+                                value = blankWeights[d.row.id] ?: "",
+                                onValueChange = { blankWeights[d.row.id] = it }
+                            )
                         }
                 }
 
@@ -913,16 +929,54 @@ fun BulkActionsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val wMap = weights.mapNotNull { (k, v) ->
-                    v.replace(',', '.').toDoubleOrNull()
-                        ?.let { if (it > 0) k to it else null }
-                }.toMap()
+                val cw = parseWeightsMap(controlWeights)
+                val bw = parseWeightsMap(blankWeights)
                 val pMap = postponedMark.toMap()
-                onApply(wMap, pMap)
+                onApply(cw, bw, pMap)
             }) { Text("Применить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
+}
+
+@Composable
+private fun WeightInputRow(
+    row: SampleRow,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                row.sampleNumber,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                "скв. ${row.wellNumber}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text("Вес, кг") },
+            singleLine = true,
+            modifier = Modifier.width(120.dp)
+        )
+    }
+}
+
+private fun parseWeightsMap(raw: Map<String, String>): Map<String, Double> {
+    return raw.mapNotNull { (k, v) ->
+        v.replace(',', '.').toDoubleOrNull()
+            ?.let { if (it > 0) k to it else null }
+    }.toMap()
 }
 
 // ====================================================================
@@ -1018,15 +1072,6 @@ fun ImportErrorDialog(
     )
 }
 
-/**
- * FIX 5.9-sverka-fixes (C):
- * Переработан по образцу AlreadyFoundDialog — список действий.
- *
- *   • «Отметить как найденную» — снимает postponed и ставит found=true.
- *   • «Снять отложенную» — снимает postponed, проба остаётся ненайденной.
- *   • «Заметка и фото» — если есть заметка/фото.
- *   • «Редактировать пробу» — открывает редактор.
- */
 @Composable
 fun PostponedDialog(
     row: SampleRow,
