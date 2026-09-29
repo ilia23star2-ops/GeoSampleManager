@@ -11,8 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
- * Тесты построителя листов с проверкой назначения стилей.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
+ * Тесты построителя с гиперссылками.
  */
 class XlsxReportBuilderTest {
 
@@ -129,6 +129,7 @@ class XlsxReportBuilderTest {
         assertEquals("Характеристика", cellText(headerRow.cells[5]))
         assertEquals("Тип", cellText(headerRow.cells[6]))
         assertEquals("Найдена", cellText(headerRow.cells[7]))
+        assertEquals("Прил.", cellText(headerRow.cells[8]))
     }
 
     @Test
@@ -274,6 +275,88 @@ class XlsxReportBuilderTest {
     }
 
     // ================================================================
+    // Гиперссылки
+    // ================================================================
+
+    @Test
+    fun orderSheetHasAppendixColumnHeader() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("Прил.", cellText(rows[5].cells[8]))
+    }
+
+    @Test
+    fun noAppendixCellDashWhenNoAppendix() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val sheet = XlsxReportBuilder.build(data)[0]
+        assertEquals("—", cellText(sheet.rows[6].cells[8]))
+        assertTrue(sheet.hyperlinks.isEmpty())
+    }
+
+    @Test
+    fun orderHyperlinkForSampleWithNote() {
+        val row = makeRow(sample = "NV136601", hasNote = true)
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row, note = ReportNote("x"), photos = emptyList())
+            )
+        )
+        val sheet = XlsxReportBuilder.build(data)[0]
+        assertEquals("Прил. 1", cellText(sheet.rows[6].cells[8]))
+        assertEquals(1, sheet.hyperlinks.size)
+        val h = sheet.hyperlinks[0]
+        assertEquals("I7", h.ref)
+        assertTrue(h.location.contains("Приложения"))
+        assertTrue(h.location.contains("A3"))
+    }
+
+    @Test
+    fun orderHyperlinkCellHasLinkStyle() {
+        val row = makeRow(sample = "NV136601", hasNote = true)
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row, note = ReportNote("x"), photos = emptyList())
+            )
+        )
+        val cells = XlsxReportBuilder.build(data)[0].rows[6].cells
+        val appCell = cells[8] as XlsxCell.Text
+        assertEquals(XlsxStyles.LINK, appCell.styleId)
+    }
+
+    @Test
+    fun appendixSheetHasBackLink() {
+        val row = makeRow(sample = "NV136601", hasNote = true)
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row, note = ReportNote("x"), photos = emptyList())
+            )
+        )
+        val sheets = XlsxReportBuilder.build(data)
+        assertEquals(2, sheets.size)
+        val appSheet = sheets[1]
+        assertEquals(1, appSheet.hyperlinks.size)
+        val h = appSheet.hyperlinks[0]
+        assertTrue(h.ref.startsWith("A"))
+        assertTrue(h.location.contains("Наряд"))
+        assertTrue(h.location.contains("B7"))
+    }
+
+    @Test
+    fun orderRowHasNineCells() {
+        val row = makeRow()
+        val data = makeReport(
+            samples = listOf(ReportSample(row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(9, rows[6].cells.size)
+        assertEquals(9, rows[5].cells.size)
+    }
+
+    // ================================================================
     // Лист 2 — приложения
     // ================================================================
 
@@ -329,6 +412,7 @@ class XlsxReportBuilderTest {
         assertEquals("Дубль", cellText(appRows[5].cells[1]))
         assertEquals("Фото:", cellText(appRows[6].cells[0]))
         assertEquals("1 шт.", cellText(appRows[6].cells[1]))
+        assertEquals("↩ К пробе NV136601", cellText(appRows[7].cells[0]))
     }
 
     @Test

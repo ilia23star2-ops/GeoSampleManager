@@ -9,8 +9,8 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
- * Тесты генератора с поддержкой стилей.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
+ * Тесты генератора с гиперссылками и переопределением стилей.
  */
 class XlsxWriterTest {
 
@@ -39,9 +39,7 @@ class XlsxWriterTest {
             listOf(
                 XlsxSheet(
                     name = "Test",
-                    rows = listOf(
-                        XlsxRow(listOf(XlsxCell.Text("Hello")))
-                    )
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("Hello"))))
                 )
             )
         )
@@ -155,12 +153,25 @@ class XlsxWriterTest {
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        assertTrue(styles.contains("<cellXfs count=\"8\">"))
+        assertTrue(styles.contains("<cellXfs count=\"9\">"))
         assertTrue(styles.contains("A5D6A7"))
         assertTrue(styles.contains("EF9A9A"))
         assertTrue(styles.contains("90CAF9"))
         assertTrue(styles.contains("FFF59D"))
         assertTrue(styles.contains("CE93D8"))
+    }
+
+    @Test
+    fun stylesXmlContainsLinkFont() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        assertTrue(styles.contains("<fonts count=\"3\">"))
+        assertTrue(styles.contains("FF1976D2"))
+        assertTrue(styles.contains("<u/>"))
     }
 
     @Test
@@ -196,6 +207,63 @@ class XlsxWriterTest {
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertFalse(sheet.contains("s=\"0\""))
+    }
+
+    @Test
+    fun cellStyleOverridesRowStyle() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(
+                            listOf(
+                                XlsxCell.Text("plain"),
+                                XlsxCell.Text("link", styleId = XlsxStyles.LINK)
+                            ),
+                            styleId = XlsxStyles.FOUND
+                        )
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("r=\"A1\" s=\"3\""))
+        assertTrue(sheet.contains("r=\"B1\" s=\"8\""))
+    }
+
+    @Test
+    fun hyperlinkWrittenToSheet() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("Go")))),
+                    hyperlinks = listOf(
+                        XlsxHyperlink(ref = "A1", location = "'Other'!B2")
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<hyperlinks>"))
+        assertTrue(sheet.contains("ref=\"A1\""))
+        assertTrue(sheet.contains("location="))
+        assertTrue(sheet.contains("!B2"))
+    }
+
+    @Test
+    fun noHyperlinksSectionWhenNone() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertFalse(sheet.contains("<hyperlinks>"))
     }
 
     @Test

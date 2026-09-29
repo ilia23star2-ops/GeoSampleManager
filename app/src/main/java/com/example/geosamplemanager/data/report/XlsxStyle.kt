@@ -3,8 +3,8 @@ package com.example.geosamplemanager.data.report
 import com.example.geosamplemanager.ui.screens.SampleRow
 
 /**
- * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
- * Модель стилей .xlsx и палитра.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
+ * Добавлен стиль LINK — синий текст с подчёркиванием.
  *
  * Индексы стилей (styleId) фиксированы и соответствуют
  * порядку записей в xl/styles.xml.
@@ -17,7 +17,9 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 data class StyleDef(
     val bold: Boolean = false,
     val fillColor: String? = null,
-    val border: Boolean = false
+    val border: Boolean = false,
+    val fontColor: String? = null,
+    val underline: Boolean = false
 )
 
 object XlsxStyles {
@@ -30,17 +32,19 @@ object XlsxStyles {
     const val POSTPONED = 5
     const val BLANK = 6
     const val CONTROL = 7
+    const val LINK = 8
 
     /** Все определения по порядку индексов. */
     val all: List<StyleDef> = listOf(
-        StyleDef(),                                    // 0 DEFAULT
-        StyleDef(bold = true),                         // 1 BOLD
+        StyleDef(),                                        // 0 DEFAULT
+        StyleDef(bold = true),                             // 1 BOLD
         StyleDef(bold = true, fillColor = "F0F0F0", border = true), // 2 HEADER
-        StyleDef(fillColor = "A5D6A7", border = true), // 3 FOUND
-        StyleDef(fillColor = "EF9A9A", border = true), // 4 ERROR
-        StyleDef(fillColor = "90CAF9", border = true), // 5 POSTPONED
-        StyleDef(fillColor = "FFF59D", border = true), // 6 BLANK
-        StyleDef(fillColor = "CE93D8", border = true)  // 7 CONTROL
+        StyleDef(fillColor = "A5D6A7", border = true),     // 3 FOUND
+        StyleDef(fillColor = "EF9A9A", border = true),     // 4 ERROR
+        StyleDef(fillColor = "90CAF9", border = true),     // 5 POSTPONED
+        StyleDef(fillColor = "FFF59D", border = true),     // 6 BLANK
+        StyleDef(fillColor = "CE93D8", border = true),     // 7 CONTROL
+        StyleDef(fontColor = "1976D2", underline = true, border = true) // 8 LINK
     )
 
     /**
@@ -54,5 +58,23 @@ object XlsxStyles {
         row.isBlank -> BLANK
         row.weightControl -> CONTROL
         else -> DEFAULT
+    }
+
+    /** Индекс шрифта для стиля: 0 — обычный, 1 — жирный, 2 — ссылка. */
+    internal fun fontIdFor(def: StyleDef): Int = when {
+        def.fontColor != null || def.underline -> 2
+        def.bold -> 1
+        else -> 0
+    }
+
+    /** Индекс fill для стиля. */
+    internal fun fillIdFor(def: StyleDef): Int = when (def.fillColor) {
+        "F0F0F0" -> 2
+        "A5D6A7" -> 3
+        "EF9A9A" -> 4
+        "90CAF9" -> 5
+        "FFF59D" -> 6
+        "CE93D8" -> 7
+        else -> 0
     }
 }

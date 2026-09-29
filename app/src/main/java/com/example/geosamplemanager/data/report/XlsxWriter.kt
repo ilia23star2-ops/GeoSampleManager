@@ -5,14 +5,15 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 3 (xlsx-styles):
- * Добавлена поддержка стилей (xl/styles.xml) и строк со стилями.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
+ * Добавлена поддержка внутренних гиперссылок.
  *
- * Изменения относительно подзахода 1:
- *  - XlsxSheet.rows теперь List<XlsxRow>, а не List<List<XlsxCell>>.
- *  - XlsxRow хранит styleId для всей строки.
- *  - Пишется xl/styles.xml с фиксированным набором стилей.
- *  - Каждая ячейка получает атрибут s="N", если стиль не DEFAULT.
+ * Изменения относительно подзахода 3:
+ *  - XlsxCell.Text/Number получили необязательный styleId —
+ *    переопределение стиля на уровне ячейки (нужно для колонки «Прил.»).
+ *  - XlsxSheet.hyperlinks — список внутренних ссылок (location).
+ *  - В sheetN.xml после <sheetData> пишется <hyperlinks>.
+ *  - В xl/styles.xml добавлен третий шрифт (синий + подчёркивание).
  */
 
 // ====================================================================
@@ -20,14 +21,23 @@ import java.util.zip.ZipOutputStream
 // ====================================================================
 
 sealed class XlsxCell {
+    /** Переопределение стиля ячейки. null — использовать стиль строки. */
+    open val styleId: Int? get() = null
+
     /** Текст. Пишется как inlineStr (см. sheetN.xml). */
-    data class Text(val value: String) : XlsxCell()
+    data class Text(
+        val value: String,
+        override val styleId: Int? = null
+    ) : XlsxCell()
 
     /**
      * Число. Целые пишутся без `.0` (2, а не 2.0).
      * Дробные — с точкой (2.5).
      */
-    data class Number(val value: Double) : XlsxCell()
+    data class Number(
+        val value: Double,
+        override val styleId: Int? = null
+    ) : XlsxCell()
 
     /** Пустая ячейка. В XML не пишется вообще. */
     data object Empty : XlsxCell()
@@ -43,11 +53,23 @@ data class XlsxRow(
 )
 
 /**
+ * Внутренняя гиперссылка на ячейку другого листа книги.
+ *
+ * @param ref  — ячейка-источник, например "I7".
+ * @param location — цель в нотации Excel, например "'Приложения'!A3".
+ */
+data class XlsxHyperlink(
+    val ref: String,
+    val location: String
+)
+
+/**
  * Лист. Порядок строк и ячеек сохраняется как есть.
  */
 data class XlsxSheet(
     val name: String,
-    val rows: List<XlsxRow>
+    val rows: List<XlsxRow>,
+    val hyperlinks: List<XlsxHyperlink> = emptyList()
 )
 
 // ====================================================================
@@ -67,7 +89,8 @@ object XlsxWriter {
         val sanitized = sheets.mapIndexed { idx, s ->
             XlsxSheet(
                 name = sanitizeSheetName(s.name, idx + 1),
-                rows = s.rows
+                rows = s.rows,
+                hyperlinks = s.hyperlinks
             )
         }
 
@@ -157,10 +180,11 @@ object XlsxWriter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
 
-        // fonts
-        sb.append("<fonts count=\"2\">")
+        // fonts: 0 — обычный, 1 — жирный, 2 — ссылка (синий + подчёркивание)
+        sb.append("<fonts count=\"3\">")
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
+        sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/><name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
         // fills: 0 — none, 1 — gray125 (обязательные), далее — наши цвета
@@ -195,8 +219,8 @@ object XlsxWriter {
         sb.append("<cellXfs count=\"").append(styles.size).append("\">")
         styles.forEach { def ->
             sb.append("<xf numFmtId=\"0\" ")
-            sb.append("fontId=\"").append(if (def.bold) 1 else 0).append("\" ")
-            sb.append("fillId=\"").append(fillIdFor(def)).append("\" ")
+            sb.append("fontId=\"").append(XlsxStyles.fontIdFor(def)).append("\" ")
+            sb.append("fillId=\"").append(XlsxStyles.fillIdFor(def)).append("\" ")
             sb.append("borderId=\"").append(if (def.border) 1 else 0).append("\" ")
             sb.append("xfId=\"0\"/>")
         }
@@ -204,18 +228,6 @@ object XlsxWriter {
 
         sb.append("</styleSheet>")
         return sb.toString()
-    }
-
-    private fun fillIdFor(def: StyleDef): Int {
-        return when {
-            def.fillColor == "F0F0F0" -> 2
-            def.fillColor == "A5D6A7" -> 3
-            def.fillColor == "EF9A9A" -> 4
-            def.fillColor == "90CAF9" -> 5
-            def.fillColor == "FFF59D" -> 6
-            def.fillColor == "CE93D8" -> 7
-            else -> 0
-        }
     }
 
     private fun buildSheet(sheet: XlsxSheet): String {
@@ -229,8 +241,9 @@ object XlsxWriter {
             row.cells.forEachIndexed { colIdx, cell ->
                 if (cell is XlsxCell.Empty) return@forEachIndexed
                 val ref = cellRef(colIdx, rowNum)
-                val styleAttr = if (row.styleId != XlsxStyles.DEFAULT)
-                    " s=\"${row.styleId}\"" else ""
+                val effectiveStyle = cell.styleId ?: row.styleId
+                val styleAttr = if (effectiveStyle != XlsxStyles.DEFAULT)
+                    " s=\"$effectiveStyle\"" else ""
                 when (cell) {
                     is XlsxCell.Text -> {
                         sb.append("<c r=\"").append(ref).append("\"").append(styleAttr)
@@ -249,6 +262,17 @@ object XlsxWriter {
             sb.append("</row>")
         }
         sb.append("</sheetData>")
+
+        // Гиперссылки — после sheetData, до закрытия worksheet.
+        if (sheet.hyperlinks.isNotEmpty()) {
+            sb.append("<hyperlinks>")
+            sheet.hyperlinks.forEach { h ->
+                sb.append("<hyperlink ref=\"").append(h.ref).append("\" ")
+                sb.append("location=\"").append(escapeXml(h.location)).append("\"/>")
+            }
+            sb.append("</hyperlinks>")
+        }
+
         sb.append("</worksheet>")
         return sb.toString()
     }
