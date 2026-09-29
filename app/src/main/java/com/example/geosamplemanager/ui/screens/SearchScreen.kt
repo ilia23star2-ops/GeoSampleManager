@@ -50,9 +50,12 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * FIX 5.8.11-e4-ui-1:
- * Порог появления кнопки «Наверх». Показываем, если прокрутили
- * больше 10 элементов списка (firstVisibleItemIndex > 10).
+ * FIX 5.9-search-bulk:
+ *  - «Отметить все» и «Сбросить все» в заголовке группы теперь
+ *    работают только с ВИДИМЫМИ строками (учитывают поиск и фильтры).
+ *  - Для этого сохранены rowIds в момент клика.
+ *  - confirmClearAllGroupId заменён на clearAllData: Pair<groupId, rowIds>.
+ *  - bulkDialogGroupId + bulkDialogRowIds — для диалога массовых.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -95,15 +98,12 @@ fun SearchScreen(
     val state = viewModel.state
     val context = LocalContext.current
 
-    // FIX 5.8.9e-3: не даём экрану гаснуть, пока сессия ГП активна.
     val view = LocalView.current
     DisposableEffect(state.voiceStatus) {
         view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
         onDispose { view.keepScreenOn = false }
     }
 
-    // FIX 5.8.11-e4-ui-1: состояние скролла списка проб
-    // + флаг показа кнопки «Наверх».
     val listState = rememberLazyListState()
     val showScrollTop by remember {
         derivedStateOf { shouldShowScrollTop(listState.firstVisibleItemIndex) }
@@ -121,8 +121,12 @@ fun SearchScreen(
     var settingsOrderTitle by remember { mutableStateOf<String?>(null) }
     var confirmResetBlankWeight by remember { mutableStateOf(false) }
     var confirmResetWeightControl by remember { mutableStateOf(false) }
+
+    // FIX 5.9-search-bulk: массовые операции — только по видимым строкам.
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
-    var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
+    var bulkDialogRowIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
 
@@ -249,9 +253,6 @@ fun SearchScreen(
         notePhotos = photos
     }
 
-    /**
-     * FIX 5.8.9d-3b: единый алгоритм через analyzeMark.
-     */
     fun onToggleFound(row: SampleRow) {
         val decision = analyzeMark(toMarkContext(state, row))
         when (decision) {
@@ -281,19 +282,32 @@ fun SearchScreen(
         }
     }
 
+    /**
+     * FIX 5.9-search-bulk: «Отметить все» в заголовке группы работает
+     * только по ВИДИМЫМ строкам (с учётом поиска и фильтров).
+     * rowIds фиксируются в момент клика.
+     */
     fun onMarkAllClick(groupId: String) {
-        val decisions = state.collectBulkDecisions(groupId)
+        val rowIds = state.visibleRowsForGroup(groupId).map { it.id }.toSet()
+        if (rowIds.isEmpty()) {
+            scope.launch { snackbarHostState.showSnackbar("Нечего отмечать") }
+            return
+        }
+        val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
-            val marked = viewModel.applyBulkMarkFound(groupId, emptyMap(), emptyMap())
+            val marked = viewModel.applyBulkMarkFoundForRows(
+                groupId, rowIds, emptyMap(), emptyMap()
+            )
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
-        } else bulkDialogGroupId = groupId
+        } else {
+            bulkDialogGroupId = groupId
+            bulkDialogRowIds = rowIds
+        }
     }
 
     val isMulti = state.isMultiQuery
     val items by remember {
         derivedStateOf {
-            // FIX 5.8.6-5f: явные чтения State — гарантия, что
-            // derivedStateOf подписан на изменения _groups и _queryGroups.
             @Suppress("UNUSED_EXPRESSION")
             state.groups.toList()
             @Suppress("UNUSED_EXPRESSION")
@@ -319,7 +333,6 @@ fun SearchScreen(
             HorizontalDivider()
 
             LazyColumn(
-                // FIX 5.8.11-e4-ui-1: state для кнопки «Наверх».
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
@@ -442,7 +455,12 @@ fun SearchScreen(
                                         )
                                     },
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
-                                    onClearAllClick = { confirmClearAllGroupId = item.group.id },
+                                    onClearAllClick = {
+                                        val rowIds = state.visibleRowsForGroup(item.group.id)
+                                            .map { it.id }
+                                            .toSet()
+                                        clearAllData = item.group.id to rowIds
+                                    },
                                     onAddSample = {
                                         scope.launch {
                                             snackbarHostState.showSnackbar("Добавить пробу — в разработке")
@@ -489,8 +507,6 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.8.10-g2 (И-3):
-        // Snackbar поднят на 100 dp — не перекрывает панель ГП.
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
@@ -498,10 +514,6 @@ fun SearchScreen(
                 .padding(bottom = 100.dp, start = 16.dp, end = 16.dp)
         )
 
-        // FIX 5.8.11-e4-ui-1:
-        // Кнопка «Наверх». Появляется, если в списке прокрутили больше
-        // 10 элементов. Маленькая, внизу справа, над панелью ГП.
-        // Скролл — мгновенный (scrollToItem, не animateScrollToItem).
         if (showScrollTop) {
             SmallFloatingActionButton(
                 onClick = {
@@ -520,8 +532,6 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.8.10-g1/g2 (И-3):
-        // Панель ГП — немодальная, прижата к низу экрана.
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
@@ -740,38 +750,52 @@ fun SearchScreen(
         )
     }
 
+    // FIX 5.9-search-bulk: массовая отметка — только по видимым.
     bulkDialogGroupId?.let { gid ->
-        val decisions = state.collectBulkDecisions(gid)
+        val rowIds = bulkDialogRowIds
+        val decisions = state.collectBulkDecisionsForRows(gid, rowIds)
         BulkActionsDialog(
             decisions = decisions,
             onApply = { weights, postponedActions ->
-                val marked = viewModel.applyBulkMarkFound(gid, weights, postponedActions)
+                val marked = viewModel.applyBulkMarkFoundForRows(
+                    gid, rowIds, weights, postponedActions
+                )
                 bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
                 scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
             },
-            onDismiss = { bulkDialogGroupId = null }
+            onDismiss = {
+                bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
+            }
         )
     }
 
-    confirmClearAllGroupId?.let { gid ->
+    // FIX 5.9-search-bulk: сброс — только по видимым.
+    clearAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
         if (group != null) {
+            val n = rowIds.size
             AlertDialog(
-                onDismissRequest = { confirmClearAllGroupId = null },
-                title = { Text("Сбросить все отметки?") },
+                onDismissRequest = { clearAllData = null },
+                title = { Text("Сбросить отметки?") },
                 text = {
                     Text("Все отметки «найдена» в группе " +
-                            "«${group.areaTitle} / ${group.orderTitle}» будут сняты. Продолжить?")
+                            "«${group.areaTitle} / ${group.orderTitle}» " +
+                            "будут сняты. Видимых проб: $n. Продолжить?")
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.clearAllFound(gid); confirmClearAllGroupId = null
+                        viewModel.clearAllFoundForRows(gid, rowIds)
+                        clearAllData = null
                     }) { Text("Да") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { confirmClearAllGroupId = null }) { Text("Отмена") }
+                    TextButton(onClick = { clearAllData = null }) { Text("Отмена") }
                 }
             )
+        } else {
+            clearAllData = null
         }
     }
 
@@ -1370,11 +1394,6 @@ private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     }
 }
 
-/**
- * FIX 5.8.11-sort-fix:
- * Раньше было просто «1 · NV1366» — непонятно, что такое «1».
- * Теперь «Наряд №1 · NV1366».
- */
 private fun buildAnswerLine(qa: QuickAnswer): String {
     val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
     val value = qa.answerValue
