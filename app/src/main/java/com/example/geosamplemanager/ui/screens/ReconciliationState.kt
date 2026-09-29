@@ -171,6 +171,26 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             return sortGroupsByRelevance(byStatus, selectedArea, selectedOrder)
         }
 
+    /**
+     * FIX 5.9-search-bulk:
+     * Найти строки группы, которые СЕЙЧАС видны на экране (с учётом
+     * поиска query + activeFilters). Ищет и в плоском списке, и в
+     * мультизапросе.
+     *
+     * Используется кнопкой «Отметить все» и «Сбросить все» в заголовке
+     * группы — чтобы операции применялись только к видимым пробам, а не
+     * ко всей группе целиком.
+     */
+    fun visibleRowsForGroup(groupId: String): List<SampleRow> {
+        // Плоский список
+        visibleGroups.firstOrNull { it.id == groupId }?.let { return it.rows }
+        // Мультизапрос — ищем по всем queryGroups
+        for (qg in _queryGroups) {
+            filteredGroupsForQuery(qg).firstOrNull { it.id == groupId }?.let { return it.rows }
+        }
+        return emptyList()
+    }
+
     val currentStatistics: GroupStats
         get() {
             val groupsToCount = if (selectedOrder != null) {
@@ -604,6 +624,29 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return result
     }
 
+    /**
+     * FIX 5.9-search-bulk:
+     * Как collectBulkDecisions, но только для указанных rowId.
+     */
+    fun collectBulkDecisionsForRows(
+        groupId: String,
+        rowIds: Set<String>
+    ): List<BulkDecision> {
+        val group = _groups.firstOrNull { it.id == groupId } ?: return emptyList()
+        val result = mutableListOf<BulkDecision>()
+        group.rows.forEach { row ->
+            if (row.id !in rowIds) return@forEach
+            when {
+                row.hasImportError -> Unit
+                row.weightControl && row.controlWeight == null ->
+                    result.add(BulkDecision.WeightControlNeedsWeight(row))
+                row.postponed ->
+                    result.add(BulkDecision.PostponedNeedsAction(row))
+            }
+        }
+        return result
+    }
+
     fun applyBulkMarkFound(
         groupId: String,
         weights: Map<String, Double>,
@@ -652,12 +695,86 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return marked
     }
 
+    /**
+     * FIX 5.9-search-bulk:
+     * То же, что applyBulkMarkFound, но только для указанных rowId.
+     * Используется кнопкой «Отметить все» в заголовке группы — чтобы
+     * не трогать строки, скрытые фильтрами/поиском.
+     */
+    fun applyBulkMarkFoundForRows(
+        groupId: String,
+        rowIds: Set<String>,
+        weights: Map<String, Double>,
+        postponedActions: Map<String, Boolean>
+    ): Int {
+        val gi = _groups.indexOfFirst { it.id == groupId }
+        if (gi < 0) return 0
+        if (rowIds.isEmpty()) return 0
+
+        val group = _groups[gi]
+        val settings = blankWeightFor(group.orderTitle)
+        var marked = 0
+        val changes = group.rows.map { it.id to it.found }
+
+        val newRows = group.rows.map { row ->
+            if (row.id !in rowIds) return@map row
+            if (row.hasImportError) return@map row
+            if (row.found) return@map row
+
+            if (row.weightControl && row.controlWeight == null) {
+                val w = weights[row.id]
+                if (w != null && w > 0) {
+                    marked++; row.copy(controlWeight = w, found = true)
+                } else row
+            } else if (row.postponed) {
+                val doMark = postponedActions[row.id] ?: false
+                if (doMark) { marked++; row.copy(found = true) } else row
+            } else if (row.isBlank) {
+                if (row.weight != null) {
+                    marked++; row.copy(found = true)
+                } else {
+                    val w = when (settings.mode) {
+                        BlankWeightMode.FIXED -> settings.fixedValue
+                        BlankWeightMode.AVERAGE -> calculateAverageNeighborWeight(group, row.id)
+                        BlankWeightMode.MANUAL -> null
+                    }
+                    if (w != null && w > 0) {
+                        marked++; row.copy(weight = w, found = true)
+                    } else row
+                }
+            } else {
+                marked++; row.copy(found = true)
+            }
+        }
+
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(UndoAction.SetAllFound(groupId, changes))
+        return marked
+    }
+
     fun clearAllFound(groupId: String) {
         val gi = _groups.indexOfFirst { it.id == groupId }
         if (gi < 0) return
         val group = _groups[gi]
         val changes = group.rows.map { it.id to it.found }
         val newRows = group.rows.map { it.copy(found = false) }
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(UndoAction.SetAllFound(groupId, changes))
+    }
+
+    /**
+     * FIX 5.9-search-bulk:
+     * Снять отметки только у указанных rowId.
+     */
+    fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
+        val gi = _groups.indexOfFirst { it.id == groupId }
+        if (gi < 0) return
+        if (rowIds.isEmpty()) return
+        val group = _groups[gi]
+        val changes = group.rows.map { it.id to it.found }
+        val newRows = group.rows.map { row ->
+            if (row.id in rowIds) row.copy(found = false) else row
+        }
         _groups[gi] = group.copy(rows = newRows)
         pushUndo(UndoAction.SetAllFound(groupId, changes))
     }
