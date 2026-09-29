@@ -33,13 +33,13 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * FIX 5.9-stats-charts-2:
- * 5 категорий с приоритетом: found > postponed > control > blank > not_found.
- * Круг и столбцы — одно и то же, разные формы.
- *
- * FIX 5.9-stats-charts-3:
- *  - В круге цифры на каждом секторе, центр пустой.
- *  - Прогресс-бар по скважине: сегменты по приоритету, легенда X/Y.
+ * FIX 5.9-stats-charts-3 (финал):
+ *  - 5 категорий с приоритетом found > postponed > control > blank > not_found.
+ *  - Круг: цифры на секторах (≥25°), без числа в центре.
+ *  - Столбцы: цифра внутри полоски.
+ *  - По скважинам: сегментированный бар + легенда X/Y.
+ *  - DrillLevel — уровни drill-down.
+ *  - filterRowsByDrillStack — применение стека.
  */
 
 // ====================================================================
@@ -47,7 +47,14 @@ import kotlin.math.sqrt
 // ====================================================================
 
 enum class CategoryKey { FOUND, NOT_FOUND, POSTPONED, BLANK, CONTROL }
-enum class SubKey { POSTPONED, CONTROL, BLANK, NORMAL }
+enum class SubKey { NORMAL, BLANK, CONTROL, POSTPONED }
+
+sealed class DrillLevel {
+    data object Root : DrillLevel()
+    data class Category(val kind: CategoryKey) : DrillLevel()
+    data class SubCategory(val sub: SubKey) : DrillLevel()
+    data class Well(val well: String) : DrillLevel()
+}
 
 /** Порядок отображения в круге и столбцах. */
 val CATEGORY_ORDER = listOf(
@@ -81,13 +88,20 @@ fun subLabel(sub: SubKey): String = when (sub) {
     SubKey.NORMAL -> "Обычные"
 }
 
+fun subColor(sub: SubKey): Color = when (sub) {
+    SubKey.NORMAL -> Color(0xFF546E7A)
+    SubKey.BLANK -> Color(0xFFF9A825)
+    SubKey.CONTROL -> Color(0xFF7B1FA2)
+    SubKey.POSTPONED -> Color(0xFF1976D2)
+}
+
 fun subOrder(): List<SubKey> = listOf(
     SubKey.NORMAL, SubKey.BLANK, SubKey.CONTROL, SubKey.POSTPONED
 )
 
 /**
  * Приоритет отнесения пробы к категории.
- * Первое совпадение выигрывает.
+ * Первое совпадение выигрывает. Проба попадает ровно в одну категорию.
  */
 fun categoryOf(row: SampleRow): CategoryKey = when {
     row.found -> CategoryKey.FOUND
@@ -98,13 +112,33 @@ fun categoryOf(row: SampleRow): CategoryKey = when {
 }
 
 /**
- * Приоритет подкатегории внутри уже отфильтрованных проб.
+ * Приоритет подкатегории внутри уже отфильтрованного набора.
  */
 fun subOf(row: SampleRow): SubKey = when {
     row.postponed -> SubKey.POSTPONED
     row.weightControl -> SubKey.CONTROL
     row.isBlank -> SubKey.BLANK
     else -> SubKey.NORMAL
+}
+
+// ====================================================================
+// ПРИМЕНЕНИЕ СТЕКА DRILL-DOWN
+// ====================================================================
+
+fun filterRowsByDrillStack(
+    rows: List<SampleRow>,
+    stack: List<DrillLevel>
+): List<SampleRow> {
+    var result = rows
+    for (level in stack) {
+        result = when (level) {
+            is DrillLevel.Root -> result
+            is DrillLevel.Category -> result.filter { categoryOf(it) == level.kind }
+            is DrillLevel.SubCategory -> result.filter { subOf(it) == level.sub }
+            is DrillLevel.Well -> result.filter { it.wellNumber == level.well }
+        }
+    }
+    return result
 }
 
 // ====================================================================
@@ -119,9 +153,6 @@ data class CategoryDatum(
     val payload: String
 )
 
-/**
- * 5 категорий с приоритетом. Сумма значений = всего проб.
- */
 fun computeCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
     val counts = IntArray(CategoryKey.values().size)
     rows.forEach { r -> counts[categoryOf(r).ordinal]++ }
@@ -139,10 +170,6 @@ fun computeCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
     }
 }
 
-/**
- * 4 подкатегории внутри уже отфильтрованного набора.
- * Сумма = rows.size.
- */
 fun computeSubCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
     val counts = IntArray(SubKey.values().size)
     rows.forEach { r -> counts[subOf(r).ordinal]++ }
@@ -163,13 +190,6 @@ fun computeSubCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
             payload = sub.name
         )
     }
-}
-
-private fun subColor(sub: SubKey): Color = when (sub) {
-    SubKey.NORMAL -> Color(0xFF546E7A)
-    SubKey.BLANK -> Color(0xFFF9A825)
-    SubKey.CONTROL -> Color(0xFF7B1FA2)
-    SubKey.POSTPONED -> Color(0xFF1976D2)
 }
 
 // ====================================================================
@@ -206,7 +226,6 @@ private fun statsFor(well: String, list: List<SampleRow>): WellStats {
     val blankRows = list.filter { it.isBlank }
     val controlRows = list.filter { it.weightControl }
 
-    // Сегменты бара — по приоритету, каждая проба только в одном сегменте.
     val segCounts = IntArray(CategoryKey.values().size)
     list.forEach { r -> segCounts[categoryOf(r).ordinal]++ }
     val segments = CATEGORY_ORDER.mapNotNull { key ->
@@ -293,7 +312,6 @@ fun PieChart(
                         size = arcSize
                     )
 
-                    // Цифра на секторе — если сектор ≥ 25°.
                     if (sweep >= 25f) {
                         val mid = Math.toRadians((startAngle + sweep / 2).toDouble())
                         val r = (diameter / 2f) * 0.62f
@@ -417,7 +435,7 @@ fun BarChart(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(18.dp)
+                        .height(20.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
                 ) {
@@ -498,7 +516,6 @@ private fun WellRow(wp: WellStats, onClick: (String) -> Unit) {
             .clickable { onClick(wp.wellNumber) }
             .padding(vertical = 6.dp, horizontal = 4.dp)
     ) {
-        // Верхняя строка: имя скважины + X/Y общее
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 wp.wellNumber,
@@ -518,7 +535,6 @@ private fun WellRow(wp: WellStats, onClick: (String) -> Unit) {
 
         Spacer(Modifier.height(6.dp))
 
-        // Прогресс-бар сегментами
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -540,7 +556,6 @@ private fun WellRow(wp: WellStats, onClick: (String) -> Unit) {
 
         Spacer(Modifier.height(6.dp))
 
-        // Легенда X/Y
         Text(
             text = buildWellLegend(wp),
             style = MaterialTheme.typography.labelSmall,
