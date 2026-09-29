@@ -55,7 +55,6 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val wellFilter by viewModel.wellFilter.collectAsState()
     val message by viewModel.message.collectAsState()
 
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -93,9 +92,9 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
         return
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isWide = maxWidth >= 600.dp
-        val treeWidth = maxWidth * 0.35f
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().imePadding()) {
+        val isWide = this.maxWidth >= 600.dp
+        val treeWidth = this.maxWidth * 0.35f
 
         if (isWide) {
             Row(modifier = Modifier.fillMaxSize()) {
