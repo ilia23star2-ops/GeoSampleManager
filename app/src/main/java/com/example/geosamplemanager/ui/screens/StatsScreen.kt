@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -33,11 +34,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-charts-2:
- *  - Drill-down: клик по сектору / столбцу / скважине проваливает глубже.
+ * FIX 5.9-stats-charts-3:
+ *  - Новые категории: 5 в корне (CategoryKey), 4 подкатегории (SubKey).
+ *  - Drill-down: Root → Category → SubCategory / Well → Sample list.
  *  - Хлебные крошки + «← Назад».
- *  - «По скважинам» — с фильтром, двухцветной полоской и легендой.
- *  - На уровне Well — сразу список проб этого среза.
+ *  - По скважинам: сегментированный бар + легенда X/Y.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -246,7 +247,7 @@ private fun LeftTreePanel(
                     },
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
             }
         } else {
@@ -626,7 +627,8 @@ private fun RightDetailsPanel(
     }
 
     val isDeepLevel = drillStack.isNotEmpty()
-    val isWellLevel = drillStack.lastOrNull() is DrillLevel.Well
+    val last = drillStack.lastOrNull()
+    val isWellLevel = last is DrillLevel.Well
 
     Box(modifier = modifier.fillMaxSize()) {
         LazyColumn(
@@ -634,7 +636,6 @@ private fun RightDetailsPanel(
             modifier = Modifier.fillMaxSize()
         ) {
 
-            // ---------- Шапка ----------
             item(key = "header_${order.orderId}") {
                 Row(
                     modifier = Modifier
@@ -691,7 +692,6 @@ private fun RightDetailsPanel(
                 }
             }
 
-            // ---------- Прогресс + сводка ----------
             item(key = "progress_${order.orderId}") {
                 ProgressBarBlock(order.stats)
             }
@@ -702,7 +702,6 @@ private fun RightDetailsPanel(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             }
 
-            // ---------- Хлебные крошки (только в drill-down) ----------
             if (isDeepLevel) {
                 item(key = "crumbs_${order.orderId}") {
                     BreadcrumbsRow(
@@ -715,7 +714,6 @@ private fun RightDetailsPanel(
                 }
             }
 
-            // ---------- Dropdown типа диаграммы ----------
             if (!isWellLevel) {
                 item(key = "chartdrop_${order.orderId}") {
                     Row(
@@ -738,7 +736,6 @@ private fun RightDetailsPanel(
                 }
             }
 
-            // ---------- Область диаграммы / списка по уровню ----------
             item(key = "chart_${order.orderId}") {
                 Spacer(Modifier.height(8.dp))
                 ChartsArea(
@@ -756,7 +753,6 @@ private fun RightDetailsPanel(
                 HorizontalDivider()
             }
 
-            // ---------- На корневом уровне — разворачиваемый полный список ----------
             if (!isDeepLevel) {
                 item(key = "toggle_${order.orderId}") {
                     Row(
@@ -899,13 +895,13 @@ private fun BreadcrumbsRow(
 
 private fun levelLabel(level: DrillLevel): String = when (level) {
     is DrillLevel.Root -> "Наряд"
-    is DrillLevel.Category -> sliceKindLabel(level.kind)
-    is DrillLevel.SubCategory -> subKindLabel(level.sub)
+    is DrillLevel.Category -> categoryLabel(level.kind)
+    is DrillLevel.SubCategory -> subLabel(level.sub)
     is DrillLevel.Well -> level.well
 }
 
 // ====================================================================
-// ОБЛАСТЬ ДИАГРАММЫ / СПИСКА ПО УРОВНЮ
+// ОБЛАСТЬ ДИАГРАММЫ ПО УРОВНЮ
 // ====================================================================
 
 @Composable
@@ -941,56 +937,65 @@ private fun ChartsArea(
                     )
                     if (filteredRows.isEmpty()) {
                         Text(
-                            "Нет проб по текущему фильтру",
+                            "Нет проб",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(24.dp)
                         )
                     } else {
                         TableHeadRow()
-                        filteredRows.forEach { row ->
-                            StatsSampleRow(row)
-                        }
+                        filteredRows.forEach { row -> StatsSampleRow(row) }
                     }
                 }
 
-                // ============ Уровень SubCategory или Category(Postponed/Errors): скважины ============
-                last is DrillLevel.SubCategory ||
-                        (last is DrillLevel.Category &&
-                                (last.kind == SliceKind.POSTPONED || last.kind == SliceKind.ERRORS)) -> {
+                // ============ Уровень Category(POSTPONED|BLANK|CONTROL): сразу скважины ============
+                last is DrillLevel.Category &&
+                        (last.kind == CategoryKey.POSTPONED ||
+                                last.kind == CategoryKey.BLANK ||
+                                last.kind == CategoryKey.CONTROL) -> {
                     WellFilterRow(wellFilter, onWellFilterChange)
                     Spacer(Modifier.height(8.dp))
                     WellProgressChart(
-                        items = computeWellProgress(filteredRows),
+                        items = computeWellStats(filteredRows),
                         filter = wellFilter,
                         onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
                     )
                 }
 
-                // ============ Уровень Category(FOUND/NOT_FOUND): подкатегории ============
+                // ============ Уровень SubCategory: скважины ============
+                last is DrillLevel.SubCategory -> {
+                    WellFilterRow(wellFilter, onWellFilterChange)
+                    Spacer(Modifier.height(8.dp))
+                    WellProgressChart(
+                        items = computeWellStats(filteredRows),
+                        filter = wellFilter,
+                        onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
+                    )
+                }
+
+                // ============ Уровень Category(FOUND|NOT_FOUND): подкатегории ============
                 last is DrillLevel.Category -> {
                     val data = computeSubCategoryData(filteredRows)
                     when (chartType) {
                         ChartType.PIE -> PieChart(
                             data = data,
-                            centerLabel = sliceKindLabel(last.kind),
                             onSliceClick = { payload ->
-                                val sub = runCatching { SubKind.valueOf(payload) }.getOrNull()
-                                if (sub != null) onPushDrill(DrillLevel.SubCategory(last.kind, sub))
+                                val sub = runCatching { SubKey.valueOf(payload) }.getOrNull()
+                                if (sub != null) onPushDrill(DrillLevel.SubCategory(sub))
                             }
                         )
                         ChartType.BARS -> BarChart(
                             data = data,
                             onBarClick = { payload ->
-                                val sub = runCatching { SubKind.valueOf(payload) }.getOrNull()
-                                if (sub != null) onPushDrill(DrillLevel.SubCategory(last.kind, sub))
+                                val sub = runCatching { SubKey.valueOf(payload) }.getOrNull()
+                                if (sub != null) onPushDrill(DrillLevel.SubCategory(sub))
                             }
                         )
                         ChartType.WELLS -> {
                             WellFilterRow(wellFilter, onWellFilterChange)
                             Spacer(Modifier.height(8.dp))
                             WellProgressChart(
-                                items = computeWellProgress(filteredRows),
+                                items = computeWellStats(filteredRows),
                                 filter = wellFilter,
                                 onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
                             )
@@ -998,30 +1003,29 @@ private fun ChartsArea(
                     }
                 }
 
-                // ============ Корень: категории ============
+                // ============ Корень ============
                 else -> {
                     val data = computeCategoryData(filteredRows)
                     when (chartType) {
                         ChartType.PIE -> PieChart(
                             data = data,
-                            centerLabel = "проб",
                             onSliceClick = { payload ->
-                                val kind = runCatching { SliceKind.valueOf(payload) }.getOrNull()
-                                if (kind != null) onPushDrill(DrillLevel.Category(kind))
+                                val key = runCatching { CategoryKey.valueOf(payload) }.getOrNull()
+                                if (key != null) onPushDrill(DrillLevel.Category(key))
                             }
                         )
                         ChartType.BARS -> BarChart(
                             data = data,
                             onBarClick = { payload ->
-                                val kind = runCatching { SliceKind.valueOf(payload) }.getOrNull()
-                                if (kind != null) onPushDrill(DrillLevel.Category(kind))
+                                val key = runCatching { CategoryKey.valueOf(payload) }.getOrNull()
+                                if (key != null) onPushDrill(DrillLevel.Category(key))
                             }
                         )
                         ChartType.WELLS -> {
                             WellFilterRow(wellFilter, onWellFilterChange)
                             Spacer(Modifier.height(8.dp))
                             WellProgressChart(
-                                items = computeWellProgress(filteredRows),
+                                items = computeWellStats(filteredRows),
                                 filter = wellFilter,
                                 onWellClick = { well -> onPushDrill(DrillLevel.Well(well)) }
                             )
