@@ -576,11 +576,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         pushUndo(UndoAction.SetPostponed(rowId, row.postponed, value))
     }
 
-    /**
-     * FIX 5.9-sverka-fixes (B):
-     * При снятии ВК обнуляем controlWeight — иначе в таблице остаётся
-     * отображаться старое значение в скобках.
-     */
     fun toggleWeightControl(rowId: String): Boolean {
         val (gi, ri) = findRow(rowId) ?: return false
         val row = _groups[gi].rows[ri]
@@ -608,8 +603,16 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return true
     }
 
+    /**
+     * FIX 5.9-bulk-confirm-2:
+     * Три вида решений в массовых операциях:
+     *   - ВК без веса — ввод controlWeight.
+     *   - Холостая без веса — ввод weight.
+     *   - Отложенная — галка «отметить как найденную».
+     */
     sealed class BulkDecision {
         data class WeightControlNeedsWeight(val row: SampleRow) : BulkDecision()
+        data class BlankNeedsWeight(val row: SampleRow) : BulkDecision()
         data class PostponedNeedsAction(val row: SampleRow) : BulkDecision()
     }
 
@@ -621,6 +624,8 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 row.hasImportError -> Unit
                 row.weightControl && row.controlWeight == null ->
                     result.add(BulkDecision.WeightControlNeedsWeight(row))
+                row.isBlank && row.weight == null ->
+                    result.add(BulkDecision.BlankNeedsWeight(row))
                 row.postponed ->
                     result.add(BulkDecision.PostponedNeedsAction(row))
             }
@@ -640,6 +645,8 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 row.hasImportError -> Unit
                 row.weightControl && row.controlWeight == null ->
                     result.add(BulkDecision.WeightControlNeedsWeight(row))
+                row.isBlank && row.weight == null ->
+                    result.add(BulkDecision.BlankNeedsWeight(row))
                 row.postponed ->
                     result.add(BulkDecision.PostponedNeedsAction(row))
             }
@@ -650,6 +657,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     fun applyBulkMarkFound(
         groupId: String,
         weights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
         val gi = _groups.indexOfFirst { it.id == groupId }
@@ -676,7 +684,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 if (row.weight != null) {
                     marked++; row.copy(found = true)
                 } else {
-                    val w = when (settings.mode) {
+                    // FIX 5.9-bulk-confirm-2: сначала вес из диалога, потом настройки.
+                    val fromDialog = blankWeights[row.id]
+                    val w = fromDialog ?: when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue
                         BlankWeightMode.AVERAGE -> calculateAverageNeighborWeight(group, row.id)
                         BlankWeightMode.MANUAL -> null
@@ -699,6 +709,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         groupId: String,
         rowIds: Set<String>,
         weights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
         val gi = _groups.indexOfFirst { it.id == groupId }
@@ -727,7 +738,9 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 if (row.weight != null) {
                     marked++; row.copy(found = true)
                 } else {
-                    val w = when (settings.mode) {
+                    // FIX 5.9-bulk-confirm-2.
+                    val fromDialog = blankWeights[row.id]
+                    val w = fromDialog ?: when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue
                         BlankWeightMode.AVERAGE -> calculateAverageNeighborWeight(group, row.id)
                         BlankWeightMode.MANUAL -> null

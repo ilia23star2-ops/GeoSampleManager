@@ -2183,27 +2183,26 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     fun applyBulkMarkFound(
         groupId: String,
-        weights: Map<String, Double>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
-        val marked = state.applyBulkMarkFound(groupId, weights, postponedActions)
+        val marked = state.applyBulkMarkFound(
+            groupId, controlWeights, blankWeights, postponedActions
+        )
         persistGroup(groupId)
         return marked
     }
 
-        /**
-     * FIX 5.9-search-bulk:
-     * Отметить все видимые строки группы. Используется кнопкой
-     * «Отметить все» в заголовке — с учётом фильтров и поиска.
-     */
     fun applyBulkMarkFoundForRows(
         groupId: String,
         rowIds: Set<String>,
-        weights: Map<String, Double>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
         val marked = state.applyBulkMarkFoundForRows(
-            groupId, rowIds, weights, postponedActions
+            groupId, rowIds, controlWeights, blankWeights, postponedActions
         )
         persistGroup(groupId)
         return marked

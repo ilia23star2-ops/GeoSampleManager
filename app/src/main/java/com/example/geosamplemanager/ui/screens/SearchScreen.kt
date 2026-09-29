@@ -55,13 +55,16 @@ import java.io.File
  *    только с ВИДИМЫМИ строками (учитывают поиск и фильтры).
  *
  * FIX 5.9-sverka-fixes (C):
- *  - PostponedDialog теперь имеет 5 параметров (onMarkFound,
- *    onUnpostpone, onViewNote, onEdit, onDismiss).
- *  - «Отметить как найденную» снимает postponed и ставит found=true.
+ *  - PostponedDialog имеет 5 параметров.
  *
  * FIX 5.9-sverka-fixes (D):
- *  - Колонки «Скважина» и «№ пробы» растягиваются на всё свободное
- *    место (Modifier.weight(1f)). Заголовок и строки синхронизированы.
+ *  - Колонки «Скважина» и «№ пробы» растягиваются (weight).
+ *
+ * FIX 5.9-bulk-confirm:
+ *  - Перед «Отметить все» — диалог подтверждения «Отметить N проб?».
+ *  - Перед «Сбросить все» — диалог подтверждения «Сбросить N отметок?».
+ *    (Раньше сброс уже был с подтверждением — формат сохранён.)
+ *  - Сама отметка выполняется только после подтверждения.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -130,6 +133,9 @@ fun SearchScreen(
 
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var bulkDialogRowIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    // FIX 5.9-bulk-confirm: подтверждение перед массовыми операциями.
+    var markAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
     var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
 
     var voiceDialogOpen by remember { mutableStateOf(false) }
@@ -287,16 +293,28 @@ fun SearchScreen(
         }
     }
 
+    /**
+     * FIX 5.9-bulk-confirm:
+     * Клик «Отметить все» сначала открывает диалог подтверждения.
+     * Само выполнение — в proceedMarkAll (после подтверждения).
+     */
     fun onMarkAllClick(groupId: String) {
         val rowIds = state.visibleRowsForGroup(groupId).map { it.id }.toSet()
         if (rowIds.isEmpty()) {
             scope.launch { snackbarHostState.showSnackbar("Нечего отмечать") }
             return
         }
+        markAllData = groupId to rowIds
+    }
+
+    /**
+     * FIX 5.9-bulk-confirm: после подтверждения — выполняем отметку.
+     */
+    fun proceedMarkAll(groupId: String, rowIds: Set<String>) {
         val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
             val marked = viewModel.applyBulkMarkFoundForRows(
-                groupId, rowIds, emptyMap(), emptyMap()
+                groupId, rowIds, emptyMap(), emptyMap(), emptyMap()
             )
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
         } else {
@@ -457,9 +475,16 @@ fun SearchScreen(
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
                                     onClearAllClick = {
                                         val rowIds = state.visibleRowsForGroup(item.group.id)
+                                            .filter { it.found }
                                             .map { it.id }
                                             .toSet()
-                                        clearAllData = item.group.id to rowIds
+                                        if (rowIds.isEmpty()) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Нет отмеченных проб")
+                                            }
+                                        } else {
+                                            clearAllData = item.group.id to rowIds
+                                        }
                                     },
                                     onAddSample = {
                                         scope.launch {
@@ -662,7 +687,6 @@ fun SearchScreen(
         )
     }
 
-    // FIX 5.9-sverka-fixes (C): PostponedDialog с новыми параметрами.
     postponedDialogRowId?.let { id ->
         val row = state.rowById(id)
         if (row != null) PostponedDialog(
@@ -765,9 +789,9 @@ fun SearchScreen(
         val decisions = state.collectBulkDecisionsForRows(gid, rowIds)
         BulkActionsDialog(
             decisions = decisions,
-            onApply = { weights, postponedActions ->
+            onApply = { controlWeights, blankWeights, postponedActions ->
                 val marked = viewModel.applyBulkMarkFoundForRows(
-                    gid, rowIds, weights, postponedActions
+                    gid, rowIds, controlWeights, blankWeights, postponedActions
                 )
                 bulkDialogGroupId = null
                 bulkDialogRowIds = emptySet()
@@ -780,23 +804,53 @@ fun SearchScreen(
         )
     }
 
+    // FIX 5.9-bulk-confirm: подтверждение «Отметить все».
+    markAllData?.let { (gid, rowIds) ->
+        val group = state.groupById(gid)
+        val n = rowIds.size
+        val groupLabel = if (group != null)
+            "«${group.areaTitle} / ${group.orderTitle}»" else "группы"
+        AlertDialog(
+            onDismissRequest = { markAllData = null },
+            title = { Text("Отметить все?") },
+            text = {
+                Text(
+                    "Будут отмечены как найденные $n " +
+                            "${samplesWord(n)} в $groupLabel. Продолжить?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    markAllData = null
+                    proceedMarkAll(gid, rowIds)
+                }) { Text("Отметить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { markAllData = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    // FIX 5.9-bulk-confirm: подтверждение «Сбросить все».
     clearAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
+        val n = rowIds.size
         if (group != null) {
-            val n = rowIds.size
             AlertDialog(
                 onDismissRequest = { clearAllData = null },
                 title = { Text("Сбросить отметки?") },
                 text = {
-                    Text("Все отметки «найдена» в группе " +
-                            "«${group.areaTitle} / ${group.orderTitle}» " +
-                            "будут сняты. Видимых проб: $n. Продолжить?")
+                    Text(
+                        "Все отметки «найдена» в группе " +
+                                "«${group.areaTitle} / ${group.orderTitle}» " +
+                                "будут сняты. Видимых проб: $n. Продолжить?"
+                    )
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         viewModel.clearAllFoundForRows(gid, rowIds)
                         clearAllData = null
-                    }) { Text("Да") }
+                    }) { Text("Сбросить") }
                 },
                 dismissButton = {
                     TextButton(onClick = { clearAllData = null }) { Text("Отмена") }
@@ -1062,6 +1116,16 @@ private fun variantWord(n: Int): String {
         1 -> "вариант"
         2, 3, 4 -> "варианта"
         else -> "вариантов"
+    }
+}
+
+private fun samplesWord(n: Int): String {
+    val mod10 = n % 10
+    val mod100 = n % 100
+    return when {
+        mod10 == 1 && mod100 != 11 -> "проба"
+        mod10 in 2..4 && mod100 !in 12..14 -> "пробы"
+        else -> "проб"
     }
 }
 
@@ -1592,12 +1656,6 @@ private fun FiltersRow(
     }
 }
 
-/**
- * FIX 5.9-sverka-fixes (D):
- * «Скважина» и «№ пробы» растягиваются (weight). «п/п», «Интервал»,
- * «Вес», «Характеристика», «Тип» — фиксированные. Заголовок синхронизирован
- * со строками.
- */
 @Composable
 private fun TableHeader(showCharacteristic: Boolean, wellColumnTitle: String) {
     Row(
@@ -1640,10 +1698,6 @@ private fun RowScope.WeightedHeaderCell(text: String) {
     )
 }
 
-/**
- * FIX 5.9-sverka-fixes (D):
- * Скважина и № пробы — weight(1f), чтобы заполнить всю доступную ширину.
- */
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,
@@ -1925,6 +1979,14 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                 Text("До 20 шагов отмены. Статус-бар между кнопками показывает, " +
                         "что откатится следующим. При новом действии история «Вперёд» " +
                         "очищается.",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Массовые операции",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("«Отметить все» и «Сбросить все» работают только по ВИДИМЫМ " +
+                        "пробам (с учётом поиска и фильтров). Перед выполнением " +
+                        "запрашивается подтверждение с числом проб.",
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
