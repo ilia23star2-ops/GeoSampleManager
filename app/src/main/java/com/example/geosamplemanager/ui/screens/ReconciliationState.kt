@@ -173,18 +173,10 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
 
     /**
      * FIX 5.9-search-bulk:
-     * Найти строки группы, которые СЕЙЧАС видны на экране (с учётом
-     * поиска query + activeFilters). Ищет и в плоском списке, и в
-     * мультизапросе.
-     *
-     * Используется кнопкой «Отметить все» и «Сбросить все» в заголовке
-     * группы — чтобы операции применялись только к видимым пробам, а не
-     * ко всей группе целиком.
+     * Найти строки группы, которые СЕЙЧАС видны на экране.
      */
     fun visibleRowsForGroup(groupId: String): List<SampleRow> {
-        // Плоский список
         visibleGroups.firstOrNull { it.id == groupId }?.let { return it.rows }
-        // Мультизапрос — ищем по всем queryGroups
         for (qg in _queryGroups) {
             filteredGroupsForQuery(qg).firstOrNull { it.id == groupId }?.let { return it.rows }
         }
@@ -401,7 +393,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         val newRows = group.rows.map { row ->
             if (row.weightControl) {
                 changed++
-                row.copy(weightControl = false)
+                row.copy(weightControl = false, controlWeight = null)
             } else row
         }
         if (changed > 0) {
@@ -450,14 +442,14 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             if (row.isBlank || row.hasImportError) {
                 if (row.weightControl) {
                     changed++
-                    row.copy(weightControl = false)
+                    row.copy(weightControl = false, controlWeight = null)
                 } else row
             } else {
                 counter++
                 val shouldBeVk = counter % step == 0
                 if (shouldBeVk != row.weightControl) {
                     changed++
-                    row.copy(weightControl = shouldBeVk)
+                    row.copy(weightControl = shouldBeVk, controlWeight = null)
                 } else row
             }
         }
@@ -584,6 +576,11 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         pushUndo(UndoAction.SetPostponed(rowId, row.postponed, value))
     }
 
+    /**
+     * FIX 5.9-sverka-fixes (B):
+     * При снятии ВК обнуляем controlWeight — иначе в таблице остаётся
+     * отображаться старое значение в скобках.
+     */
     fun toggleWeightControl(rowId: String): Boolean {
         val (gi, ri) = findRow(rowId) ?: return false
         val row = _groups[gi].rows[ri]
@@ -596,10 +593,17 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         if (newFlag) {
             replaceRow(gi, ri, row.copy(weightControl = true, found = false, controlWeight = null))
             pushUndo(UndoAction.SetWeightControlFlag(rowId, oldFlag, true))
+            if (row.controlWeight != null) {
+                pushUndo(UndoAction.SetControlWeight(rowId, row.controlWeight, null))
+            }
             if (oldFound) pushUndo(UndoAction.SetFound(rowId, oldFound, false))
         } else {
-            replaceRow(gi, ri, row.copy(weightControl = false))
+            val oldCW = row.controlWeight
+            replaceRow(gi, ri, row.copy(weightControl = false, controlWeight = null))
             pushUndo(UndoAction.SetWeightControlFlag(rowId, oldFlag, false))
+            if (oldCW != null) {
+                pushUndo(UndoAction.SetControlWeight(rowId, oldCW, null))
+            }
         }
         return true
     }
@@ -624,10 +628,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return result
     }
 
-    /**
-     * FIX 5.9-search-bulk:
-     * Как collectBulkDecisions, но только для указанных rowId.
-     */
     fun collectBulkDecisionsForRows(
         groupId: String,
         rowIds: Set<String>
@@ -695,12 +695,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         return marked
     }
 
-    /**
-     * FIX 5.9-search-bulk:
-     * То же, что applyBulkMarkFound, но только для указанных rowId.
-     * Используется кнопкой «Отметить все» в заголовке группы — чтобы
-     * не трогать строки, скрытые фильтрами/поиском.
-     */
     fun applyBulkMarkFoundForRows(
         groupId: String,
         rowIds: Set<String>,
@@ -762,10 +756,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         pushUndo(UndoAction.SetAllFound(groupId, changes))
     }
 
-    /**
-     * FIX 5.9-search-bulk:
-     * Снять отметки только у указанных rowId.
-     */
     fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
         val gi = _groups.indexOfFirst { it.id == groupId }
         if (gi < 0) return
