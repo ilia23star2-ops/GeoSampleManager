@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -34,11 +35,12 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-charts-3:
- *  - Новые категории: 5 в корне (CategoryKey), 4 подкатегории (SubKey).
- *  - Drill-down: Root → Category → SubCategory / Well → Sample list.
- *  - Хлебные крошки + «← Назад».
- *  - По скважинам: сегментированный бар + легенда X/Y.
+ * FIX 5.9-stats-fixes:
+ *  - Левая панель: скролл + FAB «Наверх» (порог >8).
+ *  - Тап по строке участка — выбрать участок (подсветка).
+ *    Тап по стрелке — раскрыть/свернуть.
+ *  - Правая панель: если выбран наряд — сводка наряда (как раньше).
+ *    Если выбран участок — сводка участка (общая статистика + наряды).
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -48,6 +50,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val expandedAreas by viewModel.expandedAreaIds.collectAsState()
     val expandedOrders by viewModel.expandedOrderIds.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val selectedAreaId by viewModel.selectedAreaId.collectAsState()
     val drillStack by viewModel.drillStack.collectAsState()
     val wellFilter by viewModel.wellFilter.collectAsState()
     val message by viewModel.message.collectAsState()
@@ -102,11 +105,13 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = selectedOrderId,
+                    selectedAreaId = selectedAreaId,
                     onSearchChange = { viewModel.setSearchQuery(it) },
                     onHideReadyChange = { viewModel.setHideReady(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
+                    onSelectArea = { viewModel.selectArea(it) },
                     onFilterChange = { viewModel.setFilter(it) },
                     onToggleAll = {
                         val anyExpanded = expandedAreas.isNotEmpty() || expandedOrders.isNotEmpty()
@@ -117,6 +122,9 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 VerticalDivider()
                 RightDetailsPanel(
                     order = selectedOrderId?.let { viewModel.findOrder(it) },
+                    area = if (selectedOrderId == null) {
+                        selectedAreaId?.let { viewModel.findArea(it) }
+                    } else null,
                     areaName = selectedOrderId?.let { viewModel.findAreaNameFor(it) },
                     drillStack = drillStack,
                     wellFilter = wellFilter,
@@ -139,7 +147,10 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
             }
         } else {
             val order = selectedOrderId?.let { viewModel.findOrder(it) }
-            if (order == null) {
+            val area = if (order == null) {
+                selectedAreaId?.let { viewModel.findArea(it) }
+            } else null
+            if (order == null && area == null) {
                 LeftTreePanel(
                     data = current,
                     searchQuery = searchQuery,
@@ -147,11 +158,13 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     expandedAreaIds = expandedAreas,
                     expandedOrderIds = expandedOrders,
                     selectedOrderId = null,
+                    selectedAreaId = null,
                     onSearchChange = { viewModel.setSearchQuery(it) },
                     onHideReadyChange = { viewModel.setHideReady(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
                     onSelectOrder = { viewModel.selectOrder(it) },
+                    onSelectArea = { viewModel.selectArea(it) },
                     onFilterChange = { viewModel.setFilter(it) },
                     onToggleAll = {
                         val anyExpanded = expandedAreas.isNotEmpty() || expandedOrders.isNotEmpty()
@@ -162,7 +175,8 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
             } else {
                 RightDetailsPanel(
                     order = order,
-                    areaName = viewModel.findAreaNameFor(order.orderId),
+                    area = area,
+                    areaName = viewModel.findAreaNameFor(order?.orderId ?: -1L),
                     drillStack = drillStack,
                     wellFilter = wellFilter,
                     showBackButton = true,
@@ -192,8 +206,10 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 }
 
 // ====================================================================
-// ЛЕВАЯ ПАНЕЛЬ — ДЕРЕВО
+// ЛЕВАЯ ПАНЕЛЬ
 // ====================================================================
+
+private const val LEFT_SCROLL_TOP_THRESHOLD = 8
 
 @Composable
 private fun LeftTreePanel(
@@ -203,76 +219,106 @@ private fun LeftTreePanel(
     expandedAreaIds: Set<Long>,
     expandedOrderIds: Set<Long>,
     selectedOrderId: Long?,
+    selectedAreaId: Long?,
     onSearchChange: (String) -> Unit,
     onHideReadyChange: (Boolean) -> Unit,
     onToggleArea: (Long) -> Unit,
     onToggleOrder: (Long) -> Unit,
     onSelectOrder: (Long) -> Unit,
+    onSelectArea: (Long) -> Unit,
     onFilterChange: (StatsFilter) -> Unit,
     onToggleAll: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier) {
-        SearchField(query = searchQuery, onQueryChange = onSearchChange)
-        TotalsHeader(data.totals)
-        FiltersRow(
-            filter = data.filter,
-            hideReady = hideReady,
-            onFilterChange = onFilterChange,
-            onHideReadyChange = onHideReadyChange,
-            allExpanded = expandedAreaIds.isNotEmpty() || expandedOrderIds.isNotEmpty(),
-            onToggleAll = onToggleAll
-        )
-        HorizontalDivider()
-
-        val items = remember(data, expandedAreaIds, expandedOrderIds) {
-            buildStatsItems(data, expandedAreaIds, expandedOrderIds)
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val showScrollTop by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > LEFT_SCROLL_TOP_THRESHOLD
         }
+    }
 
-        if (items.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize().padding(32.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    when {
-                        searchQuery.isNotBlank() ->
-                            "Ничего не найдено по запросу «$searchQuery»"
-                        hideReady && data.filter == StatsFilter.ALL ->
-                            "Нет активных нарядов"
-                        data.filter == StatsFilter.ALL ->
-                            "В базе пока нет данных"
-                        else ->
-                            "Нет проб, соответствующих фильтру"
-                    },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            SearchField(query = searchQuery, onQueryChange = onSearchChange)
+            TotalsHeader(data.totals)
+            FiltersRow(
+                filter = data.filter,
+                hideReady = hideReady,
+                onFilterChange = onFilterChange,
+                onHideReadyChange = onHideReadyChange,
+                allExpanded = expandedAreaIds.isNotEmpty() || expandedOrderIds.isNotEmpty(),
+                onToggleAll = onToggleAll
+            )
+            HorizontalDivider()
+
+            val items = remember(data, expandedAreaIds, expandedOrderIds) {
+                buildStatsItems(data, expandedAreaIds, expandedOrderIds)
             }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
-                contentPadding = PaddingValues(vertical = 8.dp)
-            ) {
-                items(items, key = { it.key }) { item ->
-                    when (item) {
-                        is StatsItem.AreaHeader -> AreaHeaderCard(
-                            area = item.area,
-                            expanded = item.expanded,
-                            onToggle = { onToggleArea(item.area.areaId) }
-                        )
-                        is StatsItem.OrderHeader -> OrderHeaderCard(
-                            order = item.order,
-                            expanded = item.expanded,
-                            selected = item.order.orderId == selectedOrderId,
-                            onToggle = { onToggleOrder(item.order.orderId) },
-                            onSelect = { onSelectOrder(item.order.orderId) }
-                        )
-                        is StatsItem.TableHeadItem -> Unit
-                        is StatsItem.SampleRowItem -> Unit
+
+            if (items.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize().padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        when {
+                            searchQuery.isNotBlank() ->
+                                "Ничего не найдено по запросу «$searchQuery»"
+                            hideReady && data.filter == StatsFilter.ALL ->
+                                "Нет активных нарядов"
+                            data.filter == StatsFilter.ALL ->
+                                "В базе пока нет данных"
+                            else ->
+                                "Нет проб, соответствующих фильтру"
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp)
+                ) {
+                    items(items, key = { it.key }) { item ->
+                        when (item) {
+                            is StatsItem.AreaHeader -> AreaHeaderCard(
+                                area = item.area,
+                                expanded = item.expanded,
+                                selected = item.area.areaId == selectedAreaId,
+                                onToggle = { onToggleArea(item.area.areaId) },
+                                onSelect = { onSelectArea(item.area.areaId) }
+                            )
+                            is StatsItem.OrderHeader -> OrderHeaderCard(
+                                order = item.order,
+                                expanded = item.expanded,
+                                selected = item.order.orderId == selectedOrderId,
+                                onToggle = { onToggleOrder(item.order.orderId) },
+                                onSelect = { onSelectOrder(item.order.orderId) }
+                            )
+                            is StatsItem.TableHeadItem -> Unit
+                            is StatsItem.SampleRowItem -> Unit
+                        }
                     }
                 }
+            }
+        }
+
+        if (showScrollTop) {
+            SmallFloatingActionButton(
+                onClick = {
+                    scope.launch { listState.scrollToItem(0) }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = 12.dp),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            ) {
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Наверх")
             }
         }
     }
@@ -425,18 +471,28 @@ private fun FiltersRow(
 private fun AreaHeaderCard(
     area: StatsAreaUi,
     expanded: Boolean,
-    onToggle: () -> Unit
+    selected: Boolean,
+    onToggle: () -> Unit,
+    onSelect: () -> Unit
 ) {
-    val colors = AnswerStateColors.of(AnswerState.OK)
+    val baseColors = AnswerStateColors.of(AnswerState.OK)
+    val containerColor = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        baseColors.background
+    }
+
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-        color = colors.background,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .clickable { onSelect() },
+        color = containerColor,
         shape = RoundedCornerShape(6.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onToggle() }
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -444,7 +500,7 @@ private fun AreaHeaderCard(
                 modifier = Modifier
                     .width(3.dp).height(36.dp)
                     .clip(RoundedCornerShape(2.dp))
-                    .background(colors.accent)
+                    .background(baseColors.accent)
             )
             Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -462,12 +518,17 @@ private fun AreaHeaderCard(
                     fontSize = 10.sp
                 )
             }
-            Icon(
-                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
+            IconButton(
+                onClick = onToggle,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Свернуть" else "Развернуть",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
@@ -559,7 +620,7 @@ private fun buildOrderShortSummary(s: GroupStats): String {
 }
 
 // ====================================================================
-// ПРАВАЯ ПАНЕЛЬ — РАБОЧАЯ ЗОНА
+// ПРАВАЯ ПАНЕЛЬ
 // ====================================================================
 
 private enum class ChartType(val title: String) {
@@ -581,6 +642,269 @@ private const val SCROLL_TOP_THRESHOLD = 8
 @Composable
 private fun RightDetailsPanel(
     order: StatsOrderUi?,
+    area: StatsAreaUi?,
+    areaName: String?,
+    drillStack: List<DrillLevel>,
+    wellFilter: String,
+    showBackButton: Boolean,
+    onBack: () -> Unit,
+    onPushDrill: (DrillLevel) -> Unit,
+    onPopDrill: () -> Unit,
+    onPopToIndex: (Int) -> Unit,
+    onResetDrill: () -> Unit,
+    onWellFilterChange: (String) -> Unit,
+    onReportHtml: (Long) -> Unit,
+    snackbarHostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    when {
+        order != null -> OrderDetailsPanel(
+            order = order,
+            areaName = areaName,
+            drillStack = drillStack,
+            wellFilter = wellFilter,
+            showBackButton = showBackButton,
+            onBack = onBack,
+            onPushDrill = onPushDrill,
+            onPopDrill = onPopDrill,
+            onPopToIndex = onPopToIndex,
+            onResetDrill = onResetDrill,
+            onWellFilterChange = onWellFilterChange,
+            onReportHtml = onReportHtml,
+            snackbarHostState = snackbarHostState,
+            modifier = modifier
+        )
+        area != null -> AreaDetailsPanel(
+            area = area,
+            showBackButton = showBackButton,
+            onBack = onBack,
+            snackbarHostState = snackbarHostState,
+            modifier = modifier
+        )
+        else -> Box(modifier = modifier, contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    Icons.Filled.TouchApp,
+                    contentDescription = null,
+                    modifier = Modifier.size(56.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Выберите участок или наряд слева",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// ====================================================================
+// ПРАВАЯ ПАНЕЛЬ — УЧАСТОК
+// ====================================================================
+
+@Composable
+private fun AreaDetailsPanel(
+    area: StatsAreaUi,
+    showBackButton: Boolean,
+    onBack: () -> Unit,
+    snackbarHostState: SnackbarHostState,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+
+    LazyColumn(modifier = modifier.fillMaxSize()) {
+        item(key = "area_header_${area.areaId}") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (showBackButton) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Участок",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        area.areaName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "${area.orders.size} наряд(ов)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        item(key = "area_progress_${area.areaId}") {
+            ProgressBlockForStats(area.stats)
+        }
+
+        item(key = "area_summary_${area.areaId}") {
+            SummaryBlockForStats(area.stats)
+        }
+
+        item(key = "area_div1_${area.areaId}") {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+        }
+
+        item(key = "area_orders_label_${area.areaId}") {
+            Text(
+                "Наряды (${area.orders.size})",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+
+        items(area.orders, key = { "area_order_${it.orderId}" }) { o ->
+            AreaOrderRow(o)
+        }
+
+        item(key = "area_actions_${area.areaId}") {
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            snackbarHostState.showSnackbar("Отчёт по участку — в разработке")
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Filled.Description,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Отчёт по участку")
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun AreaOrderRow(o: StatsOrderUi) {
+    val status = computeOrderStatus(o.stats)
+    val active = (o.stats.total - o.stats.errors).coerceAtLeast(0)
+    val progress = if (active > 0) o.stats.found.toFloat() / active.toFloat() else 0f
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(status)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Наряд №${o.orderNumber}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                buildOrderShortSummary(o.stats),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        LinearProgressIndicator(
+            progress = progress,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+        )
+    }
+}
+
+@Composable
+private fun ProgressBlockForStats(stats: GroupStats) {
+    val active = (stats.total - stats.errors).coerceAtLeast(0)
+    val progress = if (active > 0) stats.found.toFloat() / active.toFloat() else 0f
+    val pct = (progress * 1000).toInt() / 10f
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "$pct%",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.width(10.dp))
+            val extras = mutableListOf<String>()
+            if (stats.errors > 0) extras.add("⚠ ${stats.errors} ошибок")
+            if (stats.postponed > 0) extras.add("⏸ ${stats.postponed} отложено")
+            if (extras.isNotEmpty()) {
+                Text(
+                    extras.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        LinearProgressIndicator(
+            progress = progress,
+            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+        )
+    }
+}
+
+@Composable
+private fun SummaryBlockForStats(stats: GroupStats) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SummaryInline("Всего", stats.total, null)
+            SummaryInline("Найдено", stats.found, Color(0xFF2E7D32))
+            SummaryInline("Не найдено", stats.notFound, Color(0xFFC62828))
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SummaryInline("Холостые", stats.blanks, null)
+            SummaryInline("ВК", stats.weightControls, null)
+            SummaryInline("Отложено", stats.postponed, Color(0xFF1976D2))
+            if (stats.errors > 0) SummaryInline("Ошибки", stats.errors, Color(0xFFC62828))
+        }
+    }
+}
+
+// ====================================================================
+// ПРАВАЯ ПАНЕЛЬ — НАРЯД
+// ====================================================================
+
+@Composable
+private fun OrderDetailsPanel(
+    order: StatsOrderUi,
     areaName: String?,
     drillStack: List<DrillLevel>,
     wellFilter: String,
@@ -596,26 +920,6 @@ private fun RightDetailsPanel(
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
-
-    if (order == null) {
-        Box(modifier = modifier, contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    Icons.Filled.TouchApp,
-                    contentDescription = null,
-                    modifier = Modifier.size(56.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "Выберите наряд слева",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        return
-    }
 
     var chartType by remember { mutableStateOf(ChartType.PIE) }
     var samplesExpanded by rememberSaveable { mutableStateOf(true) }
@@ -635,7 +939,6 @@ private fun RightDetailsPanel(
             state = listState,
             modifier = Modifier.fillMaxSize()
         ) {
-
             item(key = "header_${order.orderId}") {
                 Row(
                     modifier = Modifier
@@ -927,7 +1230,6 @@ private fun ChartsArea(
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             when {
-                // ============ Уровень Well: список проб ============
                 last is DrillLevel.Well -> {
                     Text(
                         "Пробы скважины ${last.well}",
@@ -948,7 +1250,6 @@ private fun ChartsArea(
                     }
                 }
 
-                // ============ Уровень Category(POSTPONED|BLANK|CONTROL): сразу скважины ============
                 last is DrillLevel.Category &&
                         (last.kind == CategoryKey.POSTPONED ||
                                 last.kind == CategoryKey.BLANK ||
@@ -962,7 +1263,6 @@ private fun ChartsArea(
                     )
                 }
 
-                // ============ Уровень SubCategory: скважины ============
                 last is DrillLevel.SubCategory -> {
                     WellFilterRow(wellFilter, onWellFilterChange)
                     Spacer(Modifier.height(8.dp))
@@ -973,7 +1273,6 @@ private fun ChartsArea(
                     )
                 }
 
-                // ============ Уровень Category(FOUND|NOT_FOUND): подкатегории ============
                 last is DrillLevel.Category -> {
                     val data = computeSubCategoryData(filteredRows)
                     when (chartType) {
@@ -1003,7 +1302,6 @@ private fun ChartsArea(
                     }
                 }
 
-                // ============ Корень ============
                 else -> {
                     val data = computeCategoryData(filteredRows)
                     when (chartType) {
@@ -1124,7 +1422,7 @@ private fun ReportFormatDialog(
 }
 
 // ====================================================================
-// ПРОГРЕСС + СВОДКА + БЕЙДЖ
+// ПРОГРЕСС + СВОДКА + БЕЙДЖ (для наряда)
 // ====================================================================
 
 @Composable
