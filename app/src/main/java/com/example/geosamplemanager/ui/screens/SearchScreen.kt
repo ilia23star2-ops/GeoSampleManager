@@ -7,21 +7,23 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -50,24 +52,21 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * FIX 5.9-search-bulk:
- *  - «Отметить все» и «Сбросить все» в заголовке группы работают
- *    только с ВИДИМЫМИ строками (учитывают поиск и фильтры).
+ * FIX 5.9-table-responsive: горизонтальный скролл таблицы на телефоне.
  *
- * FIX 5.9-sverka-fixes (C):
- *  - PostponedDialog имеет 5 параметров.
- *
- * FIX 5.9-sverka-fixes (D):
- *  - Колонки «Скважина» и «№ пробы» растягиваются (weight).
- *
- * FIX 5.9-bulk-confirm:
- *  - Перед «Отметить все» — диалог подтверждения «Отметить N проб?».
- *  - Перед «Сбросить все» — диалог подтверждения «Сбросить N отметок?».
- *    (Раньше сброс уже был с подтверждением — формат сохранён.)
- *  - Сама отметка выполняется только после подтверждения.
+ * FIX 5.9-row-highlight:
+ *  - Тап по строке пробы — выделяет её (рамка 2 dp primary).
+ *  - Повторный тап по той же — снимает выделение.
+ *  - Выделение сохраняется при горизонтальном скролле — не теряется
+ *    нужная проба при просмотре на телефоне.
+ *  - Выделение хранится в `selectedRowId` (rememberSaveable).
+ *  - Дочерние клики (чек-бокс, вес, характеристика, меню) — не сбрасывают
+ *    выделение, идут по своему назначению.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
+
+private const val WIDE_THRESHOLD_DP = 600
 
 sealed interface ReconItem {
     val key: String
@@ -134,9 +133,11 @@ fun SearchScreen(
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
     var bulkDialogRowIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
-    // FIX 5.9-bulk-confirm: подтверждение перед массовыми операциями.
     var markAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
     var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+
+    // FIX 5.9-row-highlight: выделенная строка (тап по строке).
+    var selectedRowId by rememberSaveable { mutableStateOf<String?>(null) }
 
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
@@ -149,6 +150,8 @@ fun SearchScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
+
+    val tableScrollState = rememberScrollState()
 
     val message by viewModel.message.collectAsState()
     LaunchedEffect(message) {
@@ -267,15 +270,9 @@ fun SearchScreen(
     fun onToggleFound(row: SampleRow) {
         val decision = analyzeMark(toMarkContext(state, row))
         when (decision) {
-            is MarkDecision.AlreadyFound -> {
-                alreadyFoundRowId = row.id
-            }
-            is MarkDecision.ImportError -> {
-                errorDialogRowId = row.id
-            }
-            is MarkDecision.Postponed -> {
-                postponedDialogRowId = row.id
-            }
+            is MarkDecision.AlreadyFound -> alreadyFoundRowId = row.id
+            is MarkDecision.ImportError -> errorDialogRowId = row.id
+            is MarkDecision.Postponed -> postponedDialogRowId = row.id
             is MarkDecision.NeedsControlWeight -> {
                 weightDialogRowId = row.id
                 weightDialogIsControl = true
@@ -284,20 +281,12 @@ fun SearchScreen(
                 weightDialogRowId = row.id
                 weightDialogIsControl = false
             }
-            is MarkDecision.MarkWithWeight -> {
+            is MarkDecision.MarkWithWeight ->
                 viewModel.setBlankWeightAndMarkFound(row.id, decision.weight)
-            }
-            is MarkDecision.CanMark -> {
-                viewModel.setFound(row.id, true)
-            }
+            is MarkDecision.CanMark -> viewModel.setFound(row.id, true)
         }
     }
 
-    /**
-     * FIX 5.9-bulk-confirm:
-     * Клик «Отметить все» сначала открывает диалог подтверждения.
-     * Само выполнение — в proceedMarkAll (после подтверждения).
-     */
     fun onMarkAllClick(groupId: String) {
         val rowIds = state.visibleRowsForGroup(groupId).map { it.id }.toSet()
         if (rowIds.isEmpty()) {
@@ -307,9 +296,6 @@ fun SearchScreen(
         markAllData = groupId to rowIds
     }
 
-    /**
-     * FIX 5.9-bulk-confirm: после подтверждения — выполняем отметку.
-     */
     fun proceedMarkAll(groupId: String, rowIds: Set<String>) {
         val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
@@ -335,7 +321,9 @@ fun SearchScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().imePadding()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().imePadding()) {
+        val isWide = maxWidth >= WIDE_THRESHOLD_DP.dp
+
         Column(modifier = Modifier.fillMaxSize()) {
             TopActionsPanel(
                 canUndo = state.canUndo, canRedo = state.canRedo,
@@ -494,11 +482,20 @@ fun SearchScreen(
                                 )
                                 is ReconItem.TableHead -> TableHeader(
                                     showCharacteristic = item.showCharacteristic,
-                                    wellColumnTitle = item.wellColumnTitle
+                                    wellColumnTitle = item.wellColumnTitle,
+                                    isWide = isWide,
+                                    scrollState = tableScrollState
                                 )
                                 is ReconItem.Sample -> SampleRowItem(
                                     row = item.row,
                                     showCharacteristic = item.showCharacteristic,
+                                    isWide = isWide,
+                                    scrollState = tableScrollState,
+                                    isSelected = selectedRowId == item.row.id,
+                                    onRowClick = {
+                                        selectedRowId = if (selectedRowId == item.row.id) null
+                                        else item.row.id
+                                    },
                                     onToggleFound = { onToggleFound(item.row) },
                                     onOpenNote = { noteDialogRowId = item.row.id },
                                     onTogglePostponed = {
@@ -550,10 +547,7 @@ fun SearchScreen(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Icon(
-                    Icons.Filled.KeyboardArrowUp,
-                    contentDescription = "Наверх"
-                )
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Наверх")
             }
         }
 
@@ -804,7 +798,6 @@ fun SearchScreen(
         )
     }
 
-    // FIX 5.9-bulk-confirm: подтверждение «Отметить все».
     markAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
         val n = rowIds.size
@@ -831,7 +824,6 @@ fun SearchScreen(
         )
     }
 
-    // FIX 5.9-bulk-confirm: подтверждение «Сбросить все».
     clearAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
         val n = rowIds.size
@@ -1365,9 +1357,9 @@ private fun VoiceModeChip(
 ) {
     val isSort = mode == VoiceSessionMode.SORT
     val container = if (isSort) MaterialTheme.colorScheme.tertiaryContainer
-                    else MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.primaryContainer
     val content = if (isSort) MaterialTheme.colorScheme.onTertiaryContainer
-                  else MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
             .padding(start = 4.dp)
@@ -1657,17 +1649,33 @@ private fun FiltersRow(
 }
 
 @Composable
-private fun TableHeader(showCharacteristic: Boolean, wellColumnTitle: String) {
+private fun TableHeader(
+    showCharacteristic: Boolean,
+    wellColumnTitle: String,
+    isWide: Boolean,
+    scrollState: androidx.compose.foundation.ScrollState
+) {
+    val modifier = Modifier
+        .fillMaxWidth()
+        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        .then(
+            if (!isWide) Modifier.horizontalScroll(scrollState) else Modifier
+        )
+        .padding(horizontal = 12.dp, vertical = 6.dp)
+
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Spacer(Modifier.width(48.dp))
         FixedHeaderCell("п/п", 36.dp)
-        WeightedHeaderCell(wellColumnTitle)
-        WeightedHeaderCell("№ пробы")
+        if (isWide) {
+            WeightedHeaderCell(wellColumnTitle)
+            WeightedHeaderCell("№ пробы")
+        } else {
+            FixedHeaderCell(wellColumnTitle, 140.dp)
+            FixedHeaderCell("№ пробы", 140.dp)
+        }
         FixedHeaderCell("Интервал", 100.dp)
         FixedHeaderCell("Вес", 90.dp)
         if (showCharacteristic) FixedHeaderCell("Характеристика", 120.dp)
@@ -1698,18 +1706,46 @@ private fun RowScope.WeightedHeaderCell(text: String) {
     )
 }
 
+/**
+ * FIX 5.9-row-highlight:
+ * Тап по строке — выделяет её (рамка primary 2 dp + лёгкий фон primary).
+ * Повторный тап — снимает.
+ * Рамка идёт поверх цветного фона состояния (found/blank/etc), не ломая его.
+ */
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,
+    isWide: Boolean,
+    scrollState: androidx.compose.foundation.ScrollState,
+    isSelected: Boolean,
+    onRowClick: () -> Unit,
     onToggleFound: () -> Unit, onOpenNote: () -> Unit, onTogglePostponed: () -> Unit,
     onOpenEdit: () -> Unit, onOpenDelete: () -> Unit, onToggleControl: () -> Unit,
     onWeightClick: () -> Unit, onCharacteristicClick: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
+    val baseBg = rowBackgroundColor(row)
+    val selectedOverlay = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(rowBackgroundColor(row))
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(baseBg)
+            .then(
+                if (isSelected) Modifier.background(selectedOverlay) else Modifier
+            )
+            .then(
+                if (isSelected) Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(4.dp)
+                ) else Modifier
+            )
+            .clickable { onRowClick() }
+            .then(
+                if (!isWide) Modifier.horizontalScroll(scrollState) else Modifier
+            )
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1722,20 +1758,38 @@ private fun SampleRowItem(
             modifier = Modifier.width(36.dp)
         )
 
-        Column(modifier = Modifier.weight(1f)) {
-            Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("скв.", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (isWide) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("скв.", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("№ в скв.: ${row.numberInWell}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Column(modifier = Modifier.width(140.dp)) {
+                Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("скв.", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Column(modifier = Modifier.width(140.dp)) {
+                Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("№ в скв.: ${row.numberInWell}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("№ в скв.: ${row.numberInWell}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+
         Column(modifier = Modifier.width(100.dp)) {
             Text("${row.intervalFrom}–${row.intervalTo}",
                 style = MaterialTheme.typography.bodySmall,
@@ -1990,6 +2044,14 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
+                Text("Выделение строки",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("Тапни по пустому месту строки — она подсветится рамкой. " +
+                        "Так удобно при горизонтальном скролле не терять нужную пробу. " +
+                        "Повторный тап — снимает выделение.",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
                 Text("Цвет фона строки",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 LegendRow(Color(0xFFA5D6A7), "Проба найдена")
@@ -2033,6 +2095,14 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                         "• 🔵 ПОИСК — со статистикой и отметками (по умолчанию).\n" +
                         "• 🟠 СОРТ — сортировка: без статистики, без отметок.\n\n" +
                         "Тап по чипу переключает режим. Голосом: «поиск» / «сортировка».",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Горизонтальный скролл таблицы",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("На телефоне таблица проб скроллится вбок — сдвинь строку " +
+                        "влево-вправо, чтобы увидеть остальные колонки. На планшете " +
+                        "и в ландшафте всё видно сразу.",
                     style = MaterialTheme.typography.bodySmall)
             }
         },
