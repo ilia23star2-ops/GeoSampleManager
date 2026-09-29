@@ -507,15 +507,6 @@ fun DeleteSampleDialog(
 // НАСТРОЙКИ НАРЯДА
 // ====================================================================
 
-/**
- * FIX 5.8.9bug-3-fix-5: холостые и ВК применяются раздельно.
- *
- * В диалоге две секции, в каждой своя кнопка «Применить»:
- *   • Холостые — режим + фикс.значение → «Применить холостые».
- *   • Весовой контроль — шаг N → «Применить весовой контроль».
- *
- * Диалог НЕ закрывается после применения — можно настроить обе секции.
- */
 @Composable
 fun OrderSettingsDialog(
     orderTitle: String,
@@ -568,9 +559,6 @@ fun OrderSettingsDialog(
                     )
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 1: ХОЛОСТЫЕ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.CheckBoxOutlineBlank, null,
@@ -674,9 +662,6 @@ fun OrderSettingsDialog(
                     Text("Сбросить вес холостых в наряде")
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 2: ВЕСОВОЙ КОНТРОЛЬ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Scale, null,
@@ -1033,14 +1018,14 @@ fun ImportErrorDialog(
     )
 }
 
-@Composable
 /**
  * FIX 5.9-sverka-fixes (C):
  * Переработан по образцу AlreadyFoundDialog — список действий.
- *  - «Отметить как найденную» — setPostponed(false) + setFound(true).
- *  - «Снять отложенную» — setPostponed(false), остаётся ненайденной.
- *  - «Заметка и фото» — если есть.
- *  - «Редактировать пробу».
+ *
+ *   • «Отметить как найденную» — снимает postponed и ставит found=true.
+ *   • «Снять отложенную» — снимает postponed, проба остаётся ненайденной.
+ *   • «Заметка и фото» — если есть заметка/фото.
+ *   • «Редактировать пробу» — открывает редактор.
  */
 @Composable
 fun PostponedDialog(
@@ -1094,38 +1079,5 @@ fun PostponedDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
-    )
-}
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Проба отложена") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.PauseCircle, null,
-                        tint = MaterialTheme.colorScheme.tertiary)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Эта проба помечена как отложенная",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Проба ${row.sampleNumber}. Вы можете отметить её как найденную " +
-                            "(если она найдена) или просмотреть заметку.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Отметить как найденную") } },
-        dismissButton = {
-            Row {
-                if (row.hasNote || row.hasPhoto) {
-                    TextButton(onClick = onViewNote) { Text("Заметка") }
-                    Spacer(Modifier.width(4.dp))
-                }
-                TextButton(onClick = onDismiss) { Text("Отмена") }
-            }
-        }
     )
 }
