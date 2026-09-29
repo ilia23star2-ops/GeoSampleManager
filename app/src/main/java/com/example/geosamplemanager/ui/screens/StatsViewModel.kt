@@ -31,12 +31,13 @@ import java.util.Locale
 
 /**
  * FIX 5.9-stats-charts-3:
- *  - Drill stack из уровней Root / Category / SubCategory / Well.
- *  - Category — 5 категорий с приоритетом.
- *  - SubCategory — подкатегория внутри Category(FOUND|NOT_FOUND).
- *  - Well — конкретная скважина.
- *  - filterRowsByDrillStack применяет стек последовательно.
+ *  - drill stack: Root / Category / SubCategory / Well.
  *  - wellFilter — фильтр по номеру скважины на уровне скважин.
+ *  - Сброс drill при смене наряда.
+ *
+ * ВАЖНО: этот ViewModel НЕ знает про CategoryKey/SubKey —
+ * stack хранит готовые DrillLevel. Фильтрация проб по стеку
+ * делается чистой функцией filterRowsByDrillStack в StatsCharts.kt.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -249,6 +250,8 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
+    // HTML-отчёт
+    // ================================================================
 
     suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
         return try {
@@ -337,6 +340,8 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             null
         }
     }
+
+    // ================================================================
 
     private fun buildTree(
         areas: List<AreaEntity>,
