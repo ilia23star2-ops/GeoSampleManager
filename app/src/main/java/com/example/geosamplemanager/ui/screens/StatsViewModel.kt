@@ -30,11 +30,13 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-charts-2:
- *  - drillStack: стек уровней drill-down (Root → Category → SubCategory → Well).
- *  - wellFilter: фильтр по номеру скважины.
- *  - getDrillRows(order): фильтрация проб по стеку.
- *  - Сброс drill при смене наряда.
+ * FIX 5.9-stats-charts-3:
+ *  - Drill stack из уровней Root / Category / SubCategory / Well.
+ *  - Category — 5 категорий с приоритетом.
+ *  - SubCategory — подкатегория внутри Category(FOUND|NOT_FOUND).
+ *  - Well — конкретная скважина.
+ *  - filterRowsByDrillStack применяет стек последовательно.
+ *  - wellFilter — фильтр по номеру скважины на уровне скважин.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -246,37 +248,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _wellFilter.value = text
     }
 
-    /**
-     * FIX 5.9-stats-charts-2: фильтр строк по стеку drill-down.
-     */
-    fun filterRowsByStack(rows: List<SampleRow>, stack: List<DrillLevel>): List<SampleRow> {
-        var result = rows
-        for (level in stack) {
-            result = when (level) {
-                is DrillLevel.Root -> result
-                is DrillLevel.Category -> result.filter { r ->
-                    when (level.kind) {
-                        SliceKind.FOUND -> !r.hasImportError && !r.postponed && r.found
-                        SliceKind.NOT_FOUND -> !r.hasImportError && !r.postponed && !r.found
-                        SliceKind.POSTPONED -> r.postponed
-                        SliceKind.ERRORS -> r.hasImportError
-                    }
-                }
-                is DrillLevel.SubCategory -> result.filter { r ->
-                    when (level.sub) {
-                        SubKind.NORMAL -> r.status == SampleStatus.NORMAL
-                        SubKind.BLANK -> r.status == SampleStatus.BLANK
-                        SubKind.CONTROL -> r.status == SampleStatus.CONTROL
-                    }
-                }
-                is DrillLevel.Well -> result.filter { it.wellNumber == level.well }
-            }
-        }
-        return result
-    }
-
-    // ================================================================
-    // FIX 5.9-report-html: HTML-отчёт
     // ================================================================
 
     suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
@@ -366,8 +337,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             null
         }
     }
-
-    // ================================================================
 
     private fun buildTree(
         areas: List<AreaEntity>,
