@@ -19,151 +19,240 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
  * FIX 5.9-stats-charts-2:
- * Единый срез для круга и столбцов. Drill-down через payload строку.
+ * 5 категорий с приоритетом: found > postponed > control > blank > not_found.
+ * Круг и столбцы — одно и то же, разные формы.
  *
- * FIX 5.9-stats-charts-2/3:
- * DrillLevel.Well упрощён до одного поля well.
- * Категория и подкатегория уже отфильтрованы предыдущими уровнями стека.
+ * FIX 5.9-stats-charts-3:
+ *  - В круге цифры на каждом секторе, центр пустой.
+ *  - Прогресс-бар по скважине: сегменты по приоритету, легенда X/Y.
  */
 
-enum class SliceKind { FOUND, NOT_FOUND, POSTPONED, ERRORS }
-enum class SubKind { NORMAL, BLANK, CONTROL }
+// ====================================================================
+// МОДЕЛИ
+// ====================================================================
 
-sealed class DrillLevel {
-    data object Root : DrillLevel()
-    data class Category(val kind: SliceKind) : DrillLevel()
-    data class SubCategory(val cat: SliceKind, val sub: SubKind) : DrillLevel()
-    data class Well(val well: String) : DrillLevel()
+enum class CategoryKey { FOUND, NOT_FOUND, POSTPONED, BLANK, CONTROL }
+enum class SubKey { POSTPONED, CONTROL, BLANK, NORMAL }
+
+/** Порядок отображения в круге и столбцах. */
+val CATEGORY_ORDER = listOf(
+    CategoryKey.FOUND,
+    CategoryKey.NOT_FOUND,
+    CategoryKey.POSTPONED,
+    CategoryKey.BLANK,
+    CategoryKey.CONTROL
+)
+
+fun categoryLabel(key: CategoryKey): String = when (key) {
+    CategoryKey.FOUND -> "Найдено"
+    CategoryKey.NOT_FOUND -> "Не найдено"
+    CategoryKey.POSTPONED -> "Отложено"
+    CategoryKey.BLANK -> "Холостые"
+    CategoryKey.CONTROL -> "ВК"
 }
 
-data class ChartDatum(
+fun categoryColor(key: CategoryKey): Color = when (key) {
+    CategoryKey.FOUND -> Color(0xFF2E7D32)
+    CategoryKey.NOT_FOUND -> Color(0xFFC62828)
+    CategoryKey.POSTPONED -> Color(0xFF1976D2)
+    CategoryKey.BLANK -> Color(0xFFF9A825)
+    CategoryKey.CONTROL -> Color(0xFF7B1FA2)
+}
+
+fun subLabel(sub: SubKey): String = when (sub) {
+    SubKey.POSTPONED -> "Отложено"
+    SubKey.CONTROL -> "ВК"
+    SubKey.BLANK -> "Холостые"
+    SubKey.NORMAL -> "Обычные"
+}
+
+fun subOrder(): List<SubKey> = listOf(
+    SubKey.NORMAL, SubKey.BLANK, SubKey.CONTROL, SubKey.POSTPONED
+)
+
+/**
+ * Приоритет отнесения пробы к категории.
+ * Первое совпадение выигрывает.
+ */
+fun categoryOf(row: SampleRow): CategoryKey = when {
+    row.found -> CategoryKey.FOUND
+    row.postponed -> CategoryKey.POSTPONED
+    row.weightControl -> CategoryKey.CONTROL
+    row.isBlank -> CategoryKey.BLANK
+    else -> CategoryKey.NOT_FOUND
+}
+
+/**
+ * Приоритет подкатегории внутри уже отфильтрованных проб.
+ */
+fun subOf(row: SampleRow): SubKey = when {
+    row.postponed -> SubKey.POSTPONED
+    row.weightControl -> SubKey.CONTROL
+    row.isBlank -> SubKey.BLANK
+    else -> SubKey.NORMAL
+}
+
+// ====================================================================
+// ДАННЫЕ ДЛЯ КРУГА / СТОЛБЦОВ
+// ====================================================================
+
+data class CategoryDatum(
+    val key: CategoryKey,
     val label: String,
     val value: Int,
     val color: Color,
     val payload: String
 )
 
-data class WellProgress(
+/**
+ * 5 категорий с приоритетом. Сумма значений = всего проб.
+ */
+fun computeCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
+    val counts = IntArray(CategoryKey.values().size)
+    rows.forEach { r -> counts[categoryOf(r).ordinal]++ }
+
+    return CATEGORY_ORDER.mapNotNull { key ->
+        val v = counts[key.ordinal]
+        if (v <= 0) null
+        else CategoryDatum(
+            key = key,
+            label = categoryLabel(key),
+            value = v,
+            color = categoryColor(key),
+            payload = key.name
+        )
+    }
+}
+
+/**
+ * 4 подкатегории внутри уже отфильтрованного набора.
+ * Сумма = rows.size.
+ */
+fun computeSubCategoryData(rows: List<SampleRow>): List<CategoryDatum> {
+    val counts = IntArray(SubKey.values().size)
+    rows.forEach { r -> counts[subOf(r).ordinal]++ }
+
+    return subOrder().mapNotNull { sub ->
+        val v = counts[sub.ordinal]
+        if (v <= 0) null
+        else CategoryDatum(
+            key = when (sub) {
+                SubKey.POSTPONED -> CategoryKey.POSTPONED
+                SubKey.CONTROL -> CategoryKey.CONTROL
+                SubKey.BLANK -> CategoryKey.BLANK
+                SubKey.NORMAL -> CategoryKey.NOT_FOUND
+            },
+            label = subLabel(sub),
+            value = v,
+            color = subColor(sub),
+            payload = sub.name
+        )
+    }
+}
+
+private fun subColor(sub: SubKey): Color = when (sub) {
+    SubKey.NORMAL -> Color(0xFF546E7A)
+    SubKey.BLANK -> Color(0xFFF9A825)
+    SubKey.CONTROL -> Color(0xFF7B1FA2)
+    SubKey.POSTPONED -> Color(0xFF1976D2)
+}
+
+// ====================================================================
+// ДАННЫЕ ДЛЯ СКВАЖИН
+// ====================================================================
+
+data class WellBarSegment(val key: CategoryKey, val color: Color, val value: Int)
+
+data class WellStats(
     val wellNumber: String,
+    val total: Int,
     val found: Int,
-    val total: Int
+    val notFound: Int,
+    val postponed: Int,
+    val postponedFound: Int,
+    val blank: Int,
+    val blankFound: Int,
+    val control: Int,
+    val controlFound: Int,
+    val segments: List<WellBarSegment>
 )
 
-val COLOR_FOUND = Color(0xFF2E7D32)
-val COLOR_NOT_FOUND = Color(0xFFC62828)
-val COLOR_POSTPONED = Color(0xFF1976D2)
-val COLOR_ERRORS = Color(0xFFB71C1C)
-val COLOR_NORMAL = Color(0xFF1976D2)
-val COLOR_BLANK = Color(0xFFF9A825)
-val COLOR_CONTROL = Color(0xFF7B1FA2)
-
-// ====================================================================
-// ФИЛЬТРАЦИЯ ПО СТЕКУ
-// ====================================================================
-
-fun filterRowsByDrillStack(rows: List<SampleRow>, stack: List<DrillLevel>): List<SampleRow> {
-    var result = rows
-    for (level in stack) {
-        result = when (level) {
-            is DrillLevel.Root -> result
-            is DrillLevel.Category -> result.filter { r ->
-                when (level.kind) {
-                    SliceKind.FOUND -> !r.hasImportError && !r.postponed && r.found
-                    SliceKind.NOT_FOUND -> !r.hasImportError && !r.postponed && !r.found
-                    SliceKind.POSTPONED -> r.postponed
-                    SliceKind.ERRORS -> r.hasImportError
-                }
-            }
-            is DrillLevel.SubCategory -> result.filter { r ->
-                when (level.sub) {
-                    SubKind.NORMAL -> r.status == SampleStatus.NORMAL
-                    SubKind.BLANK -> r.status == SampleStatus.BLANK
-                    SubKind.CONTROL -> r.status == SampleStatus.CONTROL
-                }
-            }
-            is DrillLevel.Well -> result.filter { it.wellNumber == level.well }
-        }
-    }
-    return result
-}
-
-// ====================================================================
-// ВЫЧИСЛЕНИЕ ДАННЫХ
-// ====================================================================
-
-fun computeCategoryData(rows: List<SampleRow>): List<ChartDatum> {
-    var errors = 0; var postponed = 0; var found = 0; var notFound = 0
-    rows.forEach { r ->
-        when {
-            r.hasImportError -> errors++
-            r.postponed -> postponed++
-            r.found -> found++
-            else -> notFound++
-        }
-    }
-    return buildList {
-        if (found > 0) add(ChartDatum("Найдено", found, COLOR_FOUND, "FOUND"))
-        if (notFound > 0) add(ChartDatum("Не найдено", notFound, COLOR_NOT_FOUND, "NOT_FOUND"))
-        if (postponed > 0) add(ChartDatum("Отложено", postponed, COLOR_POSTPONED, "POSTPONED"))
-        if (errors > 0) add(ChartDatum("Ошибки", errors, COLOR_ERRORS, "ERRORS"))
-    }
-}
-
-fun computeSubCategoryData(rows: List<SampleRow>): List<ChartDatum> {
-    var normal = 0; var blank = 0; var control = 0
-    rows.forEach { r ->
-        when (r.status) {
-            SampleStatus.NORMAL -> normal++
-            SampleStatus.BLANK -> blank++
-            SampleStatus.CONTROL -> control++
-        }
-    }
-    return buildList {
-        if (normal > 0) add(ChartDatum("Обычные", normal, COLOR_NORMAL, "NORMAL"))
-        if (blank > 0) add(ChartDatum("Холостые", blank, COLOR_BLANK, "BLANK"))
-        if (control > 0) add(ChartDatum("ВК", control, COLOR_CONTROL, "CONTROL"))
-    }
-}
-
-fun computeWellProgress(rows: List<SampleRow>): List<WellProgress> {
+fun computeWellStats(rows: List<SampleRow>): List<WellStats> {
     return rows
         .groupBy { it.wellNumber }
-        .map { (well, list) ->
-            WellProgress(well, list.count { it.found }, list.size)
-        }
+        .map { (well, list) -> statsFor(well, list) }
         .sortedBy { it.wellNumber }
 }
 
+private fun statsFor(well: String, list: List<SampleRow>): WellStats {
+    val total = list.size
+    val found = list.count { it.found }
+    val postponedRows = list.filter { it.postponed }
+    val blankRows = list.filter { it.isBlank }
+    val controlRows = list.filter { it.weightControl }
+
+    // Сегменты бара — по приоритету, каждая проба только в одном сегменте.
+    val segCounts = IntArray(CategoryKey.values().size)
+    list.forEach { r -> segCounts[categoryOf(r).ordinal]++ }
+    val segments = CATEGORY_ORDER.mapNotNull { key ->
+        val v = segCounts[key.ordinal]
+        if (v <= 0) null
+        else WellBarSegment(key, categoryColor(key), v)
+    }
+
+    return WellStats(
+        wellNumber = well,
+        total = total,
+        found = found,
+        notFound = total - found,
+        postponed = postponedRows.size,
+        postponedFound = postponedRows.count { it.found },
+        blank = blankRows.size,
+        blankFound = blankRows.count { it.found },
+        control = controlRows.size,
+        controlFound = controlRows.count { it.found },
+        segments = segments
+    )
+}
+
 // ====================================================================
-// КРУГОВАЯ
+// КРУГ
 // ====================================================================
 
 @Composable
 fun PieChart(
-    data: List<ChartDatum>,
-    centerLabel: String,
+    data: List<CategoryDatum>,
     onSliceClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val total = data.sumOf { it.value }
     if (total == 0) { EmptyChart("Нет данных", modifier); return }
 
+    val textMeasurer = rememberTextMeasurer()
+
     Column(modifier = modifier.fillMaxWidth()) {
         Box(
-            modifier = Modifier.fillMaxWidth().height(220.dp),
+            modifier = Modifier.fillMaxWidth().height(240.dp),
             contentAlignment = Alignment.Center
         ) {
             Canvas(
                 modifier = Modifier
-                    .size(190.dp)
+                    .size(210.dp)
                     .pointerInput(data) {
                         detectTapGestures { tap ->
                             val cx = size.width / 2f
@@ -189,6 +278,9 @@ fun PieChart(
                 val diameter = size.minDimension
                 val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
                 val arcSize = Size(diameter, diameter)
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+
                 var startAngle = -90f
                 data.forEach { slice ->
                     val sweep = 360f * slice.value / total
@@ -200,20 +292,31 @@ fun PieChart(
                         topLeft = topLeft,
                         size = arcSize
                     )
+
+                    // Цифра на секторе — если сектор ≥ 25°.
+                    if (sweep >= 25f) {
+                        val mid = Math.toRadians((startAngle + sweep / 2).toDouble())
+                        val r = (diameter / 2f) * 0.62f
+                        val tx = cx + r * cos(mid).toFloat()
+                        val ty = cy + r * sin(mid).toFloat()
+                        val layout = textMeasurer.measure(
+                            text = slice.value.toString(),
+                            style = TextStyle(
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                        drawText(
+                            textLayoutResult = layout,
+                            topLeft = Offset(
+                                tx - layout.size.width / 2f,
+                                ty - layout.size.height / 2f
+                            )
+                        )
+                    }
                     startAngle += sweep
                 }
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    total.toString(),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    centerLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -223,7 +326,7 @@ fun PieChart(
 
 @Composable
 private fun ChartLegend(
-    data: List<ChartDatum>,
+    data: List<CategoryDatum>,
     total: Int,
     onClick: (String) -> Unit
 ) {
@@ -263,7 +366,7 @@ private fun ChartLegend(
                     "$pct%",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(52.dp)
+                    modifier = Modifier.width(58.dp)
                 )
             }
         }
@@ -276,7 +379,7 @@ private fun ChartLegend(
 
 @Composable
 fun BarChart(
-    data: List<ChartDatum>,
+    data: List<CategoryDatum>,
     onBarClick: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -323,8 +426,17 @@ fun BarChart(
                             modifier = Modifier
                                 .fillMaxHeight()
                                 .fillMaxWidth(datum.value.toFloat() / maxValue)
-                                .background(datum.color)
-                        )
+                                .background(datum.color),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                datum.value.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                        }
                     }
                 }
             }
@@ -333,12 +445,12 @@ fun BarChart(
 }
 
 // ====================================================================
-// СКВАЖИНЫ
+// ПО СКВАЖИНАМ
 // ====================================================================
 
 @Composable
 fun WellProgressChart(
-    items: List<WellProgress>,
+    items: List<WellStats>,
     filter: String,
     onWellClick: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -352,14 +464,6 @@ fun WellProgressChart(
     if (items.isEmpty()) { EmptyChart("Нет скважин", modifier); return }
 
     Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            LegendItem(COLOR_FOUND, "Найдено")
-            LegendItem(COLOR_NOT_FOUND, "Не найдено")
-        }
-        Spacer(Modifier.height(8.dp))
         if (filtered.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxWidth().padding(24.dp),
@@ -375,9 +479,9 @@ fun WellProgressChart(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp)
+                    .heightIn(max = 420.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 filtered.forEach { wp -> WellRow(wp, onWellClick) }
             }
@@ -386,30 +490,35 @@ fun WellProgressChart(
 }
 
 @Composable
-private fun WellRow(wp: WellProgress, onClick: (String) -> Unit) {
+private fun WellRow(wp: WellStats, onClick: (String) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .clickable { onClick(wp.wellNumber) }
-            .padding(vertical = 4.dp, horizontal = 4.dp)
+            .padding(vertical = 6.dp, horizontal = 4.dp)
     ) {
+        // Верхняя строка: имя скважины + X/Y общее
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 wp.wellNumber,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                "${wp.found}/${wp.total}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                "${wp.found} / ${wp.total}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
         }
-        Spacer(Modifier.height(4.dp))
+
+        Spacer(Modifier.height(6.dp))
+
+        // Прогресс-бар сегментами
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -417,43 +526,39 @@ private fun WellRow(wp: WellProgress, onClick: (String) -> Unit) {
                 .clip(RoundedCornerShape(4.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
         ) {
-            if (wp.total > 0 && wp.found > 0) {
-                Box(
-                    modifier = Modifier
-                        .weight(wp.found.toFloat())
-                        .fillMaxHeight()
-                        .background(COLOR_FOUND)
-                )
-            }
-            val notFound = wp.total - wp.found
-            if (notFound > 0) {
-                Box(
-                    modifier = Modifier
-                        .weight(notFound.toFloat())
-                        .fillMaxHeight()
-                        .background(COLOR_NOT_FOUND)
-                )
+            wp.segments.forEach { seg ->
+                if (seg.value > 0) {
+                    Box(
+                        modifier = Modifier
+                            .weight(seg.value.toFloat())
+                            .fillMaxHeight()
+                            .background(seg.color)
+                    )
+                }
             }
         }
+
+        Spacer(Modifier.height(6.dp))
+
+        // Легенда X/Y
+        Text(
+            text = buildWellLegend(wp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            lineHeight = 15.sp
+        )
     }
 }
 
-@Composable
-private fun LegendItem(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(12.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(color)
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+private fun buildWellLegend(wp: WellStats): String {
+    val parts = mutableListOf<String>()
+    parts.add("Найдено ${wp.found}/${wp.total}")
+    parts.add("Не найдено ${wp.notFound}/${wp.total}")
+    if (wp.control > 0) parts.add("ВК ${wp.controlFound}/${wp.control}")
+    if (wp.blank > 0) parts.add("Холостые ${wp.blankFound}/${wp.blank}")
+    if (wp.postponed > 0) parts.add("Отложено ${wp.postponedFound}/${wp.postponed}")
+    return parts.joinToString(" · ")
 }
 
 // ====================================================================
@@ -469,20 +574,8 @@ private fun EmptyChart(text: String, modifier: Modifier = Modifier) {
         Text(
             text,
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
         )
     }
-}
-
-fun sliceKindLabel(kind: SliceKind): String = when (kind) {
-    SliceKind.FOUND -> "Найдено"
-    SliceKind.NOT_FOUND -> "Не найдено"
-    SliceKind.POSTPONED -> "Отложено"
-    SliceKind.ERRORS -> "Ошибки"
-}
-
-fun subKindLabel(sub: SubKind): String = when (sub) {
-    SubKind.NORMAL -> "Обычные"
-    SubKind.BLANK -> "Холостые"
-    SubKind.CONTROL -> "ВК"
 }
