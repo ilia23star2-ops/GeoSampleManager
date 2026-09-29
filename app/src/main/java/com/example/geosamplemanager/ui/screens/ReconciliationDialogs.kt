@@ -507,15 +507,6 @@ fun DeleteSampleDialog(
 // НАСТРОЙКИ НАРЯДА
 // ====================================================================
 
-/**
- * FIX 5.8.9bug-3-fix-5: холостые и ВК применяются раздельно.
- *
- * В диалоге две секции, в каждой своя кнопка «Применить»:
- *   • Холостые — режим + фикс.значение → «Применить холостые».
- *   • Весовой контроль — шаг N → «Применить весовой контроль».
- *
- * Диалог НЕ закрывается после применения — можно настроить обе секции.
- */
 @Composable
 fun OrderSettingsDialog(
     orderTitle: String,
@@ -568,9 +559,6 @@ fun OrderSettingsDialog(
                     )
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 1: ХОЛОСТЫЕ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.CheckBoxOutlineBlank, null,
@@ -674,9 +662,6 @@ fun OrderSettingsDialog(
                     Text("Сбросить вес холостых в наряде")
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 2: ВЕСОВОЙ КОНТРОЛЬ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Scale, null,
@@ -1033,43 +1018,66 @@ fun ImportErrorDialog(
     )
 }
 
+/**
+ * FIX 5.9-sverka-fixes (C):
+ * Переработан по образцу AlreadyFoundDialog — список действий.
+ *
+ *   • «Отметить как найденную» — снимает postponed и ставит found=true.
+ *   • «Снять отложенную» — снимает postponed, проба остаётся ненайденной.
+ *   • «Заметка и фото» — если есть заметка/фото.
+ *   • «Редактировать пробу» — открывает редактор.
+ */
 @Composable
 fun PostponedDialog(
     row: SampleRow,
-    onConfirm: () -> Unit,
+    onMarkFound: () -> Unit,
+    onUnpostpone: () -> Unit,
     onViewNote: () -> Unit,
+    onEdit: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Проба отложена") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.PauseCircle, null,
                         tint = MaterialTheme.colorScheme.tertiary)
                     Spacer(Modifier.width(8.dp))
-                    Text("Эта проба помечена как отложенная",
+                    Text("Проба ${row.sampleNumber} отложена",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "Проба ${row.sampleNumber}. Вы можете отметить её как найденную " +
-                            "(если она найдена) или просмотреть заметку.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text("Что сделать?",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold)
+
+                TextButton(onClick = onMarkFound) {
+                    Icon(Icons.Filled.CheckCircle, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Отметить как найденную")
+                }
+                TextButton(onClick = onUnpostpone) {
+                    Icon(Icons.Filled.Undo, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Снять отложенную (оставить ненайденной)")
+                }
+                if (row.hasNote || row.hasPhoto) {
+                    TextButton(onClick = onViewNote) {
+                        Icon(Icons.Filled.EditNote, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Заметка и фото")
+                    }
+                }
+                TextButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Редактировать пробу")
+                }
             }
         },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Отметить как найденную") } },
-        dismissButton = {
-            Row {
-                if (row.hasNote || row.hasPhoto) {
-                    TextButton(onClick = onViewNote) { Text("Заметка") }
-                    Spacer(Modifier.width(4.dp))
-                }
-                TextButton(onClick = onDismiss) { Text("Отмена") }
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }

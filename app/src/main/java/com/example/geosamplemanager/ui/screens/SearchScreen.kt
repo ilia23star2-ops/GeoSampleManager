@@ -50,9 +50,18 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * FIX 5.8.11-e4-ui-1:
- * Порог появления кнопки «Наверх». Показываем, если прокрутили
- * больше 10 элементов списка (firstVisibleItemIndex > 10).
+ * FIX 5.9-search-bulk:
+ *  - «Отметить все» и «Сбросить все» в заголовке группы работают
+ *    только с ВИДИМЫМИ строками (учитывают поиск и фильтры).
+ *
+ * FIX 5.9-sverka-fixes (C):
+ *  - PostponedDialog теперь имеет 5 параметров (onMarkFound,
+ *    onUnpostpone, onViewNote, onEdit, onDismiss).
+ *  - «Отметить как найденную» снимает postponed и ставит found=true.
+ *
+ * FIX 5.9-sverka-fixes (D):
+ *  - Колонки «Скважина» и «№ пробы» растягиваются на всё свободное
+ *    место (Modifier.weight(1f)). Заголовок и строки синхронизированы.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -95,15 +104,12 @@ fun SearchScreen(
     val state = viewModel.state
     val context = LocalContext.current
 
-    // FIX 5.8.9e-3: не даём экрану гаснуть, пока сессия ГП активна.
     val view = LocalView.current
     DisposableEffect(state.voiceStatus) {
         view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
         onDispose { view.keepScreenOn = false }
     }
 
-    // FIX 5.8.11-e4-ui-1: состояние скролла списка проб
-    // + флаг показа кнопки «Наверх».
     val listState = rememberLazyListState()
     val showScrollTop by remember {
         derivedStateOf { shouldShowScrollTop(listState.firstVisibleItemIndex) }
@@ -121,8 +127,11 @@ fun SearchScreen(
     var settingsOrderTitle by remember { mutableStateOf<String?>(null) }
     var confirmResetBlankWeight by remember { mutableStateOf(false) }
     var confirmResetWeightControl by remember { mutableStateOf(false) }
+
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
-    var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
+    var bulkDialogRowIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
 
@@ -249,9 +258,6 @@ fun SearchScreen(
         notePhotos = photos
     }
 
-    /**
-     * FIX 5.8.9d-3b: единый алгоритм через analyzeMark.
-     */
     fun onToggleFound(row: SampleRow) {
         val decision = analyzeMark(toMarkContext(state, row))
         when (decision) {
@@ -282,18 +288,26 @@ fun SearchScreen(
     }
 
     fun onMarkAllClick(groupId: String) {
-        val decisions = state.collectBulkDecisions(groupId)
+        val rowIds = state.visibleRowsForGroup(groupId).map { it.id }.toSet()
+        if (rowIds.isEmpty()) {
+            scope.launch { snackbarHostState.showSnackbar("Нечего отмечать") }
+            return
+        }
+        val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
-            val marked = viewModel.applyBulkMarkFound(groupId, emptyMap(), emptyMap())
+            val marked = viewModel.applyBulkMarkFoundForRows(
+                groupId, rowIds, emptyMap(), emptyMap()
+            )
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
-        } else bulkDialogGroupId = groupId
+        } else {
+            bulkDialogGroupId = groupId
+            bulkDialogRowIds = rowIds
+        }
     }
 
     val isMulti = state.isMultiQuery
     val items by remember {
         derivedStateOf {
-            // FIX 5.8.6-5f: явные чтения State — гарантия, что
-            // derivedStateOf подписан на изменения _groups и _queryGroups.
             @Suppress("UNUSED_EXPRESSION")
             state.groups.toList()
             @Suppress("UNUSED_EXPRESSION")
@@ -319,7 +333,6 @@ fun SearchScreen(
             HorizontalDivider()
 
             LazyColumn(
-                // FIX 5.8.11-e4-ui-1: state для кнопки «Наверх».
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
@@ -442,7 +455,12 @@ fun SearchScreen(
                                         )
                                     },
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
-                                    onClearAllClick = { confirmClearAllGroupId = item.group.id },
+                                    onClearAllClick = {
+                                        val rowIds = state.visibleRowsForGroup(item.group.id)
+                                            .map { it.id }
+                                            .toSet()
+                                        clearAllData = item.group.id to rowIds
+                                    },
                                     onAddSample = {
                                         scope.launch {
                                             snackbarHostState.showSnackbar("Добавить пробу — в разработке")
@@ -489,8 +507,6 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.8.10-g2 (И-3):
-        // Snackbar поднят на 100 dp — не перекрывает панель ГП.
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
@@ -498,10 +514,6 @@ fun SearchScreen(
                 .padding(bottom = 100.dp, start = 16.dp, end = 16.dp)
         )
 
-        // FIX 5.8.11-e4-ui-1:
-        // Кнопка «Наверх». Появляется, если в списке прокрутили больше
-        // 10 элементов. Маленькая, внизу справа, над панелью ГП.
-        // Скролл — мгновенный (scrollToItem, не animateScrollToItem).
         if (showScrollTop) {
             SmallFloatingActionButton(
                 onClick = {
@@ -520,8 +532,6 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.8.10-g1/g2 (И-3):
-        // Панель ГП — немодальная, прижата к низу экрана.
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
@@ -652,12 +662,22 @@ fun SearchScreen(
         )
     }
 
+    // FIX 5.9-sverka-fixes (C): PostponedDialog с новыми параметрами.
     postponedDialogRowId?.let { id ->
         val row = state.rowById(id)
         if (row != null) PostponedDialog(
             row = row,
-            onConfirm = { viewModel.setFound(id, true); postponedDialogRowId = null },
+            onMarkFound = {
+                viewModel.setPostponed(id, false)
+                viewModel.setFound(id, true)
+                postponedDialogRowId = null
+            },
+            onUnpostpone = {
+                viewModel.setPostponed(id, false)
+                postponedDialogRowId = null
+            },
             onViewNote = { noteDialogRowId = id; postponedDialogRowId = null },
+            onEdit = { editDialogRowId = id; postponedDialogRowId = null },
             onDismiss = { postponedDialogRowId = null }
         )
     }
@@ -741,37 +761,49 @@ fun SearchScreen(
     }
 
     bulkDialogGroupId?.let { gid ->
-        val decisions = state.collectBulkDecisions(gid)
+        val rowIds = bulkDialogRowIds
+        val decisions = state.collectBulkDecisionsForRows(gid, rowIds)
         BulkActionsDialog(
             decisions = decisions,
             onApply = { weights, postponedActions ->
-                val marked = viewModel.applyBulkMarkFound(gid, weights, postponedActions)
+                val marked = viewModel.applyBulkMarkFoundForRows(
+                    gid, rowIds, weights, postponedActions
+                )
                 bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
                 scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
             },
-            onDismiss = { bulkDialogGroupId = null }
+            onDismiss = {
+                bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
+            }
         )
     }
 
-    confirmClearAllGroupId?.let { gid ->
+    clearAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
         if (group != null) {
+            val n = rowIds.size
             AlertDialog(
-                onDismissRequest = { confirmClearAllGroupId = null },
-                title = { Text("Сбросить все отметки?") },
+                onDismissRequest = { clearAllData = null },
+                title = { Text("Сбросить отметки?") },
                 text = {
                     Text("Все отметки «найдена» в группе " +
-                            "«${group.areaTitle} / ${group.orderTitle}» будут сняты. Продолжить?")
+                            "«${group.areaTitle} / ${group.orderTitle}» " +
+                            "будут сняты. Видимых проб: $n. Продолжить?")
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.clearAllFound(gid); confirmClearAllGroupId = null
+                        viewModel.clearAllFoundForRows(gid, rowIds)
+                        clearAllData = null
                     }) { Text("Да") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { confirmClearAllGroupId = null }) { Text("Отмена") }
+                    TextButton(onClick = { clearAllData = null }) { Text("Отмена") }
                 }
             )
+        } else {
+            clearAllData = null
         }
     }
 
@@ -1370,11 +1402,6 @@ private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     }
 }
 
-/**
- * FIX 5.8.11-sort-fix:
- * Раньше было просто «1 · NV1366» — непонятно, что такое «1».
- * Теперь «Наряд №1 · NV1366».
- */
 private fun buildAnswerLine(qa: QuickAnswer): String {
     val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
     val value = qa.answerValue
@@ -1565,6 +1592,12 @@ private fun FiltersRow(
     }
 }
 
+/**
+ * FIX 5.9-sverka-fixes (D):
+ * «Скважина» и «№ пробы» растягиваются (weight). «п/п», «Интервал»,
+ * «Вес», «Характеристика», «Тип» — фиксированные. Заголовок синхронизирован
+ * со строками.
+ */
 @Composable
 private fun TableHeader(showCharacteristic: Boolean, wellColumnTitle: String) {
     Row(
@@ -1574,26 +1607,43 @@ private fun TableHeader(showCharacteristic: Boolean, wellColumnTitle: String) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Spacer(Modifier.width(48.dp))
-        HeaderCell("п/п", 36.dp)
-        HeaderCell(wellColumnTitle, 90.dp)
-        HeaderCell("№ пробы", 110.dp)
-        HeaderCell("Интервал", 100.dp)
-        HeaderCell("Вес", 90.dp)
-        if (showCharacteristic) HeaderCell("Характеристика", 120.dp)
-        HeaderCell("Тип", 110.dp)
-        Spacer(Modifier.weight(1f))
-        Spacer(Modifier.width(80.dp))
+        FixedHeaderCell("п/п", 36.dp)
+        WeightedHeaderCell(wellColumnTitle)
+        WeightedHeaderCell("№ пробы")
+        FixedHeaderCell("Интервал", 100.dp)
+        FixedHeaderCell("Вес", 90.dp)
+        if (showCharacteristic) FixedHeaderCell("Характеристика", 120.dp)
+        FixedHeaderCell("Тип", 110.dp)
+        Spacer(Modifier.width(120.dp))
     }
 }
 
 @Composable
-private fun HeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
-    Text(text, style = MaterialTheme.typography.labelSmall,
+private fun FixedHeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.width(width))
+        modifier = Modifier.width(width)
+    )
 }
 
+@Composable
+private fun RowScope.WeightedHeaderCell(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.weight(1f)
+    )
+}
+
+/**
+ * FIX 5.9-sverka-fixes (D):
+ * Скважина и № пробы — weight(1f), чтобы заполнить всю доступную ширину.
+ */
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,
@@ -1618,21 +1668,24 @@ private fun SampleRowItem(
             modifier = Modifier.width(36.dp)
         )
 
-        Column(modifier = Modifier.width(90.dp)) {
+        Column(modifier = Modifier.weight(1f)) {
             Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium)
+                fontWeight = FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("скв.", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Column(modifier = Modifier.width(110.dp)) {
-            Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("№ в скв.: ${row.numberInWell}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Column(modifier = Modifier.width(100.dp)) {
             Text("${row.intervalFrom}–${row.intervalTo}",
-                style = MaterialTheme.typography.bodySmall)
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("интервал, м", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -1644,9 +1697,10 @@ private fun SampleRowItem(
         ) {
             Text(text = row.weight?.let { "$it кг" } ?: "—",
                 style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (weightClickable) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurface)
-            if (row.controlWeight != null) {
+            if (row.weightControl && row.controlWeight != null) {
                 Text("(${row.controlWeight} кг)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary)
@@ -1680,59 +1734,64 @@ private fun SampleRowItem(
             )
         }
 
-        Spacer(Modifier.weight(1f))
+        Box(
+            modifier = Modifier.width(120.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (row.weightControl) Icon(Icons.Filled.Scale, "ВК",
+                    tint = Color(0xFF7B1FA2), modifier = Modifier.padding(end = 4.dp))
+                if (row.postponed) Icon(Icons.Filled.PauseCircle, "Отложена",
+                    tint = Color(0xFF1976D2), modifier = Modifier.padding(end = 4.dp))
+                if (row.hasNote) Icon(Icons.Filled.EditNote, "Заметка",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 4.dp))
+                if (row.hasPhoto) Icon(Icons.Filled.PhotoCamera, "Фото",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 4.dp))
+                if (row.hasImportError) Icon(Icons.Filled.Warning, "Ошибка",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(end = 4.dp))
 
-        if (row.weightControl) Icon(Icons.Filled.Scale, "ВК",
-            tint = Color(0xFF7B1FA2), modifier = Modifier.padding(end = 4.dp))
-        if (row.postponed) Icon(Icons.Filled.PauseCircle, "Отложена",
-            tint = Color(0xFF1976D2), modifier = Modifier.padding(end = 4.dp))
-        if (row.hasNote) Icon(Icons.Filled.EditNote, "Заметка",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(end = 4.dp))
-        if (row.hasPhoto) Icon(Icons.Filled.PhotoCamera, "Фото",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(end = 4.dp))
-        if (row.hasImportError) Icon(Icons.Filled.Warning, "Ошибка",
-            tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(end = 4.dp))
-
-        Box {
-            IconButton({ menuOpen = true }, Modifier.size(40.dp)) {
-                Icon(Icons.Filled.MoreVert, "Действия")
-            }
-            if (menuOpen) {
-                DropdownMenu(menuOpen, { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Заметка и фото") },
-                        leadingIcon = { Icon(Icons.Filled.EditNote, null) },
-                        onClick = { menuOpen = false; onOpenNote() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(if (row.postponed) "Снять отложенную" else "Отложить") },
-                        leadingIcon = { Icon(Icons.Filled.PauseCircle, null) },
-                        onClick = { menuOpen = false; onTogglePostponed() }
-                    )
-                    if (!row.isBlank) {
-                        DropdownMenuItem(
-                            text = { Text(
-                                if (row.weightControl) "Снять весовой контроль"
-                                else "Поставить весовой контроль") },
-                            leadingIcon = { Icon(Icons.Filled.Scale, null) },
-                            onClick = { menuOpen = false; onToggleControl() }
-                        )
+                Box {
+                    IconButton({ menuOpen = true }, Modifier.size(40.dp)) {
+                        Icon(Icons.Filled.MoreVert, "Действия")
                     }
-                    DropdownMenuItem(
-                        text = { Text("Редактировать") },
-                        leadingIcon = { Icon(Icons.Filled.Edit, null) },
-                        onClick = { menuOpen = false; onOpenEdit() }
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Удалить", color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = { Icon(Icons.Filled.Delete, null,
-                            tint = MaterialTheme.colorScheme.error) },
-                        onClick = { menuOpen = false; onOpenDelete() }
-                    )
+                    if (menuOpen) {
+                        DropdownMenu(menuOpen, { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Заметка и фото") },
+                                leadingIcon = { Icon(Icons.Filled.EditNote, null) },
+                                onClick = { menuOpen = false; onOpenNote() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (row.postponed) "Снять отложенную" else "Отложить") },
+                                leadingIcon = { Icon(Icons.Filled.PauseCircle, null) },
+                                onClick = { menuOpen = false; onTogglePostponed() }
+                            )
+                            if (!row.isBlank) {
+                                DropdownMenuItem(
+                                    text = { Text(
+                                        if (row.weightControl) "Снять весовой контроль"
+                                        else "Поставить весовой контроль") },
+                                    leadingIcon = { Icon(Icons.Filled.Scale, null) },
+                                    onClick = { menuOpen = false; onToggleControl() }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Редактировать") },
+                                leadingIcon = { Icon(Icons.Filled.Edit, null) },
+                                onClick = { menuOpen = false; onOpenEdit() }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Удалить", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, null,
+                                    tint = MaterialTheme.colorScheme.error) },
+                                onClick = { menuOpen = false; onOpenDelete() }
+                            )
+                        }
+                    }
                 }
             }
         }

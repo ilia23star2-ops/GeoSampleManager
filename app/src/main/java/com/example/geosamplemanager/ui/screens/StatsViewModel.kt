@@ -30,13 +30,14 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-order-status: hideReady + сортировка по статусу.
+ * FIX 5.9-stats-charts-3:
+ *  - drill stack: Root / Category / SubCategory / Well.
+ *  - wellFilter — фильтр по номеру скважины на уровне скважин.
+ *  - Сброс drill при смене наряда.
  *
- * FIX 5.9-report-html:
- *  - generateHtmlReport(orderId, uri) — собирает заметки и фото проб,
- *    кодирует фото в data:image/jpeg;base64, генерирует HTML, пишет
- *    в Uri через SAF.
- *  - Возвращает Boolean: успех/ошибка. UI показывает Snackbar.
+ * ВАЖНО: этот ViewModel НЕ знает про CategoryKey/SubKey —
+ * stack хранит готовые DrillLevel. Фильтрация проб по стеку
+ * делается чистой функцией filterRowsByDrillStack в StatsCharts.kt.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -63,6 +64,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selectedOrderId = MutableStateFlow<Long?>(null)
     val selectedOrderId: StateFlow<Long?> = _selectedOrderId.asStateFlow()
+
+    private val _drillStack = MutableStateFlow<List<DrillLevel>>(emptyList())
+    val drillStack: StateFlow<List<DrillLevel>> = _drillStack.asStateFlow()
+
+    private val _wellFilter = MutableStateFlow("")
+    val wellFilter: StateFlow<String> = _wellFilter.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -111,12 +118,8 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
                 .withSearch(search)
                 .copy(filter = filter)
         }
-
         _data.value = result
-
-        if (search.isNotBlank()) {
-            expandAll()
-        }
+        if (search.isNotBlank()) expandAll()
     }
 
     private fun pruneExpandedIds(raw: StatsData) {
@@ -129,11 +132,14 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     private fun pruneSelected(raw: StatsData) {
         val sel = _selectedOrderId.value ?: return
         val exists = raw.areas.any { area -> area.orders.any { it.orderId == sel } }
-        if (!exists) _selectedOrderId.value = null
+        if (!exists) {
+            _selectedOrderId.value = null
+            resetDrill()
+        }
     }
 
     // ================================================================
-    // Пользовательские действия
+    // Фильтры дерева
     // ================================================================
 
     fun setFilter(filter: StatsFilter) {
@@ -185,6 +191,7 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectOrder(orderId: Long) {
         _selectedOrderId.value = orderId
+        resetDrill()
         val area = _data.value?.areas?.firstOrNull { a ->
             a.orders.any { it.orderId == orderId }
         } ?: return
@@ -194,6 +201,7 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearSelection() {
         _selectedOrderId.value = null
+        resetDrill()
     }
 
     fun findOrder(orderId: Long): StatsOrderUi? {
@@ -209,13 +217,42 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-report-html: генерация HTML-отчёта
+    // Drill-down
     // ================================================================
 
-    /**
-     * Собрать и записать HTML-отчёт по наряду в Uri (через SAF).
-     * Возвращает true при успехе.
-     */
+    fun pushDrill(level: DrillLevel) {
+        _drillStack.value = _drillStack.value + level
+        _wellFilter.value = ""
+    }
+
+    fun popDrill() {
+        if (_drillStack.value.isNotEmpty()) {
+            _drillStack.value = _drillStack.value.dropLast(1)
+            _wellFilter.value = ""
+        }
+    }
+
+    fun popToIndex(index: Int) {
+        if (index < 0) return
+        val size = index + 1
+        if (size >= _drillStack.value.size) return
+        _drillStack.value = _drillStack.value.take(size)
+        _wellFilter.value = ""
+    }
+
+    fun resetDrill() {
+        _drillStack.value = emptyList()
+        _wellFilter.value = ""
+    }
+
+    fun setWellFilter(text: String) {
+        _wellFilter.value = text
+    }
+
+    // ================================================================
+    // HTML-отчёт
+    // ================================================================
+
     suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
         return try {
             val raw = rawData ?: run {
