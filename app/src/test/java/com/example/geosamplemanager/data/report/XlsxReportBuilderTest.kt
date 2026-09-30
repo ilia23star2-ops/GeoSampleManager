@@ -11,8 +11,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Тесты построителя с гиперссылками.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links).
+ *
+ * FIX 5.9-xlsx-formatting:
+ *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
+ *  - индексы сдвинуты на +1 для sample/well/... по сравнению с /4.
  */
 class XlsxReportBuilderTest {
 
@@ -112,7 +115,7 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun tableHeaderPresent() {
+    fun tableHeaderHasFoundFirst() {
         val data = makeReport(
             samples = listOf(
                 ReportSample(row = makeRow(), note = null, photos = emptyList())
@@ -121,14 +124,14 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
 
         val headerRow = rows[5]
-        assertEquals("п/п", cellText(headerRow.cells[0]))
-        assertEquals("№ пробы", cellText(headerRow.cells[1]))
-        assertEquals("Скважина", cellText(headerRow.cells[2]))
-        assertEquals("Интервал", cellText(headerRow.cells[3]))
-        assertEquals("Вес", cellText(headerRow.cells[4]))
-        assertEquals("Характеристика", cellText(headerRow.cells[5]))
-        assertEquals("Тип", cellText(headerRow.cells[6]))
-        assertEquals("Найдена", cellText(headerRow.cells[7]))
+        assertEquals("Найдена", cellText(headerRow.cells[0]))
+        assertEquals("п/п", cellText(headerRow.cells[1]))
+        assertEquals("№ пробы", cellText(headerRow.cells[2]))
+        assertEquals("Скважина", cellText(headerRow.cells[3]))
+        assertEquals("Интервал", cellText(headerRow.cells[4]))
+        assertEquals("Вес", cellText(headerRow.cells[5]))
+        assertEquals("Характеристика", cellText(headerRow.cells[6]))
+        assertEquals("Тип", cellText(headerRow.cells[7]))
         assertEquals("Прил.", cellText(headerRow.cells[8]))
     }
 
@@ -152,14 +155,14 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
 
         val dataRow = rows[6]
-        assertEquals(3.0, cellNumber(dataRow.cells[0])!!, 0.0001)
-        assertEquals("NV136703", cellText(dataRow.cells[1]))
-        assertEquals("NV1367", cellText(dataRow.cells[2]))
-        assertEquals("1.5–3.0", cellText(dataRow.cells[3]))
-        assertEquals("2.7", cellText(dataRow.cells[4]))
-        assertEquals("Элювий", cellText(dataRow.cells[5]))
-        assertEquals("Бороздовая", cellText(dataRow.cells[6]))
-        assertEquals("✓", cellText(dataRow.cells[7]))
+        assertEquals("✓", cellText(dataRow.cells[0]))
+        assertEquals(3.0, cellNumber(dataRow.cells[1])!!, 0.0001)
+        assertEquals("NV136703", cellText(dataRow.cells[2]))
+        assertEquals("NV1367", cellText(dataRow.cells[3]))
+        assertEquals("1.5–3.0", cellText(dataRow.cells[4]))
+        assertEquals("2.7", cellText(dataRow.cells[5]))
+        assertEquals("Элювий", cellText(dataRow.cells[6]))
+        assertEquals("Бороздовая", cellText(dataRow.cells[7]))
     }
 
     @Test
@@ -174,8 +177,8 @@ class XlsxReportBuilderTest {
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
         val dataRow = rows[6]
-        assertEquals("Холостая", cellText(dataRow.cells[6]))
-        assertEquals("", cellText(dataRow.cells[7]))
+        assertEquals("", cellText(dataRow.cells[0]))
+        assertEquals("Холостая", cellText(dataRow.cells[7]))
     }
 
     @Test
@@ -189,7 +192,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("Весовой контроль", cellText(rows[6].cells[6]))
+        assertEquals("Весовой контроль", cellText(rows[6].cells[7]))
     }
 
     @Test
@@ -199,7 +202,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("2.5 (2.3)", cellText(rows[6].cells[4]))
+        assertEquals("2.5 (2.3)", cellText(rows[6].cells[5]))
     }
 
     @Test
@@ -209,7 +212,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("—", cellText(rows[6].cells[4]))
+        assertEquals("—", cellText(rows[6].cells[5]))
     }
 
     @Test
@@ -219,7 +222,7 @@ class XlsxReportBuilderTest {
             samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("—", cellText(rows[6].cells[3]))
+        assertEquals("—", cellText(rows[6].cells[4]))
     }
 
     // ================================================================
@@ -342,7 +345,8 @@ class XlsxReportBuilderTest {
         val h = appSheet.hyperlinks[0]
         assertTrue(h.ref.startsWith("A"))
         assertTrue(h.location.contains("Наряд"))
-        assertTrue(h.location.contains("B7"))
+        // Столбец sample теперь C (индекс 2), строка 7.
+        assertTrue(h.location.contains("C7"))
     }
 
     @Test
@@ -461,10 +465,7 @@ class XlsxReportBuilderTest {
         )
         val sheets = XlsxReportBuilder.build(data)
 
-        val out = java.io.ByteArrayOutputStream()
-        XlsxWriter.write(sheets, out)
-        val bytes = out.toByteArray()
-
+        val bytes = XlsxWriter.toBytes(sheets)
         assertTrue(bytes.size > 0)
         assertEquals('P'.code.toByte(), bytes[0])
         assertEquals('K'.code.toByte(), bytes[1])
@@ -481,5 +482,55 @@ class XlsxReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
         assertNotNull(names.find { it == "xl/styles.xml" })
+    }
+
+    // ================================================================
+    // FIX 5.9-xlsx-formatting
+    // ================================================================
+
+    @Test
+    fun fillMapMatchesStyleFillIndex() {
+        // fillId для HEADER (F0F0F0) должен быть указан в fillMap.
+        val idx = XlsxStyles.fillMap["F0F0F0"]
+        assertNotNull(idx)
+        assertTrue(idx!! >= 2)
+
+        // fillId для FOUND (A5D6A7).
+        val foundIdx = XlsxStyles.fillMap["A5D6A7"]
+        assertNotNull(foundIdx)
+        assertTrue(foundIdx!! >= 2)
+        // Разные цвета — разные индексы.
+        assertTrue(idx != foundIdx)
+    }
+
+    @Test
+    fun sheetXmlContainsColsWithAutoWidth() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(
+                    makeRow(characteristic = "Очень длинная характеристика для проверки ширины"),
+                    note = null,
+                    photos = emptyList()
+                )
+            )
+        )
+        val sheets = XlsxReportBuilder.build(data)
+        val bytes = XlsxWriter.toBytes(sheets)
+
+        // Найдём sheet1.xml в zip и проверим, что в нём есть <cols>.
+        var sheetXml: String? = null
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                if (e.name == "xl/worksheets/sheet1.xml") {
+                    sheetXml = zip.readBytes().toString(Charsets.UTF_8)
+                    break
+                }
+                e = zip.nextEntry
+            }
+        }
+        assertNotNull(sheetXml)
+        assertTrue(sheetXml!!.contains("<cols>"))
+        assertTrue(sheetXml.contains("customWidth=\"1\""))
     }
 }
