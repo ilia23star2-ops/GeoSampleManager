@@ -301,12 +301,12 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             withContext(Dispatchers.IO) {
-                getApplication<Application>().contentResolver
-                    .openOutputStream(uri, "wt")
-                    ?.use { out ->
-                        out.write(html.toByteArray(Charsets.UTF_8))
-                        out.flush()
-                    }
+            getApplication<Application>().contentResolver
+                .openOutputStream(uri, "w")
+                ?.use { out ->
+                    XlsxWriter.write(sheets, out)
+                    out.flush()
+                }
                     ?: run {
                         _message.value = "Не удалось открыть файл для записи"
                         return@withContext false
