@@ -4,8 +4,9 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-legend (девятый заход):
- *  - в каждый лист наряда добавлена легенда цветов.
+ * FIX 5.9-xlsx-emoji (тринадцатый заход):
+ *  - эмодзи-статус в колонке A на каждом листе наряда;
+ *  - шапка: "Статус" вместо "Найдена".
  */
 
 object XlsxMultiReportBuilder {
@@ -27,12 +28,21 @@ object XlsxMultiReportBuilder {
 
     private val LEGEND = listOf(
         XlsxLegendItem("Легенда", XlsxStyles.BOLD),
-        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
-        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
-        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
-        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
-        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
+        XlsxLegendItem("🟢 Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("🔴 Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("🔵 Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("🟡 Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("🟣 Весовой контроль", XlsxStyles.CONTROL)
     )
+
+    private fun statusEmoji(row: SampleRow): String = when {
+        row.found -> "🟢"
+        row.hasImportError -> "🔴"
+        row.postponed -> "🔵"
+        row.isBlank -> "🟡"
+        row.weightControl -> "🟣"
+        else -> "⚪"
+    }
 
     private fun headerRow(text: String, style: Int): XlsxRow {
         val cells = ArrayList<XlsxCell>(COLUMNS)
@@ -131,7 +141,7 @@ object XlsxMultiReportBuilder {
         rows.add(
             XlsxRow(
                 listOf(
-                    XlsxCell.Text("Найдена"),
+                    XlsxCell.Text("Статус"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -163,7 +173,7 @@ object XlsxMultiReportBuilder {
             rows.add(
                 XlsxRow(
                     listOf(
-                        XlsxCell.Text(if (row.found) "✓" else ""),
+                        XlsxCell.Text(statusEmoji(row)),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
