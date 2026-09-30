@@ -78,6 +78,20 @@ class XlsxReportBuilderTest {
     private fun cellNumber(cell: XlsxCell): Double? =
         (cell as? XlsxCell.Number)?.value
 
+    /** Прочитать содержимое zip-элемента как строку UTF-8. null — если нет. */
+    private fun readZipEntry(bytes: ByteArray, path: String): String? {
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                if (e.name == path) {
+                    return zip.readBytes().toString(Charsets.UTF_8)
+                }
+                e = zip.nextEntry
+            }
+        }
+        return null
+    }
+
     // ================================================================
     // Лист 1 — наряд
     // ================================================================
@@ -490,16 +504,13 @@ class XlsxReportBuilderTest {
 
     @Test
     fun fillMapMatchesStyleFillIndex() {
-        // fillId для HEADER (F0F0F0) должен быть указан в fillMap.
         val idx = XlsxStyles.fillMap["F0F0F0"]
         assertNotNull(idx)
         assertTrue(idx!! >= 2)
 
-        // fillId для FOUND (A5D6A7).
         val foundIdx = XlsxStyles.fillMap["A5D6A7"]
         assertNotNull(foundIdx)
         assertTrue(foundIdx!! >= 2)
-        // Разные цвета — разные индексы.
         assertTrue(idx != foundIdx)
     }
 
@@ -517,18 +528,7 @@ class XlsxReportBuilderTest {
         val sheets = XlsxReportBuilder.build(data)
         val bytes = XlsxWriter.toBytes(sheets)
 
-        // Найдём sheet1.xml в zip и проверим, что в нём есть <cols>.
-        var sheetXml: String? = null
-        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
-            var e = zip.nextEntry
-            while (e != null) {
-                if (e.name == "xl/worksheets/sheet1.xml") {
-                    sheetXml = zip.readBytes().toString(Charsets.UTF_8)
-                    break
-                }
-                e = zip.nextEntry
-            }
-        }
+        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
         assertNotNull(sheetXml)
         assertTrue(sheetXml!!.contains("<cols>"))
         assertTrue(sheetXml.contains("customWidth=\"1\""))
