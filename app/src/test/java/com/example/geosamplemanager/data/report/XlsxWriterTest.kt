@@ -9,11 +9,10 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-xlsx-valid (седьмой заход):
- *  - numFmts, dxfs, tableStyles в styles.xml;
- *  - bgColor indexed="64" в solid fill;
- *  - пустой Text не пишется как inlineStr с пустым t;
- *  - пустая строка — self-closing row.
+ * FIX 5.9-xlsx-legend (девятый заход):
+ *  - sheetViews и sheetFormatPr в worksheet;
+ *  - bgColor = fgColor в solid fill;
+ *  - легенда: J1..J6, ширину J фиксированную.
  */
 class XlsxWriterTest {
 
@@ -71,6 +70,22 @@ class XlsxWriterTest {
     }
 
     @Test
+    fun sheetHasSheetViewsAndFormatPr() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<sheetViews>"))
+        assertTrue(sheet.contains("<sheetView workbookViewId=\"0\"/>"))
+        assertTrue(sheet.contains("<sheetFormatPr defaultRowHeight=\"15\"/>"))
+    }
+
+    @Test
     fun textCellIncluded() {
         val bytes = write(
             listOf(
@@ -96,7 +111,6 @@ class XlsxWriterTest {
             )
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
-        // Пустой Text → <c r="A1" s="3"/> без inlineStr.
         assertTrue(sheet.contains("r=\"A1\" s=\"3\"/>"))
         assertFalse(sheet.contains("r=\"A1\" s=\"3\" t=\"inlineStr\""))
     }
@@ -218,16 +232,22 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun fillHasBgColorIndexed64() {
+    fun fillHasBgColorSameAsFgColor() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        assertTrue(styles.contains("<bgColor indexed=\"64\"/>"))
-        assertTrue(styles.contains("FFA5D6A7"))
-        assertTrue(styles.contains("FFBBDEFB"))
+        // Оба цвета одинаковы.
+        assertTrue(styles.contains(
+            "<fgColor rgb=\"FFA5D6A7\"/><bgColor rgb=\"FFA5D6A7\"/>"
+        ))
+        assertTrue(styles.contains(
+            "<fgColor rgb=\"FFBBDEFB\"/><bgColor rgb=\"FFBBDEFB\"/>"
+        ))
+        // indexed="64" больше нет.
+        assertFalse(styles.contains("indexed=\"64\""))
     }
 
     @Test
@@ -356,6 +376,45 @@ class XlsxWriterTest {
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertTrue(sheet.contains("<mergeCells count=\"1\">"))
         assertTrue(sheet.contains("<mergeCell ref=\"A1:C1\"/>"))
+    }
+
+    @Test
+    fun legendRenderedInColumnJ() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("Title"))),
+                        XlsxRow(listOf(XlsxCell.Text("Row2")))
+                    ),
+                    legend = listOf(
+                        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+                        XlsxLegendItem("Найдена", XlsxStyles.FOUND)
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("r=\"J1\""))
+        assertTrue(sheet.contains("r=\"J2\""))
+        assertTrue(sheet.contains("Легенда"))
+        assertTrue(sheet.contains("Найдена"))
+    }
+
+    @Test
+    fun legendColumnHasFixedWidth() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))),
+                    legend = listOf(XlsxLegendItem("Легенда", XlsxStyles.BOLD))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<col min=\"10\" max=\"10\""))
     }
 
     @Test
