@@ -10,9 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-header:
- *  - шапка объединена A1:I1..A4:I4;
- *  - строки шапки имеют стили TITLE / META.
+ * FIX 5.9-xlsx-header (четвёртый заход):
+ *  - шапка — 9 ячеек в каждой строке (первая с текстом, остальные Blank);
+ *  - skipWidthRows = 6.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -146,6 +146,23 @@ class XlsxMultiReportBuilderTest {
             listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4"),
             sheet.mergeCells
         )
+    }
+
+    @Test
+    fun orderSheetHeaderHasNineCells() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        repeat(4) { i ->
+            assertEquals(9, rows[i].cells.size)
+            assertTrue(rows[i].cells[0] is XlsxCell.Text)
+            for (j in 1 until 9) {
+                assertTrue(rows[i].cells[j] is XlsxCell.Blank)
+            }
+        }
     }
 
     @Test
