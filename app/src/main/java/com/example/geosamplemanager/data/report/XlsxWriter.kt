@@ -6,12 +6,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-legend (30.09.2026, девятый заход):
- *  - В worksheet добавлены <sheetViews> и <sheetFormatPr> —
- *    без них Excel может игнорировать styles.xml.
- *  - fill: bgColor = fgColor (максимальная совместимость).
- *  - XlsxSheet.legend — легенда цветов в колонке J справа
- *    от шапки. Ширина колонки J — фиксированная.
+ * FIX 5.9-xlsx-legend (десятый заход):
+ *  - fills: пишем одновременно rgb и indexed. Excel возьмёт rgb,
+ *    старый вьюер — indexed.
  */
 
 sealed class XlsxCell {
@@ -74,7 +71,6 @@ data class XlsxImage(
     }
 }
 
-/** Элемент легенды: подпись и стиль заливки. */
 data class XlsxLegendItem(
     val label: String,
     val styleId: Int = XlsxStyles.DEFAULT
@@ -98,7 +94,6 @@ object XlsxWriter {
     private const val EMU_PER_PX = 9525L
     private const val ROW_HEIGHT_PX_TO_PT = 0.75
 
-    /** Колонка J (0-based = 9) — легенда. Ширина фиксированная. */
     private const val LEGEND_COL_INDEX = 9
     private const val LEGEND_COL_WIDTH = 22.0
 
@@ -274,7 +269,6 @@ object XlsxWriter {
 
         sb.append("<numFmts count=\"0\"/>")
 
-        // Порядок по ECMA-376 CT_Font: b, i, ..., u, ..., sz, color, name.
         sb.append("<fonts count=\"3\">")
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
@@ -282,14 +276,21 @@ object XlsxWriter {
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // FIX: bgColor = fgColor. Максимальная совместимость.
+        // FIX: пишем и rgb, и indexed одновременно.
+        // Excel возьмёт rgb (наш точный цвет), примитивный вьюер —
+        // indexed (ближайший стандартный).
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
         fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
+            val indexed = XlsxStyles.indexedFor(color)
             sb.append("<fill><patternFill patternType=\"solid\">")
-            sb.append("<fgColor rgb=\"FF").append(color).append("\"/>")
-            sb.append("<bgColor rgb=\"FF").append(color).append("\"/>")
+            sb.append("<fgColor rgb=\"FF").append(color).append("\"")
+            if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
+            sb.append("/>")
+            sb.append("<bgColor rgb=\"FF").append(color).append("\"")
+            if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
+            sb.append("/>")
             sb.append("</patternFill></fill>")
         }
         sb.append("</fills>")
@@ -354,8 +355,6 @@ object XlsxWriter {
         sb.append(cellRef(maxColsOf(sheet), maxRowsOf(sheet)))
         sb.append("\"/>")
 
-        // FIX: sheetViews и sheetFormatPr — без них Excel может
-        // не применять стили из styles.xml.
         sb.append("<sheetViews>")
         sb.append("<sheetView workbookViewId=\"0\"/>")
         sb.append("</sheetViews>")
@@ -373,7 +372,6 @@ object XlsxWriter {
             val legendItem = sheet.legend.getOrNull(rowIdx)
             val hasCells = row.cells.any { it !is XlsxCell.Empty }
 
-            // Пустая строка (нет ячеек и нет легенды) — self-closing.
             if (!hasCells && legendItem == null) {
                 sb.append("<row r=\"").append(rowNum).append("\"")
                 if (ht != null && ht > 0) {
@@ -423,7 +421,6 @@ object XlsxWriter {
                 }
             }
 
-            // Легенда в колонке J для этой строки.
             if (legendItem != null) {
                 val ref = cellRef(LEGEND_COL_INDEX, rowNum)
                 val styleAttr = if (legendItem.styleId != XlsxStyles.DEFAULT)
@@ -561,7 +558,6 @@ object XlsxWriter {
         if (rows.isEmpty()) return ""
 
         val maxCols = rows.maxOfOrNull { it.cells.size } ?: 0
-        // Если есть легенда — считаем на одну колонку больше.
         val totalCols = if (hasLegend) maxOf(maxCols, LEGEND_COL_INDEX + 1) else maxCols
         if (totalCols == 0) return ""
 
