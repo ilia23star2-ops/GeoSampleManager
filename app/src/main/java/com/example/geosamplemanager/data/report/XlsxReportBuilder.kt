@@ -4,16 +4,10 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links).
- *
- * FIX 5.9-xlsx-formatting:
- *  - порядок колонок: Найдена первая.
- *  - skipWidthRows = 6 (метаданные + шапка не растягивают колонки).
- *  - вставка фото: каждое фото — отдельная строка под «Фото: N шт.».
- *    Декодер data-uri передаёт вызывающая сторона (UI).
+ * FIX 5.9-xlsx-header: шапка объединена A1:I1..A4:I4, с фоном.
+ * skipWidthRows = 5.
  */
 
-/** Декодированная картинка: сырые байты + расширение ("jpg"/"png"). */
 data class DecodedImage(
     val bytes: ByteArray,
     val extension: String
@@ -33,18 +27,20 @@ data class DecodedImage(
 
 object XlsxReportBuilder {
 
-    private const val ORDER_HEADER_ROW = 6
     private const val ORDER_FIRST_DATA_ROW = 7
     private const val ORDER_COL_APPENDIX = 8
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
 
-    /** Пропускаем 6 строк: 4 метаданные + пустая + шапка. */
-    private const val ORDER_SKIP_WIDTH_ROWS = 6
+    /** Пропускаем 5 строк (4 шапка + пустая). Шапка таблицы (6-я) учитывается. */
+    private const val ORDER_SKIP_WIDTH_ROWS = 5
 
     private const val IMAGE_WIDTH_PX = 240
     private const val IMAGE_HEIGHT_PX = 180
     private const val APP_IMAGE_COL = 1
+
+    /** Диапазоны объединения шапки (9 колонок → I). */
+    private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
 
     private fun displayType(row: SampleRow): String = when (row.status) {
         SampleStatus.BLANK -> "Холостая"
@@ -98,7 +94,6 @@ object XlsxReportBuilder {
 
         val withAppendix = data.samples.filter { it.hasAppendix }
 
-        // Шаг 1. Пре-сканирование блоков.
         val placementById = mutableMapOf<String, AppendixPlacement>()
         var cursor = APP_FIRST_BLOCK_ROW
         withAppendix.forEachIndexed { idx, sample ->
@@ -109,24 +104,33 @@ object XlsxReportBuilder {
             cursor += appendixBlockSize(sample)
         }
 
-        // Шаг 2. Лист «Наряд».
         val orderRows = mutableListOf<XlsxRow>()
         val orderHyperlinks = mutableListOf<XlsxHyperlink>()
 
+        // Шапка — 4 объединённые ячейки со своими стилями.
         orderRows.add(
             XlsxRow(
                 listOf(XlsxCell.Text("Отчёт по наряду")),
-                styleId = XlsxStyles.BOLD
+                styleId = XlsxStyles.TITLE
             )
         )
         orderRows.add(
-            XlsxRow(listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName)))
+            XlsxRow(
+                listOf(XlsxCell.Text("Участок: ${data.areaName}")),
+                styleId = XlsxStyles.META
+            )
         )
         orderRows.add(
-            XlsxRow(listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}")))
+            XlsxRow(
+                listOf(XlsxCell.Text("Наряд: №${data.orderNumber}")),
+                styleId = XlsxStyles.META
+            )
         )
         orderRows.add(
-            XlsxRow(listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt)))
+            XlsxRow(
+                listOf(XlsxCell.Text("Дата: ${data.generatedAt}")),
+                styleId = XlsxStyles.META
+            )
         )
         orderRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
@@ -194,20 +198,20 @@ object XlsxReportBuilder {
             rows = orderRows,
             hyperlinks = orderHyperlinks,
             images = emptyList(),
-            skipWidthRows = ORDER_SKIP_WIDTH_ROWS
+            skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
+            mergeCells = HEADER_MERGES
         )
 
         if (withAppendix.isEmpty()) {
             return listOf(orderSheet)
         }
 
-        // Шаг 3. Лист «Приложения».
         val appRows = mutableListOf<XlsxRow>()
         val appHyperlinks = mutableListOf<XlsxHyperlink>()
         val appImages = mutableListOf<XlsxImage>()
 
         appRows.add(
-            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.BOLD)
+            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.TITLE)
         )
         appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
