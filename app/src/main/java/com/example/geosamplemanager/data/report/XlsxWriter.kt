@@ -6,15 +6,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-styles-rel (30.09.2026, двенадцатый заход):
- *  - КРИТИЧНО: в xl/_rels/workbook.xml.rels добавлена связь на
- *    styles.xml. Без неё Excel не находит styles.xml, делает
- *    «восстановление» и выкидывает стили из ячеек — цвета
- *    пропадают, а другие вьюеры (Bree, OfficeSuite, LibreOffice)
- *    всё равно находят styles по имени и цвета показывают.
- *    Именно это и было причиной «Excel ругается, а Bree — нет».
- *  - В workbook.xml добавлены fileVersion, workbookPr, calcPr —
- *    Excel их ждёт, без них тоже может ругаться.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход):
+ *  - Убрана тема (theme1.xml, theme rel, theme override). Excel Online
+ *    при наличии theme="N" брал цвет из своей встроенной темы, а не
+ *    из нашей — цвета «перепутывались».
+ *  - В fills оставлены только rgb + indexed. Оба дают корректный цвет.
+ *  - Оставлен фикс styles rel из захода 50 — он был корневым.
  */
 
 sealed class XlsxCell {
@@ -148,7 +145,6 @@ object XlsxWriter {
         writeEntry(zip, "_rels/.rels", buildRootRels())
         writeEntry(zip, "xl/workbook.xml", buildWorkbook(sanitized))
         writeEntry(zip, "xl/_rels/workbook.xml.rels", buildWorkbookRels(sanitized))
-        writeEntry(zip, "xl/theme/theme1.xml", buildTheme())
         writeEntry(zip, "xl/styles.xml", buildStyles())
 
         sanitized.forEachIndexed { sheetIdx, sheet ->
@@ -214,8 +210,6 @@ object XlsxWriter {
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>")
         sb.append("<Override PartName=\"/xl/styles.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>")
-        sb.append("<Override PartName=\"/xl/theme/theme1.xml\" ")
-        sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>")
         sheets.forEachIndexed { idx, _ ->
             sb.append("<Override PartName=\"/xl/worksheets/sheet${idx + 1}.xml\" ")
             sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
@@ -239,10 +233,6 @@ object XlsxWriter {
                 """</Relationships>"""
     }
 
-    /**
-     * FIX: добавлены fileVersion, workbookPr, calcPr.
-     * Порядок по CT_Workbook: fileVersion → workbookPr → sheets → calcPr.
-     */
     private fun buildWorkbook(sheets: List<XlsxSheet>): String {
         val sb = StringBuilder(512)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -263,14 +253,10 @@ object XlsxWriter {
     }
 
     /**
-     * FIX (ключевое): добавлена связь на styles.xml.
-     * Excel без неё не находит таблицу стилей и «восстанавливает»
-     * файл, выкидывая стили из ячеек.
+     * FIX (ключевое): styles.xml доступен через relationship.
+     * Без этой связи Excel «восстанавливал» файл и терял стили.
      *
-     * Порядок rId:
-     *   1..N       — worksheets
-     *   N+1        — styles.xml
-     *   N+2        — theme/theme1.xml
+     * Порядок rId: 1..N — worksheets, N+1 — styles.
      */
     private fun buildWorkbookRels(sheets: List<XlsxSheet>): String {
         val sb = StringBuilder(512)
@@ -285,62 +271,8 @@ object XlsxWriter {
         sb.append("<Relationship Id=\"rId").append(stylesRid).append("\" ")
         sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" ")
         sb.append("Target=\"styles.xml\"/>")
-        val themeRid = sheets.size + 2
-        sb.append("<Relationship Id=\"rId").append(themeRid).append("\" ")
-        sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" ")
-        sb.append("Target=\"theme/theme1.xml\"/>")
         sb.append("</Relationships>")
         return sb.toString()
-    }
-
-    private fun buildTheme(): String {
-        return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" +
-            """<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="GeoSampleTheme">""" +
-            """<a:themeElements>""" +
-            """<a:clrScheme name="GeoSampleColors">""" +
-            """<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>""" +
-            """<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>""" +
-            """<a:dk2><a:srgbClr val="E3F2FD"/></a:dk2>""" +
-            """<a:lt2><a:srgbClr val="F0F0F0"/></a:lt2>""" +
-            """<a:accent1><a:srgbClr val="A5D6A7"/></a:accent1>""" +
-            """<a:accent2><a:srgbClr val="EF9A9A"/></a:accent2>""" +
-            """<a:accent3><a:srgbClr val="90CAF9"/></a:accent3>""" +
-            """<a:accent4><a:srgbClr val="FFF59D"/></a:accent4>""" +
-            """<a:accent5><a:srgbClr val="CE93D8"/></a:accent5>""" +
-            """<a:accent6><a:srgbClr val="BBDEFB"/></a:accent6>""" +
-            """<a:hlink><a:srgbClr val="1976D2"/></a:hlink>""" +
-            """<a:folHlink><a:srgbClr val="954F72"/></a:folHlink>""" +
-            """</a:clrScheme>""" +
-            """<a:fontScheme name="Office">""" +
-            """<a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>""" +
-            """<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>""" +
-            """</a:fontScheme>""" +
-            """<a:fmtScheme name="Office">""" +
-            """<a:fillStyleLst>""" +
-            """<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>""" +
-            """<a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill>""" +
-            """<a:solidFill><a:schemeClr val="phClr"><a:shade val="80000"/></a:schemeClr></a:solidFill>""" +
-            """</a:fillStyleLst>""" +
-            """<a:lnStyleLst>""" +
-            """<a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
-            """<a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
-            """<a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
-            """</a:lnStyleLst>""" +
-            """<a:effectStyleLst>""" +
-            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
-            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
-            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
-            """</a:effectStyleLst>""" +
-            """<a:bgFillStyleLst>""" +
-            """<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>""" +
-            """<a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill>""" +
-            """<a:solidFill><a:schemeClr val="phClr"><a:shade val="80000"/></a:schemeClr></a:solidFill>""" +
-            """</a:bgFillStyleLst>""" +
-            """</a:fmtScheme>""" +
-            """</a:themeElements>""" +
-            """<a:objectDefaults/>""" +
-            """<a:extraClrSchemeLst/>""" +
-            """</a:theme>"""
     }
 
     private fun buildStyles(): String {
@@ -360,21 +292,18 @@ object XlsxWriter {
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
+        // FIX: только rgb + indexed. Без theme — Excel Online больше
+        // не берёт чужой цвет из своей встроенной палитры.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
         fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
             val indexed = XlsxStyles.indexedFor(color)
-            val theme = XlsxStyles.themeFor(color)
             sb.append("<fill><patternFill patternType=\"solid\">")
-            sb.append("<fgColor")
-            if (theme != null) sb.append(" theme=\"").append(theme).append("\"")
-            sb.append(" rgb=\"FF").append(color).append("\"")
+            sb.append("<fgColor rgb=\"FF").append(color).append("\"")
             if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
             sb.append("/>")
-            sb.append("<bgColor")
-            if (theme != null) sb.append(" theme=\"").append(theme).append("\"")
-            sb.append(" rgb=\"FF").append(color).append("\"")
+            sb.append("<bgColor rgb=\"FF").append(color).append("\"")
             if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
             sb.append("/>")
             sb.append("</patternFill></fill>")
