@@ -6,12 +6,15 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-theme (одиннадцатый заход):
- *  - Добавлен xl/theme/theme1.xml с нашей палитрой (accent1..accent6).
- *  - В workbook.xml.rels — связь на theme.
- *  - В [Content_Types].xml — Override для theme.
- *  - В fills пишем три атрибута: rgb + indexed + theme.
- *    Excel Online может уважать theme там, где игнорирует rgb.
+ * FIX 5.9-xlsx-styles-rel (30.09.2026, двенадцатый заход):
+ *  - КРИТИЧНО: в xl/_rels/workbook.xml.rels добавлена связь на
+ *    styles.xml. Без неё Excel не находит styles.xml, делает
+ *    «восстановление» и выкидывает стили из ячеек — цвета
+ *    пропадают, а другие вьюеры (Bree, OfficeSuite, LibreOffice)
+ *    всё равно находят styles по имени и цвета показывают.
+ *    Именно это и было причиной «Excel ругается, а Bree — нет».
+ *  - В workbook.xml добавлены fileVersion, workbookPr, calcPr —
+ *    Excel их ждёт, без них тоже может ругаться.
  */
 
 sealed class XlsxCell {
@@ -211,7 +214,6 @@ object XlsxWriter {
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>")
         sb.append("<Override PartName=\"/xl/styles.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>")
-        // Theme override.
         sb.append("<Override PartName=\"/xl/theme/theme1.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>")
         sheets.forEachIndexed { idx, _ ->
@@ -237,11 +239,17 @@ object XlsxWriter {
                 """</Relationships>"""
     }
 
+    /**
+     * FIX: добавлены fileVersion, workbookPr, calcPr.
+     * Порядок по CT_Workbook: fileVersion → workbookPr → sheets → calcPr.
+     */
     private fun buildWorkbook(sheets: List<XlsxSheet>): String {
         val sb = StringBuilder(512)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" ")
         sb.append("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">")
+        sb.append("<fileVersion appName=\"xl\" lastEdited=\"7\" lowestEdited=\"7\" rupBuild=\"26130\"/>")
+        sb.append("<workbookPr defaultThemeVersion=\"124226\"/>")
         sb.append("<sheets>")
         sheets.forEachIndexed { idx, sheet ->
             sb.append("<sheet name=\"").append(escapeXml(sheet.name)).append("\" ")
@@ -249,10 +257,21 @@ object XlsxWriter {
             sb.append("r:id=\"rId").append(idx + 1).append("\"/>")
         }
         sb.append("</sheets>")
+        sb.append("<calcPr calcId=\"191029\"/>")
         sb.append("</workbook>")
         return sb.toString()
     }
 
+    /**
+     * FIX (ключевое): добавлена связь на styles.xml.
+     * Excel без неё не находит таблицу стилей и «восстанавливает»
+     * файл, выкидывая стили из ячеек.
+     *
+     * Порядок rId:
+     *   1..N       — worksheets
+     *   N+1        — styles.xml
+     *   N+2        — theme/theme1.xml
+     */
     private fun buildWorkbookRels(sheets: List<XlsxSheet>): String {
         val sb = StringBuilder(512)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -262,8 +281,11 @@ object XlsxWriter {
             sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" ")
             sb.append("Target=\"worksheets/sheet").append(idx + 1).append(".xml\"/>")
         }
-        // rId для theme — следующий после листов.
-        val themeRid = sheets.size + 1
+        val stylesRid = sheets.size + 1
+        sb.append("<Relationship Id=\"rId").append(stylesRid).append("\" ")
+        sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" ")
+        sb.append("Target=\"styles.xml\"/>")
+        val themeRid = sheets.size + 2
         sb.append("<Relationship Id=\"rId").append(themeRid).append("\" ")
         sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" ")
         sb.append("Target=\"theme/theme1.xml\"/>")
@@ -271,11 +293,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * xl/theme/theme1.xml — наша палитра.
-     * accent1..accent6 — цвета для FOUND, ERROR, POSTPONED, BLANK,
-     * CONTROL, TITLE. lt2 и dk2 переиспользованы под HEADER и META.
-     */
     private fun buildTheme(): String {
         return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" +
             """<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="GeoSampleTheme">""" +
@@ -343,8 +360,6 @@ object XlsxWriter {
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // FIX: пишем rgb + indexed + theme одновременно.
-        // Excel Online иногда предпочитает theme.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
