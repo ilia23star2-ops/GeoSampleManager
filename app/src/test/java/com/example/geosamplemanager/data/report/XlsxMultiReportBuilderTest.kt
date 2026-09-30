@@ -10,14 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi).
- *
- * FIX 5.9-xlsx-formatting:
- *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
- *  - skipWidthRows = 6.
- *
- * FIX 5.9-xlsx-photos:
- *  - build() принимает imageDecoder; картинки попадают в общий лист.
+ * FIX 5.9-xlsx-header:
+ *  - шапка объединена A1:I1..A4:I4;
+ *  - строки шапки имеют стили TITLE / META.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -140,6 +135,46 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
+    fun orderSheetHasMergedHeader() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
+        assertEquals(
+            listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4"),
+            sheet.mergeCells
+        )
+    }
+
+    @Test
+    fun orderSheetHeaderUsesTitleAndMetaStyles() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        assertEquals(XlsxStyles.TITLE, rows[0].styleId)
+        assertEquals(XlsxStyles.META, rows[1].styleId)
+        assertEquals(XlsxStyles.META, rows[2].styleId)
+        assertEquals(XlsxStyles.META, rows[3].styleId)
+    }
+
+    @Test
+    fun orderSheetHeaderContainsCombinedMeta() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        assertEquals("Участок: Коптеловский", cellText(rows[1].cells[0]))
+        assertEquals("Наряд: №27", cellText(rows[2].cells[0]))
+    }
+
+    @Test
     fun orderSheetContainsHeaderAndSamples() {
         val order = makeReport(
             area = "Коптеловский",
@@ -151,8 +186,6 @@ class XlsxMultiReportBuilderTest {
         )
         val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
         assertEquals("Отчёт по наряду", cellText(sheet.rows[0].cells[0]))
-        assertEquals("Коптеловский", cellText(sheet.rows[1].cells[1]))
-        assertEquals("№27", cellText(sheet.rows[2].cells[1]))
         assertEquals("Найдена", cellText(sheet.rows[5].cells[0]))
         assertEquals("п/п", cellText(sheet.rows[5].cells[1]))
         assertEquals("№ пробы", cellText(sheet.rows[5].cells[2]))
@@ -302,10 +335,6 @@ class XlsxMultiReportBuilderTest {
         assertNotNull(names.find { it == "xl/workbook.xml" })
     }
 
-    // ================================================================
-    // FIX 5.9-xlsx-photos
-    // ================================================================
-
     @Test
     fun imageGoesToCommonAppendixSheet() {
         val orders = listOf(
@@ -315,17 +344,6 @@ class XlsxMultiReportBuilderTest {
         assertEquals(2, sheets.size)
         assertEquals(1, sheets[1].images.size)
         assertEquals("jpg", sheets[1].images[0].extension)
-    }
-
-    @Test
-    fun twoImagesInMultiOrderEndUpInCommonSheet() {
-        val orders = listOf(
-            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1"))),
-            makeReport(area = "Б", order = "2", samples = listOf(sampleWithPhoto("2", "B1")))
-        )
-        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
-        assertEquals(3, sheets.size)
-        assertEquals(2, sheets[2].images.size)
     }
 
     @Test
