@@ -15,6 +15,8 @@ import com.example.geosamplemanager.data.report.ReportHtmlGenerator
 import com.example.geosamplemanager.data.report.ReportNote
 import com.example.geosamplemanager.data.report.ReportPhoto
 import com.example.geosamplemanager.data.report.ReportSample
+import com.example.geosamplemanager.data.report.XlsxReportBuilder
+import com.example.geosamplemanager.data.report.XlsxWriter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -37,6 +39,11 @@ import java.util.Locale
  *  - clearSelection() — сбрасывает оба.
  *  - findArea(areaId): StatsAreaUi? — поиск по дереву.
  *  - pruneSelected — при удалении области тоже сбрасываем выбор.
+ *
+ * FIX 5.9-xlsx-ui:
+ *  - buildReportData(orderId) — общий сборщик ReportData (для HTML и XLSX).
+ *  - generateXlsxReport(orderId, uri) — запись .xlsx через XlsxReportBuilder
+ *    и XlsxWriter.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -282,38 +289,14 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // HTML-отчёт
+    // Отчёты: HTML и XLSX
     // ================================================================
 
     suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
         return try {
-            val raw = rawData ?: run {
-                _message.value = "Данные ещё не загружены"
-                return false
-            }
-
-            val areaName = raw.areas.firstOrNull { area ->
-                area.orders.any { it.orderId == orderId }
-            }?.areaName ?: "Без участка"
-
-            val order = raw.areas.asSequence()
-                .flatMap { it.orders.asSequence() }
-                .firstOrNull { it.orderId == orderId }
-                ?: run {
-                    _message.value = "Наряд не найден"
-                    return false
-                }
+            val data = buildReportData(orderId) ?: return false
 
             val html = withContext(Dispatchers.IO) {
-                val samples = buildReportSamples(order.group.rows)
-                val dateFormat = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
-                val data = ReportData(
-                    areaName = areaName,
-                    orderNumber = order.orderNumber,
-                    generatedAt = dateFormat.format(Date()),
-                    stats = order.stats,
-                    samples = samples
-                )
                 ReportHtmlGenerator.generate(data)
             }
 
@@ -335,6 +318,68 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             _message.value = "Ошибка отчёта: ${e.message}"
             false
         }
+    }
+
+    /**
+     * FIX 5.9-xlsx-ui: запись .xlsx по одному наряду.
+     * Использует тот же ReportData, что и HTML-отчёт.
+     */
+    suspend fun generateXlsxReport(orderId: Long, uri: Uri): Boolean {
+        return try {
+            val data = buildReportData(orderId) ?: return false
+
+            withContext(Dispatchers.IO) {
+                val sheets = XlsxReportBuilder.build(data)
+                getApplication<Application>().contentResolver
+                    .openOutputStream(uri, "wt")
+                    ?.use { out ->
+                        XlsxWriter.write(sheets, out)
+                        out.flush()
+                    }
+                    ?: run {
+                        _message.value = "Не удалось открыть файл для записи"
+                        return@withContext false
+                    }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "generateXlsxReport failed", e)
+            _message.value = "Ошибка отчёта: ${e.message}"
+            false
+        }
+    }
+
+    /**
+     * Общий сборщик ReportData для отчётов по одному наряду.
+     * null — если данных нет или наряд не найден (сообщение — в _message).
+     */
+    private suspend fun buildReportData(orderId: Long): ReportData? {
+        val raw = rawData ?: run {
+            _message.value = "Данные ещё не загружены"
+            return null
+        }
+
+        val areaName = raw.areas.firstOrNull { area ->
+            area.orders.any { it.orderId == orderId }
+        }?.areaName ?: "Без участка"
+
+        val order = raw.areas.asSequence()
+            .flatMap { it.orders.asSequence() }
+            .firstOrNull { it.orderId == orderId }
+            ?: run {
+                _message.value = "Наряд не найден"
+                return null
+            }
+
+        val samples = buildReportSamples(order.group.rows)
+        val dateFormat = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
+        return ReportData(
+            areaName = areaName,
+            orderNumber = order.orderNumber,
+            generatedAt = dateFormat.format(Date()),
+            stats = order.stats,
+            samples = samples
+        )
     }
 
     private suspend fun buildReportSamples(rows: List<SampleRow>): List<ReportSample> {
