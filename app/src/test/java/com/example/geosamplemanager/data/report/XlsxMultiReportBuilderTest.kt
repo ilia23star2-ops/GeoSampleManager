@@ -6,13 +6,11 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
 import com.example.geosamplemanager.ui.screens.SampleType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi):
- * Тесты мультинарядного построителя.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход): без эмодзи.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -86,12 +84,21 @@ class XlsxMultiReportBuilderTest {
         photos = emptyList()
     )
 
+    private fun sampleWithPhoto(
+        id: String = "1",
+        sample: String = "NV136601"
+    ) = ReportSample(
+        row = makeRow(id = id, sample = sample, hasPhoto = true),
+        note = null,
+        photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
+    )
+
     private fun cellText(cell: XlsxCell): String? =
         (cell as? XlsxCell.Text)?.value
 
-    // ================================================================
-    // Базовые случаи
-    // ================================================================
+    private val fakeDecoder: (String) -> DecodedImage = { _ ->
+        DecodedImage(bytes = byteArrayOf(1, 2, 3, 4), extension = "jpg")
+    }
 
     @Test
     fun emptyInputReturnsEmptyList() {
@@ -112,6 +119,19 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
+    fun orderSheetsHaveLegend() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleNoAppendix("1"))),
+            makeReport(area = "Б", order = "2", samples = listOf(sampleNoAppendix("2")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders)
+        assertEquals(2, sheets.size)
+        assertEquals(6, sheets[0].legend.size)
+        assertEquals("Найдена", sheets[0].legend[1].label)
+        assertEquals("Весовой контроль", sheets[0].legend[5].label)
+    }
+
+    @Test
     fun threeOrdersNoAppendixThreeSheets() {
         val orders = listOf(
             makeReport(area = "А", order = "1", samples = listOf(sampleNoAppendix("1"))),
@@ -126,6 +146,63 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
+    fun orderSheetHasMergedHeader() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
+        assertEquals(
+            listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4"),
+            sheet.mergeCells
+        )
+    }
+
+    @Test
+    fun orderSheetHeaderHasNineCells() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        repeat(4) { i ->
+            assertEquals(9, rows[i].cells.size)
+            assertTrue(rows[i].cells[0] is XlsxCell.Text)
+            for (j in 1 until 9) {
+                assertTrue(rows[i].cells[j] is XlsxCell.Blank)
+            }
+        }
+    }
+
+    @Test
+    fun orderSheetHeaderUsesTitleAndMetaStyles() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        assertEquals(XlsxStyles.TITLE, rows[0].styleId)
+        assertEquals(XlsxStyles.META, rows[1].styleId)
+        assertEquals(XlsxStyles.META, rows[2].styleId)
+        assertEquals(XlsxStyles.META, rows[3].styleId)
+    }
+
+    @Test
+    fun orderSheetHeaderContainsCombinedMeta() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val rows = XlsxMultiReportBuilder.build(listOf(order))[0].rows
+        assertEquals("Участок: Коптеловский", cellText(rows[1].cells[0]))
+        assertEquals("Наряд: №27", cellText(rows[2].cells[0]))
+    }
+
+    @Test
     fun orderSheetContainsHeaderAndSamples() {
         val order = makeReport(
             area = "Коптеловский",
@@ -137,16 +214,23 @@ class XlsxMultiReportBuilderTest {
         )
         val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
         assertEquals("Отчёт по наряду", cellText(sheet.rows[0].cells[0]))
-        assertEquals("Коптеловский", cellText(sheet.rows[1].cells[1]))
-        assertEquals("№27", cellText(sheet.rows[2].cells[1]))
-        assertEquals("п/п", cellText(sheet.rows[5].cells[0]))
-        assertEquals("NV136601", cellText(sheet.rows[6].cells[1]))
-        assertEquals("NV136602", cellText(sheet.rows[7].cells[1]))
+        assertEquals("Найдена", cellText(sheet.rows[5].cells[0]))
+        assertEquals("п/п", cellText(sheet.rows[5].cells[1]))
+        assertEquals("№ пробы", cellText(sheet.rows[5].cells[2]))
+        assertEquals("NV136601", cellText(sheet.rows[6].cells[2]))
+        assertEquals("NV136602", cellText(sheet.rows[7].cells[2]))
     }
 
-    // ================================================================
-    // Общий лист приложений
-    // ================================================================
+    @Test
+    fun orderSheetSampleRowHasCheckmark() {
+        val order = makeReport(
+            area = "Коптеловский",
+            order = "27",
+            samples = listOf(sampleNoAppendix())
+        )
+        val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
+        assertEquals("✓", cellText(sheet.rows[6].cells[0]))
+    }
 
     @Test
     fun appendixSheetAppendedAfterOrders() {
@@ -159,6 +243,16 @@ class XlsxMultiReportBuilderTest {
         assertEquals("А — Наряд 1", sheets[0].name)
         assertEquals("Б — Наряд 2", sheets[1].name)
         assertEquals("Приложения", sheets[2].name)
+    }
+
+    @Test
+    fun appendixSheetHasNoLegend() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithNote("1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders)
+        assertEquals(2, sheets.size)
+        assertTrue(sheets[1].legend.isEmpty())
     }
 
     @Test
@@ -227,12 +321,8 @@ class XlsxMultiReportBuilderTest {
         assertEquals(1, appSheet.hyperlinks.size)
         val link = appSheet.hyperlinks[0]
         assertTrue(link.location.contains("Б — Наряд 2"))
-        assertTrue(link.location.contains("B7"))
+        assertTrue(link.location.contains("C7"))
     }
-
-    // ================================================================
-    // Имена листов: дубли
-    // ================================================================
 
     @Test
     fun duplicateNamesGetSuffix() {
@@ -268,10 +358,6 @@ class XlsxMultiReportBuilderTest {
         assertTrue(sheets[1].name.endsWith(" (2)"))
     }
 
-    // ================================================================
-    // Интеграция с XlsxWriter
-    // ================================================================
-
     @Test
     fun multiSheetsCanBeWrittenToZip() {
         val orders = listOf(
@@ -281,9 +367,7 @@ class XlsxMultiReportBuilderTest {
         val sheets = XlsxMultiReportBuilder.build(orders)
         assertEquals(3, sheets.size)
 
-        val out = java.io.ByteArrayOutputStream()
-        XlsxWriter.write(sheets, out)
-        val bytes = out.toByteArray()
+        val bytes = XlsxWriter.toBytes(sheets)
         assertTrue(bytes.size > 0)
 
         val names = mutableListOf<String>()
@@ -298,5 +382,36 @@ class XlsxMultiReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertTrue(names.contains("xl/worksheets/sheet3.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
+    }
+
+    @Test
+    fun imageGoesToCommonAppendixSheet() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
+        assertEquals(2, sheets.size)
+        assertEquals(1, sheets[1].images.size)
+        assertEquals("jpg", sheets[1].images[0].extension)
+    }
+
+    @Test
+    fun multiMediaEntriesAppearInZip() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
+        val bytes = XlsxWriter.toBytes(sheets)
+
+        val names = mutableListOf<String>()
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                names.add(e.name)
+                e = zip.nextEntry
+            }
+        }
+        assertTrue(names.contains("xl/media/image1.jpg"))
+        assertTrue(names.contains("xl/drawings/drawing1.xml"))
     }
 }

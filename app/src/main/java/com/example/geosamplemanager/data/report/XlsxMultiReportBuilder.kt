@@ -4,46 +4,44 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi):
- * Мультинарядный отчёт. N нарядов → N листов + один общий лист
- * «Приложения» в конце.
- *
- * Отличия от XlsxReportBuilder:
- *  - один файл — много листов;
- *  - лист «Приложения» один общий, блоки идут в порядке нарядов,
- *    нумерация сквозная (Приложение 1, 2, 3, ...);
- *  - имена листов — «<Участок> — Наряд <номер>» с защитой от дублей
- *    (суффикс « (2)», « (3)», ...);
- *  - обратные ссылки из блока приложений ведут в лист своего наряда.
- *
- * Порядок нарядов и их состав определяет вызывающая сторона (UI).
- * Билдер — чистая функция: List<ReportData> → List<XlsxSheet>.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход): без эмодзи.
  */
 
 object XlsxMultiReportBuilder {
 
-    /** Имя общего листа приложений. */
     private const val APPENDIX_SHEET_NAME = "Приложения"
-
-    /** Номер строки с заголовками колонок в листе «Наряд». */
-    private const val ORDER_HEADER_ROW = 6
-
-    /** Первая строка данных в листе «Наряд». */
     private const val ORDER_FIRST_DATA_ROW = 7
-
-    /** Колонка «Прил.» — 9-я, индекс 8 (0-based). */
     private const val ORDER_COL_APPENDIX = 8
-
-    /** Колонка «№ пробы» — 2-я, индекс 1 (0-based). */
-    private const val ORDER_COL_SAMPLE = 1
-
-    /** Первая строка блока приложений (после заголовка и пустой строки). */
+    private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
-
-    /** Максимальная длина имени листа в Excel. */
     private const val SHEET_NAME_MAX = 31
+    private const val ORDER_SKIP_WIDTH_ROWS = 6
+    private const val COLUMNS = 9
 
-    /** Размещение блока приложения на общем листе. */
+    private const val IMAGE_WIDTH_PX = 240
+    private const val IMAGE_HEIGHT_PX = 180
+    private const val APP_IMAGE_COL = 1
+
+    private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
+
+    private val LEGEND = listOf(
+        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
+    )
+
+    private fun headerRow(text: String, style: Int): XlsxRow {
+        val cells = ArrayList<XlsxCell>(COLUMNS)
+        cells.add(XlsxCell.Text(text, style))
+        repeat(COLUMNS - 1) {
+            cells.add(XlsxCell.Blank(style))
+        }
+        return XlsxRow(cells, styleId = style)
+    }
+
     private data class BlockPlacement(
         val orderIdx: Int,
         val sampleId: String,
@@ -51,25 +49,14 @@ object XlsxMultiReportBuilder {
         val titleRow: Int
     )
 
-    // ================================================================
-    // Публичный API
-    // ================================================================
-
-    /**
-     * Собрать листы мультинарядного отчёта.
-     *
-     * @param orders список нарядов в нужном порядке.
-     * @return листы: сначала все наряды, затем один общий «Приложения»
-     *   (если есть хоть одно приложение). Пустой вход → пустой список.
-     */
-    fun build(orders: List<ReportData>): List<XlsxSheet> {
+    fun build(
+        orders: List<ReportData>,
+        imageDecoder: ((String) -> DecodedImage?)? = null
+    ): List<XlsxSheet> {
         if (orders.isEmpty()) return emptyList()
 
         val orderSheetNames = uniqueSheetNames(orders)
 
-        // ============================================================
-        // Шаг 1. Пре-сканирование блоков приложений.
-        // ============================================================
         val placements = mutableListOf<BlockPlacement>()
         var cursor = APP_FIRST_BLOCK_ROW
         var number = 1
@@ -91,16 +78,12 @@ object XlsxMultiReportBuilder {
         }
         val placementByKey = placements.associateBy { it.orderIdx to it.sampleId }
 
-        // Карта строк листа наряда: orderIdx → (sampleId → rowNum).
         val orderRowById: List<Map<String, Int>> = orders.map { data ->
             data.samples.mapIndexed { i, s ->
                 s.row.id to (ORDER_FIRST_DATA_ROW + i)
             }.toMap()
         }
 
-        // ============================================================
-        // Шаг 2. Листы нарядов.
-        // ============================================================
         val orderSheets = orders.mapIndexed { orderIdx, data ->
             buildOrderSheet(
                 sheetName = orderSheetNames[orderIdx],
@@ -110,9 +93,6 @@ object XlsxMultiReportBuilder {
             )
         }
 
-        // ============================================================
-        // Шаг 3. Общий лист приложений (если есть).
-        // ============================================================
         val appendixSheet = if (placements.isEmpty()) {
             null
         } else {
@@ -120,7 +100,8 @@ object XlsxMultiReportBuilder {
                 orders = orders,
                 orderSheetNames = orderSheetNames,
                 orderRowById = orderRowById,
-                placementByKey = placementByKey
+                placementByKey = placementByKey,
+                imageDecoder = imageDecoder
             )
         }
 
@@ -131,10 +112,6 @@ object XlsxMultiReportBuilder {
         }
     }
 
-    // ================================================================
-    // Лист наряда
-    // ================================================================
-
     private fun buildOrderSheet(
         sheetName: String,
         data: ReportData,
@@ -144,32 +121,16 @@ object XlsxMultiReportBuilder {
         val rows = mutableListOf<XlsxRow>()
         val links = mutableListOf<XlsxHyperlink>()
 
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Отчёт по наряду")),
-                styleId = XlsxStyles.BOLD
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName))
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}"))
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt))
-            )
-        )
+        rows.add(headerRow("Отчёт по наряду", XlsxStyles.TITLE))
+        rows.add(headerRow("Участок: ${data.areaName}", XlsxStyles.META))
+        rows.add(headerRow("Наряд: №${data.orderNumber}", XlsxStyles.META))
+        rows.add(headerRow("Дата: ${data.generatedAt}", XlsxStyles.META))
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         rows.add(
             XlsxRow(
                 listOf(
+                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -177,7 +138,6 @@ object XlsxMultiReportBuilder {
                     XlsxCell.Text("Вес"),
                     XlsxCell.Text("Характеристика"),
                     XlsxCell.Text("Тип"),
-                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("Прил.")
                 ),
                 styleId = XlsxStyles.HEADER
@@ -202,6 +162,7 @@ object XlsxMultiReportBuilder {
             rows.add(
                 XlsxRow(
                     listOf(
+                        XlsxCell.Text(if (row.found) "✓" else ""),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
@@ -209,7 +170,6 @@ object XlsxMultiReportBuilder {
                         XlsxCell.Text(weightText(row)),
                         XlsxCell.Text(row.characteristic),
                         XlsxCell.Text(displayType(row)),
-                        XlsxCell.Text(if (row.found) "✓" else ""),
                         appendixCell
                     ),
                     styleId = XlsxStyles.styleForRow(row)
@@ -226,28 +186,29 @@ object XlsxMultiReportBuilder {
             }
         }
 
-        return XlsxSheet(name = sheetName, rows = rows, hyperlinks = links)
+        return XlsxSheet(
+            name = sheetName,
+            rows = rows,
+            hyperlinks = links,
+            images = emptyList(),
+            skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
+            mergeCells = HEADER_MERGES,
+            legend = LEGEND
+        )
     }
-
-    // ================================================================
-    // Общий лист приложений
-    // ================================================================
 
     private fun buildAppendixSheet(
         orders: List<ReportData>,
         orderSheetNames: List<String>,
         orderRowById: List<Map<String, Int>>,
-        placementByKey: Map<Pair<Int, String>, BlockPlacement>
+        placementByKey: Map<Pair<Int, String>, BlockPlacement>,
+        imageDecoder: ((String) -> DecodedImage?)?
     ): XlsxSheet {
         val rows = mutableListOf<XlsxRow>()
         val links = mutableListOf<XlsxHyperlink>()
+        val images = mutableListOf<XlsxImage>()
 
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Приложения")),
-                styleId = XlsxStyles.BOLD
-            )
-        )
+        rows.add(headerRow("Приложения", XlsxStyles.TITLE))
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         orders.forEachIndexed { orderIdx, data ->
@@ -303,6 +264,23 @@ object XlsxMultiReportBuilder {
                             )
                         )
                     )
+                    sample.photos.forEach { photo ->
+                        val imageRowIdx = rows.size
+                        val decoded = imageDecoder?.invoke(photo.dataUri)
+                        if (decoded != null) {
+                            images.add(
+                                XlsxImage(
+                                    bytes = decoded.bytes,
+                                    extension = decoded.extension,
+                                    colIdx = APP_IMAGE_COL,
+                                    rowIdx = imageRowIdx,
+                                    widthPx = IMAGE_WIDTH_PX,
+                                    heightPx = IMAGE_HEIGHT_PX
+                                )
+                            )
+                        }
+                        rows.add(XlsxRow(listOf(XlsxCell.Empty)))
+                    }
                 }
 
                 val backLinkRowNum = rows.size + 1
@@ -328,18 +306,15 @@ object XlsxMultiReportBuilder {
             }
         }
 
-        return XlsxSheet(name = APPENDIX_SHEET_NAME, rows = rows, hyperlinks = links)
+        return XlsxSheet(
+            name = APPENDIX_SHEET_NAME,
+            rows = rows,
+            hyperlinks = links,
+            images = images,
+            skipWidthRows = 0
+        )
     }
 
-    // ================================================================
-    // Имена листов
-    // ================================================================
-
-    /**
-     * Имена листов нарядов: «<Участок> — Наряд <номер>».
-     * Дубли (совпали участок+номер) — суффикс « (2)», « (3)», ...
-     * с сохранением лимита в 31 символ.
-     */
     private fun uniqueSheetNames(orders: List<ReportData>): List<String> {
         val used = mutableSetOf<String>()
         return orders.mapIndexed { idx, data ->
@@ -372,20 +347,18 @@ object XlsxMultiReportBuilder {
         }
     }
 
-    // ================================================================
-    // Вспомогательные
-    // ================================================================
-
-    /** Размер блока приложения (сколько строк он занимает). */
     private fun appendixBlockSize(sample: ReportSample): Int {
         var size = 0
-        size += 1                                  // «Приложение N»
-        size += 1                                  // «№ пробы:»
-        size += 1                                  // «Скважина:»
-        if (sample.note != null) size += 1         // «Заметка:»
-        if (sample.photos.isNotEmpty()) size += 1  // «Фото:»
-        size += 1                                  // «↩ К пробе»
-        size += 1                                  // пустая строка
+        size += 1
+        size += 1
+        size += 1
+        if (sample.note != null) size += 1
+        if (sample.photos.isNotEmpty()) {
+            size += 1
+            size += sample.photos.size
+        }
+        size += 1
+        size += 1
         return size
     }
 

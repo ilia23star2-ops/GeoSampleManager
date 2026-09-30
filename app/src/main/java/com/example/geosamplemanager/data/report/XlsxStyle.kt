@@ -3,17 +3,14 @@ package com.example.geosamplemanager.data.report
 import com.example.geosamplemanager.ui.screens.SampleRow
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Добавлен стиль LINK — синий текст с подчёркиванием.
- *
- * Индексы стилей (styleId) фиксированы и соответствуют
- * порядку записей в xl/styles.xml.
- *
- * Приоритет окраски строки — как в HTML-отчёте:
- *   found → hasImportError → postponed → isBlank → weightControl → default.
+ * FIX 5.9-xlsx-clean (30.09.2026, четырнадцатый заход):
+ *  - убран themeIndexMap и themeFor. Причина: Excel Online, увидев
+ *    theme="N", брал цвет из своей встроенной темы, а не из нашей
+ *    theme1.xml — цвета «перепутывались».
+ *  - Оставляем rgb (Excel, LibreOffice, Bree, мобильные) + indexed
+ *    (примитивные вьюеры). Оба работают корректно.
  */
 
-/** Определение стиля ячейки. */
 data class StyleDef(
     val bold: Boolean = false,
     val fillColor: String? = null,
@@ -33,8 +30,9 @@ object XlsxStyles {
     const val BLANK = 6
     const val CONTROL = 7
     const val LINK = 8
+    const val TITLE = 9
+    const val META = 10
 
-    /** Все определения по порядку индексов. */
     val all: List<StyleDef> = listOf(
         StyleDef(),                                        // 0 DEFAULT
         StyleDef(bold = true),                             // 1 BOLD
@@ -44,13 +42,35 @@ object XlsxStyles {
         StyleDef(fillColor = "90CAF9", border = true),     // 5 POSTPONED
         StyleDef(fillColor = "FFF59D", border = true),     // 6 BLANK
         StyleDef(fillColor = "CE93D8", border = true),     // 7 CONTROL
-        StyleDef(fontColor = "1976D2", underline = true, border = true) // 8 LINK
+        StyleDef(fontColor = "1976D2", underline = true, border = true), // 8 LINK
+        StyleDef(bold = true, fillColor = "BBDEFB"),       // 9 TITLE
+        StyleDef(fillColor = "E3F2FD")                     // 10 META
     )
 
-    /**
-     * Стиль строки данных пробы.
-     * Порядок проверок — как в ReportHtmlGenerator.rowCssClass.
-     */
+    val fillMap: Map<String, Int> by lazy {
+        val map = LinkedHashMap<String, Int>()
+        var idx = 2
+        all.forEach { def ->
+            val c = def.fillColor ?: return@forEach
+            if (c !in map) {
+                map[c] = idx
+                idx++
+            }
+        }
+        map
+    }
+
+    private val indexedColorMap: Map<String, Int> = mapOf(
+        "F0F0F0" to 22,
+        "A5D6A7" to 42,
+        "EF9A9A" to 29,
+        "90CAF9" to 44,
+        "FFF59D" to 43,
+        "CE93D8" to 46,
+        "BBDEFB" to 44,
+        "E3F2FD" to 41
+    )
+
     fun styleForRow(row: SampleRow): Int = when {
         row.found -> FOUND
         row.hasImportError -> ERROR
@@ -60,21 +80,15 @@ object XlsxStyles {
         else -> DEFAULT
     }
 
-    /** Индекс шрифта для стиля: 0 — обычный, 1 — жирный, 2 — ссылка. */
     internal fun fontIdFor(def: StyleDef): Int = when {
         def.fontColor != null || def.underline -> 2
         def.bold -> 1
         else -> 0
     }
 
-    /** Индекс fill для стиля. */
-    internal fun fillIdFor(def: StyleDef): Int = when (def.fillColor) {
-        "F0F0F0" -> 2
-        "A5D6A7" -> 3
-        "EF9A9A" -> 4
-        "90CAF9" -> 5
-        "FFF59D" -> 6
-        "CE93D8" -> 7
-        else -> 0
-    }
+    internal fun fillIdFor(def: StyleDef): Int =
+        def.fillColor?.let { fillMap[it] } ?: 0
+
+    internal fun indexedFor(hex: String?): Int? =
+        hex?.let { indexedColorMap[it] }
 }

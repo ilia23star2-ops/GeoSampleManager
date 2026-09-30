@@ -4,34 +4,61 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Гиперссылки внутри файла.
- *
- * Изменения:
- *  - в листе «Наряд» — новая колонка «Прил.» с ссылкой
- *    на соответствующий блок в листе «Приложения»;
- *  - в листе «Приложения» — в конце каждого блока строка
- *    «↩ К пробе <номер>» с обратной ссылкой на строку пробы.
- *
- * Формат ссылок (location): "'<ИмяЛиста>'!<Ячейка>".
+ * FIX 5.9-xlsx-clean (четырнадцатый заход):
+ *  - убраны эмодзи. Возврат к галочке ✓.
+ *  - шапка таблицы: "Найдена" вместо "Статус".
+ *  - легенда без эмодзи.
  */
+
+data class DecodedImage(
+    val bytes: ByteArray,
+    val extension: String
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DecodedImage) return false
+        return extension == other.extension && bytes.contentEquals(other.bytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = bytes.contentHashCode()
+        result = 31 * result + extension.hashCode()
+        return result
+    }
+}
 
 object XlsxReportBuilder {
 
-    /** Номер строки с заголовками колонок в листе «Наряд». */
-    private const val ORDER_HEADER_ROW = 6
-
-    /** Первая строка данных в листе «Наряд». */
     private const val ORDER_FIRST_DATA_ROW = 7
-
-    /** Колонка «Прил.» — 9-я, индекс 8 (0-based). */
     private const val ORDER_COL_APPENDIX = 8
-
-    /** Колонка «№ пробы» — 2-я, индекс 1 (0-based). */
-    private const val ORDER_COL_SAMPLE = 1
-
-    /** Первая строка блока приложений (после заголовка и пустой строки). */
+    private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
+    private const val ORDER_SKIP_WIDTH_ROWS = 6
+    private const val COLUMNS = 9
+
+    private const val IMAGE_WIDTH_PX = 240
+    private const val IMAGE_HEIGHT_PX = 180
+    private const val APP_IMAGE_COL = 1
+
+    private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
+
+    private val LEGEND = listOf(
+        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
+    )
+
+    private fun headerRow(text: String, style: Int): XlsxRow {
+        val cells = ArrayList<XlsxCell>(COLUMNS)
+        cells.add(XlsxCell.Text(text, style))
+        repeat(COLUMNS - 1) {
+            cells.add(XlsxCell.Blank(style))
+        }
+        return XlsxRow(cells, styleId = style)
+    }
 
     private fun displayType(row: SampleRow): String = when (row.status) {
         SampleStatus.BLANK -> "Холостая"
@@ -56,38 +83,35 @@ object XlsxReportBuilder {
         }
     }
 
-    /** Размещение блока приложения на листе «Приложения». */
     private data class AppendixPlacement(
         val number: Int,
         val titleRow: Int
     )
 
-    /** Размер блока приложения (сколько строк он занимает). */
     private fun appendixBlockSize(sample: ReportSample): Int {
         var size = 0
-        size += 1                                  // «Приложение N»
-        size += 1                                  // «№ пробы:»
-        size += 1                                  // «Скважина:»
-        if (sample.note != null) size += 1         // «Заметка:»
-        if (sample.photos.isNotEmpty()) size += 1  // «Фото:»
-        size += 1                                  // «↩ К пробе»
-        size += 1                                  // пустая строка
+        size += 1
+        size += 1
+        size += 1
+        if (sample.note != null) size += 1
+        if (sample.photos.isNotEmpty()) {
+            size += 1
+            size += sample.photos.size
+        }
+        size += 1
+        size += 1
         return size
     }
 
-    /**
-     * Собрать листы отчёта по одному наряду.
-     * Порядок: [Наряд, Приложения (если есть)].
-     */
-    fun build(data: ReportData): List<XlsxSheet> {
+    fun build(
+        data: ReportData,
+        imageDecoder: ((String) -> DecodedImage?)? = null
+    ): List<XlsxSheet> {
         val orderSheetName = "Наряд ${data.orderNumber}"
         val appendixSheetName = "Приложения"
 
         val withAppendix = data.samples.filter { it.hasAppendix }
 
-        // ============================================================
-        // Шаг 1. Пре-сканирование: где будет каждый блок приложений.
-        // ============================================================
         val placementById = mutableMapOf<String, AppendixPlacement>()
         var cursor = APP_FIRST_BLOCK_ROW
         withAppendix.forEachIndexed { idx, sample ->
@@ -98,38 +122,19 @@ object XlsxReportBuilder {
             cursor += appendixBlockSize(sample)
         }
 
-        // ============================================================
-        // Шаг 2. Лист «Наряд» — с колонкой «Прил.» и ссылками.
-        // ============================================================
         val orderRows = mutableListOf<XlsxRow>()
         val orderHyperlinks = mutableListOf<XlsxHyperlink>()
 
-        orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Отчёт по наряду")),
-                styleId = XlsxStyles.BOLD
-            )
-        )
-        orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName))
-            )
-        )
-        orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}"))
-            )
-        )
-        orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt))
-            )
-        )
+        orderRows.add(headerRow("Отчёт по наряду", XlsxStyles.TITLE))
+        orderRows.add(headerRow("Участок: ${data.areaName}", XlsxStyles.META))
+        orderRows.add(headerRow("Наряд: №${data.orderNumber}", XlsxStyles.META))
+        orderRows.add(headerRow("Дата: ${data.generatedAt}", XlsxStyles.META))
         orderRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         orderRows.add(
             XlsxRow(
                 listOf(
+                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -137,14 +142,12 @@ object XlsxReportBuilder {
                     XlsxCell.Text("Вес"),
                     XlsxCell.Text("Характеристика"),
                     XlsxCell.Text("Тип"),
-                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("Прил.")
                 ),
                 styleId = XlsxStyles.HEADER
             )
         )
 
-        // Карта: id пробы → номер строки в листе «Наряд».
         val orderRowById = data.samples.mapIndexed { idx, s ->
             s.row.id to (ORDER_FIRST_DATA_ROW + idx)
         }.toMap()
@@ -163,6 +166,7 @@ object XlsxReportBuilder {
             orderRows.add(
                 XlsxRow(
                     listOf(
+                        XlsxCell.Text(if (row.found) "✓" else ""),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
@@ -170,7 +174,6 @@ object XlsxReportBuilder {
                         XlsxCell.Text(weightText(row)),
                         XlsxCell.Text(row.characteristic),
                         XlsxCell.Text(displayType(row)),
-                        XlsxCell.Text(if (row.found) "✓" else ""),
                         appendixCell
                     ),
                     styleId = XlsxStyles.styleForRow(row)
@@ -190,33 +193,28 @@ object XlsxReportBuilder {
         val orderSheet = XlsxSheet(
             name = orderSheetName,
             rows = orderRows,
-            hyperlinks = orderHyperlinks
+            hyperlinks = orderHyperlinks,
+            images = emptyList(),
+            skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
+            mergeCells = HEADER_MERGES,
+            legend = LEGEND
         )
 
-        // Если приложений нет — только лист наряда.
         if (withAppendix.isEmpty()) {
             return listOf(orderSheet)
         }
 
-        // ============================================================
-        // Шаг 3. Лист «Приложения» — с обратными ссылками.
-        // ============================================================
         val appRows = mutableListOf<XlsxRow>()
         val appHyperlinks = mutableListOf<XlsxHyperlink>()
+        val appImages = mutableListOf<XlsxImage>()
 
-        appRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Приложения")),
-                styleId = XlsxStyles.BOLD
-            )
-        )
+        appRows.add(headerRow("Приложения", XlsxStyles.TITLE))
         appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         withAppendix.forEach { sample ->
             val placement = placementById.getValue(sample.row.id)
             val row = sample.row
 
-            // «Приложение N» — сюда ведёт ссылка из листа наряда.
             appRows.add(
                 XlsxRow(
                     listOf(XlsxCell.Text("Приложение ${placement.number}")),
@@ -260,9 +258,25 @@ object XlsxReportBuilder {
                         )
                     )
                 )
+                sample.photos.forEach { photo ->
+                    val imageRowIdx = appRows.size
+                    val decoded = imageDecoder?.invoke(photo.dataUri)
+                    if (decoded != null) {
+                        appImages.add(
+                            XlsxImage(
+                                bytes = decoded.bytes,
+                                extension = decoded.extension,
+                                colIdx = APP_IMAGE_COL,
+                                rowIdx = imageRowIdx,
+                                widthPx = IMAGE_WIDTH_PX,
+                                heightPx = IMAGE_HEIGHT_PX
+                            )
+                        )
+                    }
+                    appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
+                }
             }
 
-            // «↩ К пробе» — обратная ссылка на строку пробы в листе наряда.
             val backLinkRowNum = appRows.size + 1
             appRows.add(
                 XlsxRow(
@@ -287,7 +301,9 @@ object XlsxReportBuilder {
         val appendixSheet = XlsxSheet(
             name = appendixSheetName,
             rows = appRows,
-            hyperlinks = appHyperlinks
+            hyperlinks = appHyperlinks,
+            images = appImages,
+            skipWidthRows = 0
         )
 
         return listOf(orderSheet, appendixSheet)

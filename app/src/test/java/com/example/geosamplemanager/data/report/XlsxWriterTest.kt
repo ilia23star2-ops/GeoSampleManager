@@ -2,6 +2,7 @@ package com.example.geosamplemanager.data.report
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -9,8 +10,9 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Тесты генератора с гиперссылками и переопределением стилей.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход):
+ *  - тема убрана: нет theme1.xml, нет theme rel, нет theme в fills.
+ *  - fills: rgb + indexed.
  */
 class XlsxWriterTest {
 
@@ -68,6 +70,83 @@ class XlsxWriterTest {
     }
 
     @Test
+    fun noThemeEntry() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val entries = readEntries(bytes)
+        assertFalse(entries.containsKey("xl/theme/theme1.xml"))
+    }
+
+    @Test
+    fun workbookRelsHaveStylesNoTheme() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val rels = readEntries(bytes)["xl/_rels/workbook.xml.rels"] ?: ""
+        assertTrue(rels.contains("relationships/styles"))
+        assertTrue(rels.contains("Target=\"styles.xml\""))
+        assertFalse(rels.contains("relationships/theme"))
+    }
+
+    @Test
+    fun workbookHasFileVersionAndCalcPr() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val workbook = readEntries(bytes)["xl/workbook.xml"] ?: ""
+        assertTrue(workbook.contains("<fileVersion"))
+        assertTrue(workbook.contains("<workbookPr"))
+        assertTrue(workbook.contains("<calcPr"))
+    }
+
+    @Test
+    fun contentTypesNoThemeOverride() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val ct = readEntries(bytes)["[Content_Types].xml"] ?: ""
+        assertFalse(ct.contains("theme1.xml"))
+        assertFalse(ct.contains("officedocument.theme+xml"))
+    }
+
+    @Test
+    fun sheetHasSheetViewsAndFormatPr() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<sheetViews>"))
+        assertTrue(sheet.contains("<sheetView workbookViewId=\"0\"/>"))
+        assertTrue(sheet.contains("<sheetFormatPr defaultRowHeight=\"15\"/>"))
+    }
+
+    @Test
     fun textCellIncluded() {
         val bytes = write(
             listOf(
@@ -80,6 +159,39 @@ class XlsxWriterTest {
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertTrue(sheet.contains("Hello"))
         assertTrue(sheet.contains("t=\"inlineStr\""))
+    }
+
+    @Test
+    fun emptyTextWrittenAsBlank() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("", XlsxStyles.FOUND))))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("r=\"A1\" s=\"3\"/>"))
+        assertFalse(sheet.contains("r=\"A1\" s=\"3\" t=\"inlineStr\""))
+    }
+
+    @Test
+    fun emptyRowSelfClosing() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("A"))),
+                        XlsxRow(emptyList()),
+                        XlsxRow(listOf(XlsxCell.Text("B")))
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<row r=\"2\"/>"))
     }
 
     @Test
@@ -129,6 +241,26 @@ class XlsxWriterTest {
     }
 
     @Test
+    fun blankCellWrittenWithStyle() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(
+                            XlsxCell.Text("First"),
+                            XlsxCell.Blank(styleId = XlsxStyles.TITLE)
+                        ))
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("r=\"B1\" s=\"9\""))
+        assertFalse(sheet.contains("r=\"B1\" s=\"9\" t=\"inlineStr\""))
+    }
+
+    @Test
     fun multipleSheets() {
         val bytes = write(
             listOf(
@@ -141,24 +273,50 @@ class XlsxWriterTest {
         assertTrue(entries.containsKey("xl/worksheets/sheet2.xml"))
         assertTrue(entries["xl/worksheets/sheet1.xml"]!!.contains("A"))
         assertTrue(entries["xl/worksheets/sheet2.xml"]!!.contains("B"))
-        assertTrue(entries["xl/workbook.xml"]!!.contains("First"))
-        assertTrue(entries["xl/workbook.xml"]!!.contains("Second"))
     }
 
     @Test
-    fun stylesXmlContainsAllStyles() {
+    fun stylesXmlHasAllRequiredSections() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        assertTrue(styles.contains("<cellXfs count=\"9\">"))
-        assertTrue(styles.contains("A5D6A7"))
-        assertTrue(styles.contains("EF9A9A"))
-        assertTrue(styles.contains("90CAF9"))
-        assertTrue(styles.contains("FFF59D"))
-        assertTrue(styles.contains("CE93D8"))
+        assertTrue(styles.contains("<numFmts count=\"0\"/>"))
+        assertTrue(styles.contains("<cellStyleXfs count=\"11\">"))
+        assertTrue(styles.contains("<cellXfs count=\"11\">"))
+        assertTrue(styles.contains("<cellStyles count=\"1\">"))
+        assertTrue(styles.contains("name=\"Normal\""))
+        assertTrue(styles.contains("<dxfs count=\"0\"/>"))
+        assertTrue(styles.contains("<tableStyles count=\"0\""))
+    }
+
+    @Test
+    fun fillHasRgbAndIndexed() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        assertTrue(styles.contains("rgb=\"FFA5D6A7\" indexed=\"42\""))
+        assertTrue(styles.contains("rgb=\"FFEF9A9A\" indexed=\"29\""))
+        assertTrue(styles.contains("rgb=\"FFFFF59D\" indexed=\"43\""))
+        assertTrue(styles.contains("rgb=\"FFCE93D8\" indexed=\"46\""))
+        assertTrue(styles.contains("rgb=\"FF90CAF9\" indexed=\"44\""))
+        assertTrue(styles.contains("rgb=\"FFBBDEFB\" indexed=\"44\""))
+    }
+
+    @Test
+    fun fillHasNoThemeAttribute() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        assertFalse(styles.contains("theme=\""))
     }
 
     @Test
@@ -199,9 +357,7 @@ class XlsxWriterTest {
             listOf(
                 XlsxSheet(
                     name = "Test",
-                    rows = listOf(
-                        XlsxRow(listOf(XlsxCell.Text("Plain")))
-                    )
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("Plain"))))
                 )
             )
         )
@@ -264,6 +420,89 @@ class XlsxWriterTest {
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertFalse(sheet.contains("<hyperlinks>"))
+    }
+
+    @Test
+    fun mergeCellsWrittenToSheet() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(
+                            listOf(
+                                XlsxCell.Text("Title"),
+                                XlsxCell.Blank(XlsxStyles.TITLE),
+                                XlsxCell.Blank(XlsxStyles.TITLE)
+                            ),
+                            styleId = XlsxStyles.TITLE
+                        )
+                    ),
+                    mergeCells = listOf("A1:C1")
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<mergeCells count=\"1\">"))
+        assertTrue(sheet.contains("<mergeCell ref=\"A1:C1\"/>"))
+    }
+
+    @Test
+    fun legendRenderedInColumnJ() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("Title"))),
+                        XlsxRow(listOf(XlsxCell.Text("Row2")))
+                    ),
+                    legend = listOf(
+                        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+                        XlsxLegendItem("Найдена", XlsxStyles.FOUND)
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("r=\"J1\""))
+        assertTrue(sheet.contains("r=\"J2\""))
+        assertTrue(sheet.contains("Легенда"))
+        assertTrue(sheet.contains("Найдена"))
+    }
+
+    @Test
+    fun legendColumnHasFixedWidth() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))),
+                    legend = listOf(XlsxLegendItem("Легенда", XlsxStyles.BOLD))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<col min=\"10\" max=\"10\""))
+    }
+
+    @Test
+    fun indexedForReturnsExpectedValues() {
+        assertEquals(22, XlsxStyles.indexedFor("F0F0F0"))
+        assertEquals(42, XlsxStyles.indexedFor("A5D6A7"))
+        assertEquals(29, XlsxStyles.indexedFor("EF9A9A"))
+        assertEquals(44, XlsxStyles.indexedFor("90CAF9"))
+        assertEquals(43, XlsxStyles.indexedFor("FFF59D"))
+        assertEquals(46, XlsxStyles.indexedFor("CE93D8"))
+        assertEquals(44, XlsxStyles.indexedFor("BBDEFB"))
+        assertEquals(41, XlsxStyles.indexedFor("E3F2FD"))
+    }
+
+    @Test
+    fun indexedForReturnsNullForUnknown() {
+        assertEquals(null, XlsxStyles.indexedFor("000000"))
+        assertEquals(null, XlsxStyles.indexedFor("FFFFFF"))
+        assertEquals(null, XlsxStyles.indexedFor(null))
     }
 
     @Test
