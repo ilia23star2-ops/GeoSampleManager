@@ -7,13 +7,9 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
  * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
  * Гиперссылки внутри файла.
  *
- * Изменения:
- *  - в листе «Наряд» — новая колонка «Прил.» с ссылкой
- *    на соответствующий блок в листе «Приложения»;
- *  - в листе «Приложения» — в конце каждого блока строка
- *    «↩ К пробе <номер>» с обратной ссылкой на строку пробы.
- *
- * Формат ссылок (location): "'<ИмяЛиста>'!<Ячейка>".
+ * FIX 5.9-xlsx-formatting (30.09.2026):
+ *  - Порядок колонок: «Найдена» теперь первая, левее «п/п».
+ *  - Индексы колонок сдвинуты: sample=2, appendix=8.
  */
 
 object XlsxReportBuilder {
@@ -27,8 +23,8 @@ object XlsxReportBuilder {
     /** Колонка «Прил.» — 9-я, индекс 8 (0-based). */
     private const val ORDER_COL_APPENDIX = 8
 
-    /** Колонка «№ пробы» — 2-я, индекс 1 (0-based). */
-    private const val ORDER_COL_SAMPLE = 1
+    /** Колонка «№ пробы» — 3-я, индекс 2 (0-based). */
+    private const val ORDER_COL_SAMPLE = 2
 
     /** Первая строка блока приложений (после заголовка и пустой строки). */
     private const val APP_FIRST_BLOCK_ROW = 3
@@ -75,10 +71,6 @@ object XlsxReportBuilder {
         return size
     }
 
-    /**
-     * Собрать листы отчёта по одному наряду.
-     * Порядок: [Наряд, Приложения (если есть)].
-     */
     fun build(data: ReportData): List<XlsxSheet> {
         val orderSheetName = "Наряд ${data.orderNumber}"
         val appendixSheetName = "Приложения"
@@ -99,7 +91,7 @@ object XlsxReportBuilder {
         }
 
         // ============================================================
-        // Шаг 2. Лист «Наряд» — с колонкой «Прил.» и ссылками.
+        // Шаг 2. Лист «Наряд» — с колонкой «Найдена» в начале.
         // ============================================================
         val orderRows = mutableListOf<XlsxRow>()
         val orderHyperlinks = mutableListOf<XlsxHyperlink>()
@@ -130,6 +122,7 @@ object XlsxReportBuilder {
         orderRows.add(
             XlsxRow(
                 listOf(
+                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -137,14 +130,12 @@ object XlsxReportBuilder {
                     XlsxCell.Text("Вес"),
                     XlsxCell.Text("Характеристика"),
                     XlsxCell.Text("Тип"),
-                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("Прил.")
                 ),
                 styleId = XlsxStyles.HEADER
             )
         )
 
-        // Карта: id пробы → номер строки в листе «Наряд».
         val orderRowById = data.samples.mapIndexed { idx, s ->
             s.row.id to (ORDER_FIRST_DATA_ROW + idx)
         }.toMap()
@@ -163,6 +154,7 @@ object XlsxReportBuilder {
             orderRows.add(
                 XlsxRow(
                     listOf(
+                        XlsxCell.Text(if (row.found) "✓" else ""),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
@@ -170,7 +162,6 @@ object XlsxReportBuilder {
                         XlsxCell.Text(weightText(row)),
                         XlsxCell.Text(row.characteristic),
                         XlsxCell.Text(displayType(row)),
-                        XlsxCell.Text(if (row.found) "✓" else ""),
                         appendixCell
                     ),
                     styleId = XlsxStyles.styleForRow(row)
@@ -193,7 +184,6 @@ object XlsxReportBuilder {
             hyperlinks = orderHyperlinks
         )
 
-        // Если приложений нет — только лист наряда.
         if (withAppendix.isEmpty()) {
             return listOf(orderSheet)
         }
@@ -216,7 +206,6 @@ object XlsxReportBuilder {
             val placement = placementById.getValue(sample.row.id)
             val row = sample.row
 
-            // «Приложение N» — сюда ведёт ссылка из листа наряда.
             appRows.add(
                 XlsxRow(
                     listOf(XlsxCell.Text("Приложение ${placement.number}")),
@@ -262,7 +251,6 @@ object XlsxReportBuilder {
                 )
             }
 
-            // «↩ К пробе» — обратная ссылка на строку пробы в листе наряда.
             val backLinkRowNum = appRows.size + 1
             appRows.add(
                 XlsxRow(
