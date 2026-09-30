@@ -4,12 +4,10 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-header (четвёртый заход):
- *  - шапка (4 строки) заполнена 9 ячейками каждая: первая со
- *    значением, остальные Blank со стилем — чтобы фон работал
- *    во всех просмотрщиках;
- *  - skipWidthRows = 6 — ни шапка, ни заголовок таблицы не
- *    расширяют колонки.
+ * FIX 5.9-xlsx-legend (девятый заход):
+ *  - в лист «Наряд» добавлена легенда цветов справа от шапки
+ *    (колонка J, строки 1–6);
+ *  - skipWidthRows = 6, легенда не растягивает A..I.
  */
 
 data class DecodedImage(
@@ -35,10 +33,7 @@ object XlsxReportBuilder {
     private const val ORDER_COL_APPENDIX = 8
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
-
-    /** Пропускаем 6 строк (4 шапка + пустая + заголовок таблицы). */
     private const val ORDER_SKIP_WIDTH_ROWS = 6
-
     private const val COLUMNS = 9
 
     private const val IMAGE_WIDTH_PX = 240
@@ -47,10 +42,16 @@ object XlsxReportBuilder {
 
     private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
 
-    /**
-     * Строка шапки: значение в первой ячейке + Blank в остальных
-     * (для корректного отображения фона при merge).
-     */
+    /** Легенда цветов справа от шапки. */
+    private val LEGEND = listOf(
+        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
+    )
+
     private fun headerRow(text: String, style: Int): XlsxRow {
         val cells = ArrayList<XlsxCell>(COLUMNS)
         cells.add(XlsxCell.Text(text, style))
@@ -196,7 +197,8 @@ object XlsxReportBuilder {
             hyperlinks = orderHyperlinks,
             images = emptyList(),
             skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
-            mergeCells = HEADER_MERGES
+            mergeCells = HEADER_MERGES,
+            legend = LEGEND
         )
 
         if (withAppendix.isEmpty()) {
