@@ -6,14 +6,10 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-ui: toBytes() — сборка zip в памяти.
- *
- * FIX 5.9-xlsx-formatting: fillMap, skipWidthRows, applyFill, images.
- *
- * FIX 5.9-xlsx-header (30.09.2026, третий заход):
- *  - XlsxSheet.mergeCells — список диапазонов для объединения ячеек
- *    (например, "A1:I1"). Рендерится как <mergeCells> после
- *    <sheetData>, до <hyperlinks>.
+ * FIX 5.9-xlsx-header (30.09.2026, четвёртый заход):
+ *  - XlsxCell.Blank — пустая ячейка со стилем (пишется в XML).
+ *    Нужна, чтобы заполнить все ячейки merged-диапазона шапки:
+ *    мобильные просмотрщики иначе не показывают фон.
  */
 
 // ====================================================================
@@ -33,7 +29,20 @@ sealed class XlsxCell {
         override val styleId: Int? = null
     ) : XlsxCell()
 
+    /**
+     * Пустая ячейка БЕЗ стиля. В XML не пишется вообще.
+     * Нужна для пропуска колонок.
+     */
     data object Empty : XlsxCell()
+
+    /**
+     * Пустая ячейка СО стилем. В XML пишется как `<c r=".." s=".."/>`.
+     * Нужна для заполнения merged-диапазона, чтобы фон отображался
+     * во всех просмотрщиках.
+     */
+    data class Blank(
+        override val styleId: Int? = null
+    ) : XlsxCell()
 }
 
 data class XlsxRow(
@@ -353,6 +362,12 @@ object XlsxWriter {
                         sb.append("<v>").append(formatNumber(cell.value)).append("</v>")
                         sb.append("</c>")
                     }
+                    is XlsxCell.Blank -> {
+                        // Пустая ячейка со стилем. Без t/v — Excel
+                        // воспримет как пустую, но фон/границы применит.
+                        sb.append("<c r=\"").append(ref).append("\"")
+                            .append(styleAttr).append("/>")
+                    }
                     is XlsxCell.Empty -> Unit
                 }
             }
@@ -360,7 +375,6 @@ object XlsxWriter {
         }
         sb.append("</sheetData>")
 
-        // mergeCells идёт ПОСЛЕ sheetData, ДО hyperlinks.
         if (sheet.mergeCells.isNotEmpty()) {
             sb.append("<mergeCells count=\"").append(sheet.mergeCells.size).append("\">")
             sheet.mergeCells.forEach { ref ->
@@ -397,7 +411,7 @@ object XlsxWriter {
 
     private fun buildDrawing(
         images: List<XlsxImage>,
-        imageIndexOfImage: Map<XlsxImage, Int>
+        @Suppress("UNUSED_PARAMETER") imageIndexOfImage: Map<XlsxImage, Int>
     ): String {
         val sb = StringBuilder(2048)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -475,6 +489,7 @@ object XlsxWriter {
                 val text = when (cell) {
                     is XlsxCell.Text -> cell.value
                     is XlsxCell.Number -> formatNumber(cell.value)
+                    is XlsxCell.Blank -> ""
                     is XlsxCell.Empty -> ""
                 }
                 val longestLine = if (text.isEmpty()) {
