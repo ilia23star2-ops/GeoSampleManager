@@ -8,10 +8,8 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
  *
  * FIX 5.9-xlsx-formatting:
  *  - порядок колонок: Найдена первая.
- *  - skipWidthRows = 5.
- *  - картинки в общем листе приложений: каждое фото — отдельная
- *    строка под «Фото: N шт.». Декодер data-uri передаёт вызывающая
- *    сторона (UI).
+ *  - skipWidthRows = 6.
+ *  - картинки в общем листе приложений.
  */
 
 object XlsxMultiReportBuilder {
@@ -23,7 +21,7 @@ object XlsxMultiReportBuilder {
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
     private const val SHEET_NAME_MAX = 31
-    private const val ORDER_SKIP_WIDTH_ROWS = 5
+    private const val ORDER_SKIP_WIDTH_ROWS = 6
 
     private const val IMAGE_WIDTH_PX = 240
     private const val IMAGE_HEIGHT_PX = 180
@@ -36,10 +34,6 @@ object XlsxMultiReportBuilder {
         val titleRow: Int
     )
 
-    /**
-     * @param imageDecoder — опциональный декодер data-uri в байты.
-     *   null — картинки не вставляются (для тестов).
-     */
     fun build(
         orders: List<ReportData>,
         imageDecoder: ((String) -> DecodedImage?)? = null
@@ -48,9 +42,6 @@ object XlsxMultiReportBuilder {
 
         val orderSheetNames = uniqueSheetNames(orders)
 
-        // ============================================================
-        // Шаг 1. Пре-сканирование блоков приложений.
-        // ============================================================
         val placements = mutableListOf<BlockPlacement>()
         var cursor = APP_FIRST_BLOCK_ROW
         var number = 1
@@ -122,19 +113,13 @@ object XlsxMultiReportBuilder {
             )
         )
         rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName)))
         )
         rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}"))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}")))
         )
         rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt)))
         )
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
@@ -218,10 +203,7 @@ object XlsxMultiReportBuilder {
         val images = mutableListOf<XlsxImage>()
 
         rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Приложения")),
-                styleId = XlsxStyles.BOLD
-            )
+            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.BOLD)
         )
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
