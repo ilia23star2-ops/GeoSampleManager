@@ -10,11 +10,14 @@ import java.util.zip.ZipOutputStream
  * Добавлена поддержка внутренних гиперссылок.
  *
  * FIX 5.9-xlsx-ui (30.09.2026):
- * Запись через промежуточный ByteArrayOutputStream.
- * Раньше zip.finish() не флашил underlying stream — файл мог
- * получиться обрезанным (не открывался в Excel / таблицах).
- * Теперь весь zip собирается в памяти, потом пишется в out одним
- * куском + out.flush().
+ *  - toBytes(): сборка zip в памяти, потом запись одним куском.
+ *    Раньше zip.finish() не флашил underlying stream — файл мог
+ *    получиться обрезанным (не открывался).
+ *
+ * FIX 5.9-xlsx-formatting (30.09.2026, второй заход):
+ *  - buildStyles использует XlsxStyles.fillMap — индексы fill'ов
+ *    теперь согласованы с порядком в styles.xml.
+ *  - buildCols: автоширина колонок по самой длинной строке.
  */
 
 // ====================================================================
@@ -79,13 +82,21 @@ data class XlsxSheet(
 
 object XlsxWriter {
 
+    /** Минимальная ширина колонки (символов). */
+    private const val MIN_COL_WIDTH = 4.0
+
+    /** Максимальная ширина колонки (символов). */
+    private const val MAX_COL_WIDTH = 100.0
+
+    /** Запас к самой длинной строке (символов). */
+    private const val COL_WIDTH_PADDING = 2.0
+
     /**
      * Записать .xlsx в поток.
      *
      * FIX 5.9-xlsx-ui: собираем zip в памяти, потом пишем одним куском.
      * Это гарантирует, что все байты (включая центральный каталог zip)
-     * попадут в out до его закрытия — раньше zip.finish() мог оставить
-     * часть данных в буфере Deflater, и файл не открывался.
+     * попадут в out до его закрытия.
      *
      * @param sheets список листов, порядок сохраняется.
      * @param out куда писать (не закрывается).
@@ -123,10 +134,7 @@ object XlsxWriter {
             writeEntry(zip, path, buildSheet(sheet))
         }
 
-        // close() завершает zip и освобождает Deflater.
-        // Внутренний buffer — in-memory, его закрытие безопасно.
         zip.close()
-
         return buffer.toByteArray()
     }
 
@@ -192,10 +200,15 @@ object XlsxWriter {
     }
 
     /**
-     * xl/styles.xml с фиксированным набором стилей из XlsxStyles.all.
+     * xl/styles.xml.
+     *
+     * FIX 5.9-xlsx-formatting: fills строятся по XlsxStyles.fillMap —
+     * порядок индексов совпадает с тем, что возвращает fillIdFor.
      */
     private fun buildStyles(): String {
         val styles = XlsxStyles.all
+        val fillMap = XlsxStyles.fillMap
+
         val sb = StringBuilder(2048)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
@@ -207,13 +220,12 @@ object XlsxWriter {
         sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/><name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // fills: 0 — none, 1 — gray125 (обязательные), далее — наши цвета
-        sb.append("<fills count=\"8\">")
+        // fills: 0 — none, 1 — gray125 (обязательные),
+        // далее — уникальные цвета из fillMap в порядке индексов.
+        sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
-        styles.forEachIndexed { idx, def ->
-            if (idx == 0) return@forEachIndexed
-            val color = def.fillColor ?: "FFFFFF"
+        fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
             sb.append("<fill><patternFill patternType=\"solid\">")
             sb.append("<fgColor rgb=\"FF").append(color).append("\"/>")
             sb.append("<bgColor indexed=\"64\"/>")
@@ -254,6 +266,7 @@ object XlsxWriter {
         val sb = StringBuilder(1024)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+        sb.append(buildCols(sheet.rows))
         sb.append("<sheetData>")
         sheet.rows.forEachIndexed { rowIdx, row ->
             val rowNum = rowIdx + 1
@@ -294,6 +307,49 @@ object XlsxWriter {
         }
 
         sb.append("</worksheet>")
+        return sb.toString()
+    }
+
+    /**
+     * Автоширина колонок. Для каждой колонки — по самой длинной строке
+     * среди всех ячеек. Многострочный текст — по самой длинной строке.
+     */
+    private fun buildCols(rows: List<XlsxRow>): String {
+        if (rows.isEmpty()) return ""
+
+        val maxCols = rows.maxOfOrNull { it.cells.size } ?: 0
+        if (maxCols == 0) return ""
+
+        val widths = DoubleArray(maxCols)
+        rows.forEach { row ->
+            row.cells.forEachIndexed { colIdx, cell ->
+                val text = when (cell) {
+                    is XlsxCell.Text -> cell.value
+                    is XlsxCell.Number -> formatNumber(cell.value)
+                    is XlsxCell.Empty -> ""
+                }
+                val longestLine = if (text.isEmpty()) {
+                    0
+                } else {
+                    text.split('\n').maxOfOrNull { it.length } ?: 0
+                }
+                if (longestLine > widths[colIdx]) {
+                    widths[colIdx] = longestLine.toDouble()
+                }
+            }
+        }
+
+        val sb = StringBuilder(128)
+        sb.append("<cols>")
+        widths.forEachIndexed { idx, w ->
+            val width = (w + COL_WIDTH_PADDING)
+                .coerceIn(MIN_COL_WIDTH, MAX_COL_WIDTH)
+            sb.append("<col min=\"").append(idx + 1).append("\" ")
+            sb.append("max=\"").append(idx + 1).append("\" ")
+            sb.append("width=\"").append(width).append("\" ")
+            sb.append("customWidth=\"1\"/>")
+        }
+        sb.append("</cols>")
         return sb.toString()
     }
 
