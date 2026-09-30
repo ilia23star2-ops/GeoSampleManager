@@ -4,28 +4,25 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi).
- *
- * FIX 5.9-xlsx-formatting:
- *  - порядок колонок: Найдена первая.
- *  - skipWidthRows = 6.
- *  - картинки в общем листе приложений.
+ * FIX 5.9-xlsx-header: шапка объединена A1:I1..A4:I4, с фоном.
+ * skipWidthRows = 5.
  */
 
 object XlsxMultiReportBuilder {
 
     private const val APPENDIX_SHEET_NAME = "Приложения"
-    private const val ORDER_HEADER_ROW = 6
     private const val ORDER_FIRST_DATA_ROW = 7
     private const val ORDER_COL_APPENDIX = 8
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
     private const val SHEET_NAME_MAX = 31
-    private const val ORDER_SKIP_WIDTH_ROWS = 6
+    private const val ORDER_SKIP_WIDTH_ROWS = 5
 
     private const val IMAGE_WIDTH_PX = 240
     private const val IMAGE_HEIGHT_PX = 180
     private const val APP_IMAGE_COL = 1
+
+    private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
 
     private data class BlockPlacement(
         val orderIdx: Int,
@@ -109,17 +106,26 @@ object XlsxMultiReportBuilder {
         rows.add(
             XlsxRow(
                 listOf(XlsxCell.Text("Отчёт по наряду")),
-                styleId = XlsxStyles.BOLD
+                styleId = XlsxStyles.TITLE
             )
         )
         rows.add(
-            XlsxRow(listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName)))
+            XlsxRow(
+                listOf(XlsxCell.Text("Участок: ${data.areaName}")),
+                styleId = XlsxStyles.META
+            )
         )
         rows.add(
-            XlsxRow(listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}")))
+            XlsxRow(
+                listOf(XlsxCell.Text("Наряд: №${data.orderNumber}")),
+                styleId = XlsxStyles.META
+            )
         )
         rows.add(
-            XlsxRow(listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt)))
+            XlsxRow(
+                listOf(XlsxCell.Text("Дата: ${data.generatedAt}")),
+                styleId = XlsxStyles.META
+            )
         )
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
@@ -187,7 +193,8 @@ object XlsxMultiReportBuilder {
             rows = rows,
             hyperlinks = links,
             images = emptyList(),
-            skipWidthRows = ORDER_SKIP_WIDTH_ROWS
+            skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
+            mergeCells = HEADER_MERGES
         )
     }
 
@@ -203,7 +210,7 @@ object XlsxMultiReportBuilder {
         val images = mutableListOf<XlsxImage>()
 
         rows.add(
-            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.BOLD)
+            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.TITLE)
         )
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
