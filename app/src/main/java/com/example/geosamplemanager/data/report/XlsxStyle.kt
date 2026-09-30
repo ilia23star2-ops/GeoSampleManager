@@ -3,17 +3,16 @@ package com.example.geosamplemanager.data.report
 import com.example.geosamplemanager.ui.screens.SampleRow
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Добавлен стиль LINK — синий текст с подчёркиванием.
+ * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links): LINK.
  *
  * FIX 5.9-xlsx-formatting:
  *  - fillMap — уникальные цвета заливки → индекс fill'а в styles.xml.
- *  - Раньше fillIdFor хардкодил индексы 2..7, но фактический порядок
- *    fills в styles.xml был сдвинут на -1 (из-за пропуска idx == 0).
- *    Все fillId были неверные → Excel молча рисовал белый фон.
+ *
+ * FIX 5.9-xlsx-header (30.09.2026, третий заход):
+ *  - TITLE — жирный + фон BBDEFB (шапка-заголовок).
+ *  - META — фон E3F2FD (участок/наряд/дата).
  */
 
-/** Определение стиля ячейки. */
 data class StyleDef(
     val bold: Boolean = false,
     val fillColor: String? = null,
@@ -33,8 +32,9 @@ object XlsxStyles {
     const val BLANK = 6
     const val CONTROL = 7
     const val LINK = 8
+    const val TITLE = 9
+    const val META = 10
 
-    /** Все определения по порядку индексов (индексы = индекс в cellXfs). */
     val all: List<StyleDef> = listOf(
         StyleDef(),                                        // 0 DEFAULT
         StyleDef(bold = true),                             // 1 BOLD
@@ -44,15 +44,11 @@ object XlsxStyles {
         StyleDef(fillColor = "90CAF9", border = true),     // 5 POSTPONED
         StyleDef(fillColor = "FFF59D", border = true),     // 6 BLANK
         StyleDef(fillColor = "CE93D8", border = true),     // 7 CONTROL
-        StyleDef(fontColor = "1976D2", underline = true, border = true) // 8 LINK
+        StyleDef(fontColor = "1976D2", underline = true, border = true), // 8 LINK
+        StyleDef(bold = true, fillColor = "BBDEFB"),       // 9 TITLE
+        StyleDef(fillColor = "E3F2FD")                     // 10 META
     )
 
-    /**
-     * Уникальные непустые цвета заливки → индекс fill'а в styles.xml.
-     * Начинается с 2, потому что 0 (none) и 1 (gray125) зарезервированы.
-     *
-     * Порядок — по первому появлению в [all].
-     */
     val fillMap: Map<String, Int> by lazy {
         val map = LinkedHashMap<String, Int>()
         var idx = 2
@@ -66,10 +62,6 @@ object XlsxStyles {
         map
     }
 
-    /**
-     * Стиль строки данных пробы.
-     * Порядок проверок — как в ReportHtmlGenerator.rowCssClass.
-     */
     fun styleForRow(row: SampleRow): Int = when {
         row.found -> FOUND
         row.hasImportError -> ERROR
@@ -79,14 +71,12 @@ object XlsxStyles {
         else -> DEFAULT
     }
 
-    /** Индекс шрифта для стиля: 0 — обычный, 1 — жирный, 2 — ссылка. */
     internal fun fontIdFor(def: StyleDef): Int = when {
         def.fontColor != null || def.underline -> 2
         def.bold -> 1
         else -> 0
     }
 
-    /** Индекс fill для стиля. 0 — нет заливки. */
     internal fun fillIdFor(def: StyleDef): Int =
         def.fillColor?.let { fillMap[it] } ?: 0
 }
