@@ -1,5 +1,6 @@
 package com.example.geosamplemanager.data.report
 
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -8,12 +9,12 @@ import java.util.zip.ZipOutputStream
  * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
  * Добавлена поддержка внутренних гиперссылок.
  *
- * Изменения относительно подзахода 3:
- *  - XlsxCell.Text/Number получили необязательный styleId —
- *    переопределение стиля на уровне ячейки (нужно для колонки «Прил.»).
- *  - XlsxSheet.hyperlinks — список внутренних ссылок (location).
- *  - В sheetN.xml после <sheetData> пишется <hyperlinks>.
- *  - В xl/styles.xml добавлен третий шрифт (синий + подчёркивание).
+ * FIX 5.9-xlsx-ui (30.09.2026):
+ * Запись через промежуточный ByteArrayOutputStream.
+ * Раньше zip.finish() не флашил underlying stream — файл мог
+ * получиться обрезанным (не открывался в Excel / таблицах).
+ * Теперь весь zip собирается в памяти, потом пишется в out одним
+ * куском + out.flush().
  */
 
 // ====================================================================
@@ -80,11 +81,28 @@ object XlsxWriter {
 
     /**
      * Записать .xlsx в поток.
+     *
+     * FIX 5.9-xlsx-ui: собираем zip в памяти, потом пишем одним куском.
+     * Это гарантирует, что все байты (включая центральный каталог zip)
+     * попадут в out до его закрытия — раньше zip.finish() мог оставить
+     * часть данных в буфере Deflater, и файл не открывался.
+     *
      * @param sheets список листов, порядок сохраняется.
      * @param out куда писать (не закрывается).
      */
     fun write(sheets: List<XlsxSheet>, out: OutputStream) {
-        val zip = ZipOutputStream(out)
+        val bytes = toBytes(sheets)
+        out.write(bytes)
+        out.flush()
+    }
+
+    /**
+     * Собрать .xlsx в массив байт.
+     * Полезно, когда нужен размер файла или запись через SAF.
+     */
+    fun toBytes(sheets: List<XlsxSheet>): ByteArray {
+        val buffer = ByteArrayOutputStream(64 * 1024)
+        val zip = ZipOutputStream(buffer)
 
         val sanitized = sheets.mapIndexed { idx, s ->
             XlsxSheet(
@@ -105,7 +123,11 @@ object XlsxWriter {
             writeEntry(zip, path, buildSheet(sheet))
         }
 
-        zip.finish()
+        // close() завершает zip и освобождает Deflater.
+        // Внутренний buffer — in-memory, его закрытие безопасно.
+        zip.close()
+
+        return buffer.toByteArray()
     }
 
     // ================================================================
@@ -132,14 +154,12 @@ object XlsxWriter {
     }
 
     private fun buildRootRels(): String {
-        return """
-            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-                <Relationship Id="rId1"
-                    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
-                    Target="xl/workbook.xml"/>
-            </Relationships>
-        """.trimIndent().replace("\n", "").replace(Regex(" {2,}"), "")
+        return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" +
+                """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">""" +
+                """<Relationship Id="rId1" """ +
+                """Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" """ +
+                """Target="xl/workbook.xml"/>""" +
+                """</Relationships>"""
     }
 
     private fun buildWorkbook(sheets: List<XlsxSheet>): String {
