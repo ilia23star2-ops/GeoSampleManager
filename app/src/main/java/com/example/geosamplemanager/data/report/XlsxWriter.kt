@@ -6,14 +6,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-valid (30.09.2026, восьмой заход):
- *  - КРИТИЧНО: порядок элементов внутри <font> по ECMA-376:
- *      b, i, strike, condense, extend, outline, shadow,
- *      u, vertAlign, sz, color, name, family, charset, scheme.
- *    Раньше было <color/><sz/><u/><name/> — невалидно, Excel
- *    выбрасывал всю таблицу стилей, цвета терялись.
- *    Стало для LINK: <u/><sz/><color/><name/>.
- *  - Пустая строка (все ячейки Empty) — self-closing <row/>.
+ * FIX 5.9-xlsx-legend (30.09.2026, девятый заход):
+ *  - В worksheet добавлены <sheetViews> и <sheetFormatPr> —
+ *    без них Excel может игнорировать styles.xml.
+ *  - fill: bgColor = fgColor (максимальная совместимость).
+ *  - XlsxSheet.legend — легенда цветов в колонке J справа
+ *    от шапки. Ширина колонки J — фиксированная.
  */
 
 sealed class XlsxCell {
@@ -76,13 +74,20 @@ data class XlsxImage(
     }
 }
 
+/** Элемент легенды: подпись и стиль заливки. */
+data class XlsxLegendItem(
+    val label: String,
+    val styleId: Int = XlsxStyles.DEFAULT
+)
+
 data class XlsxSheet(
     val name: String,
     val rows: List<XlsxRow>,
     val hyperlinks: List<XlsxHyperlink> = emptyList(),
     val images: List<XlsxImage> = emptyList(),
     val skipWidthRows: Int = 0,
-    val mergeCells: List<String> = emptyList()
+    val mergeCells: List<String> = emptyList(),
+    val legend: List<XlsxLegendItem> = emptyList()
 )
 
 object XlsxWriter {
@@ -92,6 +97,10 @@ object XlsxWriter {
     private const val COL_WIDTH_PADDING = 2.0
     private const val EMU_PER_PX = 9525L
     private const val ROW_HEIGHT_PX_TO_PT = 0.75
+
+    /** Колонка J (0-based = 9) — легенда. Ширина фиксированная. */
+    private const val LEGEND_COL_INDEX = 9
+    private const val LEGEND_COL_WIDTH = 22.0
 
     fun write(sheets: List<XlsxSheet>, out: OutputStream) {
         val bytes = toBytes(sheets)
@@ -110,7 +119,8 @@ object XlsxWriter {
                 hyperlinks = s.hyperlinks,
                 images = s.images,
                 skipWidthRows = s.skipWidthRows,
-                mergeCells = s.mergeCells
+                mergeCells = s.mergeCells,
+                legend = s.legend
             )
         }
 
@@ -264,26 +274,22 @@ object XlsxWriter {
 
         sb.append("<numFmts count=\"0\"/>")
 
-        // FIX: порядок по ECMA-376 CT_Font:
-        //   b, i, strike, condense, extend, outline, shadow,
-        //   u, vertAlign, sz, color, name, family, charset, scheme.
+        // Порядок по ECMA-376 CT_Font: b, i, ..., u, ..., sz, color, name.
         sb.append("<fonts count=\"3\">")
-        // 0 — обычный: sz, name
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
-        // 1 — жирный: b, sz, name
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
-        // 2 — ссылка: u, sz, color, name (именно в таком порядке!)
         sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/>")
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
+        // FIX: bgColor = fgColor. Максимальная совместимость.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
         fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
             sb.append("<fill><patternFill patternType=\"solid\">")
             sb.append("<fgColor rgb=\"FF").append(color).append("\"/>")
-            sb.append("<bgColor indexed=\"64\"/>")
+            sb.append("<bgColor rgb=\"FF").append(color).append("\"/>")
             sb.append("</patternFill></fill>")
         }
         sb.append("</fills>")
@@ -348,7 +354,14 @@ object XlsxWriter {
         sb.append(cellRef(maxColsOf(sheet), maxRowsOf(sheet)))
         sb.append("\"/>")
 
-        sb.append(buildCols(sheet.rows, sheet.skipWidthRows))
+        // FIX: sheetViews и sheetFormatPr — без них Excel может
+        // не применять стили из styles.xml.
+        sb.append("<sheetViews>")
+        sb.append("<sheetView workbookViewId=\"0\"/>")
+        sb.append("</sheetViews>")
+        sb.append("<sheetFormatPr defaultRowHeight=\"15\"/>")
+
+        sb.append(buildCols(sheet.rows, sheet.skipWidthRows, sheet.legend.isNotEmpty()))
 
         val rowHeightByIndex: Map<Int, Double> = sheet.images
             .associate { it.rowIdx to (it.heightPx * ROW_HEIGHT_PX_TO_PT) }
@@ -357,10 +370,11 @@ object XlsxWriter {
         sheet.rows.forEachIndexed { rowIdx, row ->
             val rowNum = rowIdx + 1
             val ht = rowHeightByIndex[rowIdx]
+            val legendItem = sheet.legend.getOrNull(rowIdx)
+            val hasCells = row.cells.any { it !is XlsxCell.Empty }
 
-            // Пустая строка (нет значащих ячеек) — self-closing.
-            val hasContent = row.cells.any { it !is XlsxCell.Empty }
-            if (!hasContent) {
+            // Пустая строка (нет ячеек и нет легенды) — self-closing.
+            if (!hasCells && legendItem == null) {
                 sb.append("<row r=\"").append(rowNum).append("\"")
                 if (ht != null && ht > 0) {
                     sb.append(" ht=\"").append(ht).append("\" customHeight=\"1\"")
@@ -374,6 +388,7 @@ object XlsxWriter {
                 sb.append(" ht=\"").append(ht).append("\" customHeight=\"1\"")
             }
             sb.append(">")
+
             row.cells.forEachIndexed { colIdx, cell ->
                 if (cell is XlsxCell.Empty) return@forEachIndexed
                 val ref = cellRef(colIdx, rowNum)
@@ -407,6 +422,24 @@ object XlsxWriter {
                     is XlsxCell.Empty -> Unit
                 }
             }
+
+            // Легенда в колонке J для этой строки.
+            if (legendItem != null) {
+                val ref = cellRef(LEGEND_COL_INDEX, rowNum)
+                val styleAttr = if (legendItem.styleId != XlsxStyles.DEFAULT)
+                    " s=\"${legendItem.styleId}\"" else ""
+                if (legendItem.label.isEmpty()) {
+                    sb.append("<c r=\"").append(ref).append("\"")
+                        .append(styleAttr).append("/>")
+                } else {
+                    sb.append("<c r=\"").append(ref).append("\"")
+                        .append(styleAttr).append(" t=\"inlineStr\">")
+                    sb.append("<is><t xml:space=\"preserve\">")
+                        .append(escapeXml(legendItem.label)).append("</t></is>")
+                    sb.append("</c>")
+                }
+            }
+
             sb.append("</row>")
         }
         sb.append("</sheetData>")
@@ -438,7 +471,9 @@ object XlsxWriter {
 
     private fun maxColsOf(sheet: XlsxSheet): Int {
         val m = sheet.rows.maxOfOrNull { it.cells.size } ?: 0
-        return if (m == 0) 0 else m - 1
+        var lastCol = if (m == 0) 0 else m - 1
+        if (sheet.legend.isNotEmpty()) lastCol = maxOf(lastCol, LEGEND_COL_INDEX)
+        return lastCol
     }
 
     private fun maxRowsOf(sheet: XlsxSheet): Int {
@@ -518,13 +553,19 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    private fun buildCols(rows: List<XlsxRow>, skipRows: Int): String {
+    private fun buildCols(
+        rows: List<XlsxRow>,
+        skipRows: Int,
+        hasLegend: Boolean
+    ): String {
         if (rows.isEmpty()) return ""
 
         val maxCols = rows.maxOfOrNull { it.cells.size } ?: 0
-        if (maxCols == 0) return ""
+        // Если есть легенда — считаем на одну колонку больше.
+        val totalCols = if (hasLegend) maxOf(maxCols, LEGEND_COL_INDEX + 1) else maxCols
+        if (totalCols == 0) return ""
 
-        val widths = DoubleArray(maxCols)
+        val widths = DoubleArray(totalCols)
         rows.forEachIndexed { rowIdx, row ->
             if (rowIdx < skipRows) return@forEachIndexed
             row.cells.forEachIndexed { colIdx, cell ->
@@ -548,8 +589,11 @@ object XlsxWriter {
         val sb = StringBuilder(128)
         sb.append("<cols>")
         widths.forEachIndexed { idx, w ->
-            val width = (w + COL_WIDTH_PADDING)
-                .coerceIn(MIN_COL_WIDTH, MAX_COL_WIDTH)
+            val width = if (idx == LEGEND_COL_INDEX && hasLegend) {
+                LEGEND_COL_WIDTH
+            } else {
+                (w + COL_WIDTH_PADDING).coerceIn(MIN_COL_WIDTH, MAX_COL_WIDTH)
+            }
             sb.append("<col min=\"").append(idx + 1).append("\" ")
             sb.append("max=\"").append(idx + 1).append("\" ")
             sb.append("width=\"").append(width).append("\" ")
