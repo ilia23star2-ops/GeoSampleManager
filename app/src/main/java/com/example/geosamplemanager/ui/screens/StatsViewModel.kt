@@ -10,6 +10,7 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.report.DecodedImage
 import com.example.geosamplemanager.data.report.ReportData
 import com.example.geosamplemanager.data.report.ReportHtmlGenerator
 import com.example.geosamplemanager.data.report.ReportNote
@@ -32,23 +33,16 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-stats-fixes:
- *  - selectedAreaId: Long? — выбор участка в дереве.
- *  - selectArea(areaId) — устанавливает выбор области (сбрасывает наряд).
- *  - selectOrder(orderId) — устанавливает выбор наряда (сбрасывает область).
- *  - clearSelection() — сбрасывает оба.
- *  - findArea(areaId): StatsAreaUi? — поиск по дереву.
- *  - pruneSelected — при удалении области тоже сбрасываем выбор.
+ * FIX 5.9-xlsx-ui (30.09.2026):
+ *  - buildReportData(orderId) — общий сборщик ReportData.
+ *  - generateXlsxReport(orderId, uri) — запись .xlsx.
+ *  - decodeDataUri — data:image/jpeg;base64,... → DecodedImage.
+ *  - mode "w" (не "wt").
  *
- * FIX 5.9-xlsx-ui:
- *  - buildReportData(orderId) — общий сборщик ReportData (для HTML и XLSX).
- *  - generateXlsxReport(orderId, uri) — запись .xlsx через XlsxReportBuilder
- *    и XlsxWriter.
- *
- * FIX 5.9-xlsx-ui (30.09.2026, второй заход):
- *  - mode "wt" → "w" для XLSX (text mode мог портить бинарные данные).
- *  - логирование размера записанного файла для отладки.
+ * FIX 5.9-xlsx-photos:
+ *  - декодер картинок передаётся в XlsxReportBuilder.build(...).
  */
+
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
@@ -212,9 +206,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = emptySet()
     }
 
-    /**
-     * FIX 5.9-stats-fixes: выбрать наряд (и сбросить выбор участка).
-     */
     fun selectOrder(orderId: Long) {
         _selectedOrderId.value = orderId
         _selectedAreaId.value = null
@@ -226,14 +217,10 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value + orderId
     }
 
-    /**
-     * FIX 5.9-stats-fixes: выбрать участок (и сбросить выбор наряда).
-     */
     fun selectArea(areaId: Long) {
         _selectedAreaId.value = areaId
         _selectedOrderId.value = null
         resetDrill()
-        // Раскрываем участок, чтобы сразу видеть его наряды.
         _expandedAreaIds.value = _expandedAreaIds.value + areaId
     }
 
@@ -327,20 +314,22 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * FIX 5.9-xlsx-ui: запись .xlsx по одному наряду.
-     * Использует тот же ReportData, что и HTML-отчёт.
-     *
-     * FIX 5.9-xlsx-ui (второй заход): mode "wt" → "w" — text mode
-     * мог портить бинарный xlsx. Плюс логирование размера.
+     * FIX 5.9-xlsx-photos: декодер data-uri передаётся в билдер,
+     * чтобы картинки попали в xlsx.
      */
     suspend fun generateXlsxReport(orderId: Long, uri: Uri): Boolean {
         return try {
             val data = buildReportData(orderId) ?: return false
 
             withContext(Dispatchers.IO) {
-                val sheets = XlsxReportBuilder.build(data)
+                val sheets = XlsxReportBuilder.build(
+                    data = data,
+                    imageDecoder = ::decodeDataUri
+                )
                 val bytes = XlsxWriter.toBytes(sheets)
-                Log.i(TAG, "XLSX собран: ${bytes.size} байт, листов: ${sheets.size}")
+                Log.i(TAG, "XLSX собран: ${bytes.size} байт, " +
+                        "листов: ${sheets.size}, " +
+                        "картинок: ${sheets.sumOf { it.images.size }}")
 
                 getApplication<Application>().contentResolver
                     .openOutputStream(uri, "w")
@@ -363,9 +352,28 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Общий сборщик ReportData для отчётов по одному наряду.
-     * null — если данных нет или наряд не найден (сообщение — в _message).
+     * data:image/jpeg;base64,AAA... → DecodedImage.
+     * null — если формат не распознан.
      */
+    private fun decodeDataUri(dataUri: String): DecodedImage? {
+        return try {
+            val commaIdx = dataUri.indexOf(',')
+            if (commaIdx < 0) return null
+            val meta = dataUri.substring(0, commaIdx)
+            val b64 = dataUri.substring(commaIdx + 1)
+            val ext = when {
+                meta.contains("image/png", ignoreCase = true) -> "png"
+                meta.contains("image/webp", ignoreCase = true) -> "webp"
+                else -> "jpg"
+            }
+            val bytes = Base64.decode(b64, Base64.DEFAULT)
+            DecodedImage(bytes = bytes, extension = ext)
+        } catch (e: Exception) {
+            Log.w(TAG, "decodeDataUri failed: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun buildReportData(orderId: Long): ReportData? {
         val raw = rawData ?: run {
             _message.value = "Данные ещё не загружены"
