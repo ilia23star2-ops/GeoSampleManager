@@ -11,8 +11,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-header (четвёртый заход):
- *  - шапка — 9 ячеек в каждой строке (первая с текстом, остальные Blank);
+ * FIX 5.9-xlsx-legend (девятый заход):
+ *  - лист «Наряд» теперь содержит legend (6 элементов);
  *  - skipWidthRows = 6.
  */
 class XlsxReportBuilderTest {
@@ -93,10 +93,6 @@ class XlsxReportBuilderTest {
         DecodedImage(bytes = byteArrayOf(1, 2, 3, 4), extension = "jpg")
     }
 
-    // ================================================================
-    // Шапка
-    // ================================================================
-
     @Test
     fun onlyOrderSheetWhenNoAppendix() {
         val data = makeReport(
@@ -107,6 +103,36 @@ class XlsxReportBuilderTest {
         val sheets = XlsxReportBuilder.build(data)
         assertEquals(1, sheets.size)
         assertEquals("Наряд 27", sheets[0].name)
+    }
+
+    @Test
+    fun orderSheetHasLegend() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row = makeRow(), note = null, photos = emptyList())
+            )
+        )
+        val sheet = XlsxReportBuilder.build(data)[0]
+        assertEquals(6, sheet.legend.size)
+        assertEquals("Легенда", sheet.legend[0].label)
+        assertEquals(XlsxStyles.BOLD, sheet.legend[0].styleId)
+        assertEquals("Найдена", sheet.legend[1].label)
+        assertEquals(XlsxStyles.FOUND, sheet.legend[1].styleId)
+        assertEquals("Весовой контроль", sheet.legend[5].label)
+        assertEquals(XlsxStyles.CONTROL, sheet.legend[5].styleId)
+    }
+
+    @Test
+    fun appendixSheetHasNoLegend() {
+        val row = makeRow(sample = "NV136601", hasNote = true)
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row, note = ReportNote("x"), photos = emptyList())
+            )
+        )
+        val sheets = XlsxReportBuilder.build(data)
+        assertEquals(2, sheets.size)
+        assertTrue(sheets[1].legend.isEmpty())
     }
 
     @Test
@@ -131,16 +157,11 @@ class XlsxReportBuilderTest {
             )
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-        // Шапка — 4 строки, каждая по 9 ячеек.
         repeat(4) { i ->
             assertEquals(9, rows[i].cells.size)
-            // Первая — с текстом, остальные — Blank.
             assertTrue(rows[i].cells[0] is XlsxCell.Text)
             for (j in 1 until 9) {
-                assertTrue(
-                    "Ячейка [$i][$j] должна быть Blank",
-                    rows[i].cells[j] is XlsxCell.Blank
-                )
+                assertTrue(rows[i].cells[j] is XlsxCell.Blank)
             }
         }
     }
@@ -185,10 +206,6 @@ class XlsxReportBuilderTest {
         assertEquals("Дата: 29.09.2026 21:00", cellText(rows[3].cells[0]))
     }
 
-    // ================================================================
-    // Таблица
-    // ================================================================
-
     @Test
     fun tableHeaderHasFoundFirst() {
         val data = makeReport(
@@ -197,7 +214,6 @@ class XlsxReportBuilderTest {
             )
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-
         val headerRow = rows[5]
         assertEquals("Найдена", cellText(headerRow.cells[0]))
         assertEquals("п/п", cellText(headerRow.cells[1]))
@@ -328,10 +344,6 @@ class XlsxReportBuilderTest {
         assertEquals(XlsxStyles.POSTPONED, rows[6].styleId)
     }
 
-    // ================================================================
-    // Гиперссылки
-    // ================================================================
-
     @Test
     fun noAppendixCellDashWhenNoAppendix() {
         val data = makeReport(
@@ -400,10 +412,6 @@ class XlsxReportBuilderTest {
         assertEquals(9, rows[6].cells.size)
         assertEquals(9, rows[5].cells.size)
     }
-
-    // ================================================================
-    // Лист «Приложения»
-    // ================================================================
 
     @Test
     fun appendixSheetCreatedWhenNoteExists() {
@@ -474,10 +482,6 @@ class XlsxReportBuilderTest {
         assertTrue(text.contains("NV136602"))
     }
 
-    // ================================================================
-    // Запись / XML
-    // ================================================================
-
     @Test
     fun sheetsCanBeWrittenToZip() {
         val data = makeReport(
@@ -542,6 +546,20 @@ class XlsxReportBuilderTest {
     }
 
     @Test
+    fun sheetXmlHasLegendInColumnJ() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
+        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
+        assertNotNull(sheetXml)
+        assertTrue(sheetXml!!.contains("r=\"J1\""))
+        assertTrue(sheetXml.contains("Легенда"))
+        assertTrue(sheetXml.contains("r=\"J6\""))
+        assertTrue(sheetXml.contains("Весовой контроль"))
+    }
+
+    @Test
     fun sheetXmlHasBlankCellsInHeader() {
         val data = makeReport(
             samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
@@ -549,16 +567,10 @@ class XlsxReportBuilderTest {
         val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
         val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
         assertNotNull(sheetXml)
-        // B1 — Blank со стилем TITLE (9), без inlineStr.
         assertTrue(sheetXml!!.contains("r=\"B1\" s=\"9\""))
         assertTrue(sheetXml.contains("r=\"I1\" s=\"9\""))
-        // A2 — Blank со стилем META (10).
         assertTrue(sheetXml.contains("r=\"A2\" s=\"10\""))
     }
-
-    // ================================================================
-    // Картинки
-    // ================================================================
 
     @Test
     fun imageGoesToAppendixSheetWhenDecoderProvided() {
