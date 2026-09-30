@@ -4,11 +4,10 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-emoji (30.09.2026, тринадцатый заход):
- *  - Колонка A вместо "✓" теперь содержит эмодзи-статус:
- *    🟢 найдена, 🔴 ошибка, 🔵 отложена, 🟡 холостая,
- *    🟣 весовой контроль, ⚪ обычная.
- *  - Работает в любом вьюере — эмодзи это данные, не стиль.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход):
+ *  - убраны эмодзи. Возврат к галочке ✓.
+ *  - шапка таблицы: "Найдена" вместо "Статус".
+ *  - легенда без эмодзи.
  */
 
 data class DecodedImage(
@@ -45,25 +44,12 @@ object XlsxReportBuilder {
 
     private val LEGEND = listOf(
         XlsxLegendItem("Легенда", XlsxStyles.BOLD),
-        XlsxLegendItem("🟢 Найдена", XlsxStyles.FOUND),
-        XlsxLegendItem("🔴 Ошибка импорта", XlsxStyles.ERROR),
-        XlsxLegendItem("🔵 Отложена", XlsxStyles.POSTPONED),
-        XlsxLegendItem("🟡 Холостая", XlsxStyles.BLANK),
-        XlsxLegendItem("🟣 Весовой контроль", XlsxStyles.CONTROL)
+        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
     )
-
-    /**
-     * FIX: эмодзи-статус по правилам styleForRow.
-     * Порядок важен — как в XlsxStyles.styleForRow.
-     */
-    private fun statusEmoji(row: SampleRow): String = when {
-        row.found -> "🟢"
-        row.hasImportError -> "🔴"
-        row.postponed -> "🔵"
-        row.isBlank -> "🟡"
-        row.weightControl -> "🟣"
-        else -> "⚪"
-    }
 
     private fun headerRow(text: String, style: Int): XlsxRow {
         val cells = ArrayList<XlsxCell>(COLUMNS)
@@ -148,7 +134,7 @@ object XlsxReportBuilder {
         orderRows.add(
             XlsxRow(
                 listOf(
-                    XlsxCell.Text("Статус"),
+                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -180,7 +166,7 @@ object XlsxReportBuilder {
             orderRows.add(
                 XlsxRow(
                     listOf(
-                        XlsxCell.Text(statusEmoji(row)),
+                        XlsxCell.Text(if (row.found) "✓" else ""),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
