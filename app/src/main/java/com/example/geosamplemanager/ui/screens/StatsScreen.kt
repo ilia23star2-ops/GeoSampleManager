@@ -41,6 +41,11 @@ import java.util.Locale
  *
  * FIX 5.9-stats-compare-2:
  *  - CompareTarget.Order требует поле status — передаём computeOrderStatus.
+ *
+ * FIX 5.9-xlsx-ui:
+ *  - Подключена кнопка «Excel» в ReportFormatDialog.
+ *  - onReportHtml → onReport(orderId, format): HTML и Excel идут одним
+ *    путём, различаются только MIME/launcher.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -58,17 +63,37 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    var pendingOrderIdForReport by remember { mutableStateOf<Long?>(null) }
+    var pendingReport by remember { mutableStateOf<Pair<Long, ReportFormat>?>(null) }
     var compareLeft by remember { mutableStateOf<CompareTarget?>(null) }
 
     val htmlLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/html")
     ) { uri ->
-        val orderId = pendingOrderIdForReport
-        pendingOrderIdForReport = null
-        if (uri != null && orderId != null) {
+        val pending = pendingReport
+        pendingReport = null
+        if (uri != null && pending != null) {
+            val orderId = pending.first
             scope.launch {
                 val ok = viewModel.generateHtmlReport(orderId, uri)
+                snackbarHostState.showSnackbar(
+                    if (ok) "Отчёт сохранён"
+                    else "Не удалось сохранить отчёт"
+                )
+            }
+        }
+    }
+
+    val xlsxLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    ) { uri ->
+        val pending = pendingReport
+        pendingReport = null
+        if (uri != null && pending != null) {
+            val orderId = pending.first
+            scope.launch {
+                val ok = viewModel.generateXlsxReport(orderId, uri)
                 snackbarHostState.showSnackbar(
                     if (ok) "Отчёт сохранён"
                     else "Не удалось сохранить отчёт"
@@ -95,6 +120,19 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize().imePadding()) {
         val isWide = this.maxWidth >= 600.dp
         val treeWidth = this.maxWidth * 0.35f
+
+        // Единый запуск отчёта: сохраняем (orderId, format) и открываем нужный launcher.
+        val startReport: (Long, ReportFormat) -> Unit = { orderId, format ->
+            pendingReport = orderId to format
+            val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+                .format(Date())
+            when (format) {
+                ReportFormat.HTML ->
+                    htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
+                ReportFormat.EXCEL ->
+                    xlsxLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.xlsx")
+            }
+        }
 
         if (isWide) {
             Row(modifier = Modifier.fillMaxSize()) {
@@ -143,12 +181,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                             status = computeOrderStatus(order.stats)
                         )
                     },
-                    onReportHtml = { orderId ->
-                        pendingOrderIdForReport = orderId
-                        val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
-                            .format(Date())
-                        htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
-                    },
+                    onReport = startReport,
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
@@ -202,12 +235,7 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                             status = computeOrderStatus(o.stats)
                         )
                     },
-                    onReportHtml = { orderId ->
-                        pendingOrderIdForReport = orderId
-                        val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
-                            .format(Date())
-                        htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
-                    },
+                    onReport = startReport,
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -680,7 +708,7 @@ private fun RightDetailsPanel(
     onResetDrill: () -> Unit,
     onWellFilterChange: (String) -> Unit,
     onCompareClick: (StatsOrderUi) -> Unit,
-    onReportHtml: (Long) -> Unit,
+    onReport: (Long, ReportFormat) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
 ) {
@@ -698,7 +726,7 @@ private fun RightDetailsPanel(
             onResetDrill = onResetDrill,
             onWellFilterChange = onWellFilterChange,
             onCompareClick = { onCompareClick(order) },
-            onReportHtml = onReportHtml,
+            onReport = onReport,
             snackbarHostState = snackbarHostState,
             modifier = modifier
         )
@@ -944,7 +972,7 @@ private fun OrderDetailsPanel(
     onResetDrill: () -> Unit,
     onWellFilterChange: (String) -> Unit,
     onCompareClick: () -> Unit,
-    onReportHtml: (Long) -> Unit,
+    onReport: (Long, ReportFormat) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
 ) {
@@ -1142,12 +1170,7 @@ private fun OrderDetailsPanel(
             onDismiss = { showReportDialog = false },
             onSelect = { format ->
                 showReportDialog = false
-                when (format) {
-                    ReportFormat.HTML -> onReportHtml(order.orderId)
-                    ReportFormat.EXCEL -> scope.launch {
-                        snackbarHostState.showSnackbar("Excel-отчёт — в разработке")
-                    }
-                }
+                onReport(order.orderId, format)
             }
         )
     }
