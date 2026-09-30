@@ -14,6 +14,10 @@ import org.junit.Test
  *
  * FIX 5.9-xlsx-formatting:
  *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
+ *  - skipWidthRows = 6.
+ *
+ * FIX 5.9-xlsx-photos:
+ *  - build() принимает imageDecoder; картинки попадают в общий лист.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -87,8 +91,21 @@ class XlsxMultiReportBuilderTest {
         photos = emptyList()
     )
 
+    private fun sampleWithPhoto(
+        id: String = "1",
+        sample: String = "NV136601"
+    ) = ReportSample(
+        row = makeRow(id = id, sample = sample, hasPhoto = true),
+        note = null,
+        photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
+    )
+
     private fun cellText(cell: XlsxCell): String? =
         (cell as? XlsxCell.Text)?.value
+
+    private val fakeDecoder: (String) -> DecodedImage = { _ ->
+        DecodedImage(bytes = byteArrayOf(1, 2, 3, 4), extension = "jpg")
+    }
 
     @Test
     fun emptyInputReturnsEmptyList() {
@@ -136,11 +153,9 @@ class XlsxMultiReportBuilderTest {
         assertEquals("Отчёт по наряду", cellText(sheet.rows[0].cells[0]))
         assertEquals("Коптеловский", cellText(sheet.rows[1].cells[1]))
         assertEquals("№27", cellText(sheet.rows[2].cells[1]))
-        // Новая шапка: Найдена, п/п, № пробы, ...
         assertEquals("Найдена", cellText(sheet.rows[5].cells[0]))
         assertEquals("п/п", cellText(sheet.rows[5].cells[1]))
         assertEquals("№ пробы", cellText(sheet.rows[5].cells[2]))
-        // Данные: sample теперь в колонке 2.
         assertEquals("NV136601", cellText(sheet.rows[6].cells[2]))
         assertEquals("NV136602", cellText(sheet.rows[7].cells[2]))
     }
@@ -224,7 +239,6 @@ class XlsxMultiReportBuilderTest {
         assertEquals(1, appSheet.hyperlinks.size)
         val link = appSheet.hyperlinks[0]
         assertTrue(link.location.contains("Б — Наряд 2"))
-        // Sample теперь в колонке C (индекс 2), строка 7.
         assertTrue(link.location.contains("C7"))
     }
 
@@ -286,5 +300,51 @@ class XlsxMultiReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertTrue(names.contains("xl/worksheets/sheet3.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
+    }
+
+    // ================================================================
+    // FIX 5.9-xlsx-photos
+    // ================================================================
+
+    @Test
+    fun imageGoesToCommonAppendixSheet() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
+        assertEquals(2, sheets.size)
+        assertEquals(1, sheets[1].images.size)
+        assertEquals("jpg", sheets[1].images[0].extension)
+    }
+
+    @Test
+    fun twoImagesInMultiOrderEndUpInCommonSheet() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1"))),
+            makeReport(area = "Б", order = "2", samples = listOf(sampleWithPhoto("2", "B1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
+        assertEquals(3, sheets.size)
+        assertEquals(2, sheets[2].images.size)
+    }
+
+    @Test
+    fun multiMediaEntriesAppearInZip() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithPhoto("1", "A1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders, fakeDecoder)
+        val bytes = XlsxWriter.toBytes(sheets)
+
+        val names = mutableListOf<String>()
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                names.add(e.name)
+                e = zip.nextEntry
+            }
+        }
+        assertTrue(names.contains("xl/media/image1.jpg"))
+        assertTrue(names.contains("xl/drawings/drawing1.xml"))
     }
 }
