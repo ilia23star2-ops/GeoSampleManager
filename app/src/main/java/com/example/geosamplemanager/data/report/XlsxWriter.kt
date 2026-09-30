@@ -11,13 +11,15 @@ import java.util.zip.ZipOutputStream
  *
  * FIX 5.9-xlsx-ui (30.09.2026):
  *  - toBytes(): сборка zip в памяти, потом запись одним куском.
- *    Раньше zip.finish() не флашил underlying stream — файл мог
- *    получиться обрезанным (не открывался).
  *
  * FIX 5.9-xlsx-formatting (30.09.2026, второй заход):
- *  - buildStyles использует XlsxStyles.fillMap — индексы fill'ов
- *    теперь согласованы с порядком в styles.xml.
- *  - buildCols: автоширина колонок по самой длинной строке.
+ *  - buildStyles использует XlsxStyles.fillMap.
+ *  - buildCols: автоширина колонок.
+ *  - applyFill / applyFont / applyBorder в <xf> — без них многие
+ *    просмотрщики игнорируют заливку и границы.
+ *  - skipWidthRows — сколько первых строк листа не учитывать при
+ *    расчёте ширины (шапка не растягивает таблицу).
+ *  - XlsxSheet.images — вставка картинок (drawing + media).
  */
 
 // ====================================================================
@@ -25,55 +27,74 @@ import java.util.zip.ZipOutputStream
 // ====================================================================
 
 sealed class XlsxCell {
-    /** Переопределение стиля ячейки. null — использовать стиль строки. */
     open val styleId: Int? get() = null
 
-    /** Текст. Пишется как inlineStr (см. sheetN.xml). */
     data class Text(
         val value: String,
         override val styleId: Int? = null
     ) : XlsxCell()
 
-    /**
-     * Число. Целые пишутся без `.0` (2, а не 2.0).
-     * Дробные — с точкой (2.5).
-     */
     data class Number(
         val value: Double,
         override val styleId: Int? = null
     ) : XlsxCell()
 
-    /** Пустая ячейка. В XML не пишется вообще. */
     data object Empty : XlsxCell()
 }
 
-/**
- * Строка листа. styleId — индекс стиля из xl/styles.xml.
- * Если styleId == XlsxStyles.DEFAULT, атрибут s не пишется.
- */
 data class XlsxRow(
     val cells: List<XlsxCell>,
     val styleId: Int = XlsxStyles.DEFAULT
 )
 
-/**
- * Внутренняя гиперссылка на ячейку другого листа книги.
- *
- * @param ref  — ячейка-источник, например "I7".
- * @param location — цель в нотации Excel, например "'Приложения'!A3".
- */
 data class XlsxHyperlink(
     val ref: String,
     val location: String
 )
 
 /**
- * Лист. Порядок строк и ячеек сохраняется как есть.
+ * Картинка на листе. Привязка к верхнему левому углу ячейки
+ * (colIdx, rowIdx), размер в пикселях.
+ *
+ * bytes — уже декодированные данные (jpg/png).
+ * extension — "jpg" | "png".
  */
+data class XlsxImage(
+    val bytes: ByteArray,
+    val extension: String,
+    val colIdx: Int = 0,
+    val rowIdx: Int = 0,
+    val widthPx: Int = 240,
+    val heightPx: Int = 180
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is XlsxImage) return false
+        return extension == other.extension &&
+                colIdx == other.colIdx &&
+                rowIdx == other.rowIdx &&
+                widthPx == other.widthPx &&
+                heightPx == other.heightPx &&
+                bytes.contentEquals(other.bytes)
+    }
+
+    override fun hashCode(): Int {
+        var result = bytes.contentHashCode()
+        result = 31 * result + extension.hashCode()
+        result = 31 * result + colIdx
+        result = 31 * result + rowIdx
+        result = 31 * result + widthPx
+        result = 31 * result + heightPx
+        return result
+    }
+}
+
 data class XlsxSheet(
     val name: String,
     val rows: List<XlsxRow>,
-    val hyperlinks: List<XlsxHyperlink> = emptyList()
+    val hyperlinks: List<XlsxHyperlink> = emptyList(),
+    val images: List<XlsxImage> = emptyList(),
+    val skipWidthRows: Int = 0
 )
 
 // ====================================================================
@@ -82,35 +103,22 @@ data class XlsxSheet(
 
 object XlsxWriter {
 
-    /** Минимальная ширина колонки (символов). */
     private const val MIN_COL_WIDTH = 4.0
-
-    /** Максимальная ширина колонки (символов). */
     private const val MAX_COL_WIDTH = 100.0
-
-    /** Запас к самой длинной строке (символов). */
     private const val COL_WIDTH_PADDING = 2.0
 
-    /**
-     * Записать .xlsx в поток.
-     *
-     * FIX 5.9-xlsx-ui: собираем zip в памяти, потом пишем одним куском.
-     * Это гарантирует, что все байты (включая центральный каталог zip)
-     * попадут в out до его закрытия.
-     *
-     * @param sheets список листов, порядок сохраняется.
-     * @param out куда писать (не закрывается).
-     */
+    /** 1 px = 9525 EMU (English Metric Units) — единица размеров в OOXML. */
+    private const val EMU_PER_PX = 9525L
+
+    /** 1 px ≈ 0.75 pt — высота строки. */
+    private const val ROW_HEIGHT_PX_TO_PT = 0.75
+
     fun write(sheets: List<XlsxSheet>, out: OutputStream) {
         val bytes = toBytes(sheets)
         out.write(bytes)
         out.flush()
     }
 
-    /**
-     * Собрать .xlsx в массив байт.
-     * Полезно, когда нужен размер файла или запись через SAF.
-     */
     fun toBytes(sheets: List<XlsxSheet>): ByteArray {
         val buffer = ByteArrayOutputStream(64 * 1024)
         val zip = ZipOutputStream(buffer)
@@ -119,19 +127,78 @@ object XlsxWriter {
             XlsxSheet(
                 name = sanitizeSheetName(s.name, idx + 1),
                 rows = s.rows,
-                hyperlinks = s.hyperlinks
+                hyperlinks = s.hyperlinks,
+                images = s.images,
+                skipWidthRows = s.skipWidthRows
             )
         }
 
-        writeEntry(zip, "[Content_Types].xml", buildContentTypes(sanitized))
+        // Плоский список всех картинок (в порядке листов, потом внутри листа).
+        // Нужен для Content_Types и media/imageN.ext.
+        val allImages = mutableListOf<XlsxImage>()
+        sanitized.forEach { sheet -> allImages.addAll(sheet.images) }
+
+        // Для каждого листа с картинками — свой drawing.
+        // Номер drawing = порядковый номер такого листа (1, 2, ...).
+        // Также каждая картинка получает уникальный номер imageN.ext.
+        val drawingIndexOfSheet = IntArray(sanitized.size) { -1 }
+        val imageIndexOfImage = HashMap<XlsxImage, Int>()
+        var drawingCounter = 0
+        var imageCounter = 0
+        sanitized.forEachIndexed { sheetIdx, sheet ->
+            if (sheet.images.isNotEmpty()) {
+                drawingCounter++
+                drawingIndexOfSheet[sheetIdx] = drawingCounter
+                sheet.images.forEach { img ->
+                    imageCounter++
+                    imageIndexOfImage[img] = imageCounter
+                }
+            }
+        }
+
+        writeEntry(zip, "[Content_Types].xml",
+            buildContentTypes(sanitized, drawingIndexOfSheet, allImages))
         writeEntry(zip, "_rels/.rels", buildRootRels())
         writeEntry(zip, "xl/workbook.xml", buildWorkbook(sanitized))
         writeEntry(zip, "xl/_rels/workbook.xml.rels", buildWorkbookRels(sanitized))
         writeEntry(zip, "xl/styles.xml", buildStyles())
 
-        sanitized.forEachIndexed { idx, sheet ->
-            val path = "xl/worksheets/sheet${idx + 1}.xml"
-            writeEntry(zip, path, buildSheet(sheet))
+        sanitized.forEachIndexed { sheetIdx, sheet ->
+            val drawingIndex = drawingIndexOfSheet[sheetIdx]
+            val path = "xl/worksheets/sheet${sheetIdx + 1}.xml"
+            writeEntry(zip, path, buildSheet(sheet, drawingIndex))
+
+            if (drawingIndex > 0) {
+                // sheetN.xml.rels — связь листа с drawing.
+                writeEntry(
+                    zip,
+                    "xl/worksheets/_rels/sheet${sheetIdx + 1}.xml.rels",
+                    buildSheetRels(drawingIndex)
+                )
+
+                // xl/drawings/drawingN.xml — описание якорей.
+                writeEntry(
+                    zip,
+                    "xl/drawings/drawing$drawingIndex.xml",
+                    buildDrawing(sheet.images, imageIndexOfImage)
+                )
+
+                // xl/drawings/_rels/drawingN.xml.rels — связи с media.
+                writeEntry(
+                    zip,
+                    "xl/drawings/_rels/drawing$drawingIndex.xml.rels",
+                    buildDrawingRels(sheet.images, imageIndexOfImage)
+                )
+            }
+        }
+
+        // Медиа-файлы.
+        allImages.forEach { img ->
+            val idx = imageIndexOfImage[img] ?: return@forEach
+            val entry = ZipEntry("xl/media/image$idx.${img.extension}")
+            zip.putNextEntry(entry)
+            zip.write(img.bytes)
+            zip.closeEntry()
         }
 
         zip.close()
@@ -139,16 +206,33 @@ object XlsxWriter {
     }
 
     // ================================================================
-    // XML-строители
+    // Content Types
     // ================================================================
 
-    private fun buildContentTypes(sheets: List<XlsxSheet>): String {
-        val sb = StringBuilder(512)
+    private fun buildContentTypes(
+        sheets: List<XlsxSheet>,
+        drawingIndexOfSheet: IntArray,
+        allImages: List<XlsxImage>
+    ): String {
+        val sb = StringBuilder(1024)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">")
         sb.append("<Default Extension=\"rels\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>")
         sb.append("<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
+
+        // MIME-типы для картинок — если такие есть.
+        val exts = allImages.map { it.extension }.toSet()
+        if ("jpg" in exts || "jpeg" in exts) {
+            sb.append("<Default Extension=\"jpg\" ContentType=\"image/jpeg\"/>")
+        }
+        if ("png" in exts) {
+            sb.append("<Default Extension=\"png\" ContentType=\"image/png\"/>")
+        }
+        if ("webp" in exts) {
+            sb.append("<Default Extension=\"webp\" ContentType=\"image/webp\"/>")
+        }
+
         sb.append("<Override PartName=\"/xl/workbook.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>")
         sb.append("<Override PartName=\"/xl/styles.xml\" ")
@@ -156,6 +240,12 @@ object XlsxWriter {
         sheets.forEachIndexed { idx, _ ->
             sb.append("<Override PartName=\"/xl/worksheets/sheet${idx + 1}.xml\" ")
             sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
+        }
+        drawingIndexOfSheet.forEach { dIdx ->
+            if (dIdx > 0) {
+                sb.append("<Override PartName=\"/xl/drawings/drawing$dIdx.xml\" ")
+                sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>")
+            }
         }
         sb.append("</Types>")
         return sb.toString()
@@ -199,12 +289,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * xl/styles.xml.
-     *
-     * FIX 5.9-xlsx-formatting: fills строятся по XlsxStyles.fillMap —
-     * порядок индексов совпадает с тем, что возвращает fillIdFor.
-     */
     private fun buildStyles(): String {
         val styles = XlsxStyles.all
         val fillMap = XlsxStyles.fillMap
@@ -213,15 +297,12 @@ object XlsxWriter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
 
-        // fonts: 0 — обычный, 1 — жирный, 2 — ссылка (синий + подчёркивание)
         sb.append("<fonts count=\"3\">")
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
         sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/><name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // fills: 0 — none, 1 — gray125 (обязательные),
-        // далее — уникальные цвета из fillMap в порядке индексов.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
@@ -233,7 +314,6 @@ object XlsxWriter {
         }
         sb.append("</fills>")
 
-        // borders: 0 — none, 1 — thin
         sb.append("<borders count=\"2\">")
         sb.append("<border><left/><right/><top/><bottom/><diagonal/></border>")
         sb.append("<border>")
@@ -242,19 +322,26 @@ object XlsxWriter {
         sb.append("<diagonal/></border>")
         sb.append("</borders>")
 
-        // cellStyleXfs (обязательный, один)
         sb.append("<cellStyleXfs count=\"1\">")
         sb.append("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>")
         sb.append("</cellStyleXfs>")
 
-        // cellXfs — по одному на каждый StyleDef
+        // FIX: applyFont / applyFill / applyBorder — без них мобильные
+        // просмотрщики игнорируют стили. Ставим 1, если значение > 0.
         sb.append("<cellXfs count=\"").append(styles.size).append("\">")
         styles.forEach { def ->
+            val fontId = XlsxStyles.fontIdFor(def)
+            val fillId = XlsxStyles.fillIdFor(def)
+            val borderId = if (def.border) 1 else 0
             sb.append("<xf numFmtId=\"0\" ")
-            sb.append("fontId=\"").append(XlsxStyles.fontIdFor(def)).append("\" ")
-            sb.append("fillId=\"").append(XlsxStyles.fillIdFor(def)).append("\" ")
-            sb.append("borderId=\"").append(if (def.border) 1 else 0).append("\" ")
-            sb.append("xfId=\"0\"/>")
+            sb.append("fontId=\"").append(fontId).append("\" ")
+            sb.append("fillId=\"").append(fillId).append("\" ")
+            sb.append("borderId=\"").append(borderId).append("\" ")
+            sb.append("xfId=\"0\"")
+            if (fontId > 0) sb.append(" applyFont=\"1\"")
+            if (fillId > 0) sb.append(" applyFill=\"1\"")
+            if (borderId > 0) sb.append(" applyBorder=\"1\"")
+            sb.append("/>")
         }
         sb.append("</cellXfs>")
 
@@ -262,15 +349,26 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    private fun buildSheet(sheet: XlsxSheet): String {
+    private fun buildSheet(sheet: XlsxSheet, drawingIndex: Int): String {
         val sb = StringBuilder(1024)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
-        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
-        sb.append(buildCols(sheet.rows))
+        sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" ")
+        sb.append("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">")
+        sb.append(buildCols(sheet.rows, sheet.skipWidthRows))
+
+        // Высоты строк с картинками: одна строка = высота картинки.
+        val rowHeightByIndex: Map<Int, Double> = sheet.images
+            .associate { it.rowIdx to (it.heightPx * ROW_HEIGHT_PX_TO_PT) }
+
         sb.append("<sheetData>")
         sheet.rows.forEachIndexed { rowIdx, row ->
             val rowNum = rowIdx + 1
-            sb.append("<row r=\"").append(rowNum).append("\">")
+            val ht = rowHeightByIndex[rowIdx]
+            sb.append("<row r=\"").append(rowNum).append("\"")
+            if (ht != null && ht > 0) {
+                sb.append(" ht=\"").append(ht).append("\" customHeight=\"1\"")
+            }
+            sb.append(">")
             row.cells.forEachIndexed { colIdx, cell ->
                 if (cell is XlsxCell.Empty) return@forEachIndexed
                 val ref = cellRef(colIdx, rowNum)
@@ -296,7 +394,6 @@ object XlsxWriter {
         }
         sb.append("</sheetData>")
 
-        // Гиперссылки — после sheetData, до закрытия worksheet.
         if (sheet.hyperlinks.isNotEmpty()) {
             sb.append("<hyperlinks>")
             sheet.hyperlinks.forEach { h ->
@@ -306,22 +403,104 @@ object XlsxWriter {
             sb.append("</hyperlinks>")
         }
 
+        if (drawingIndex > 0) {
+            sb.append("<drawing r:id=\"rId1\"/>")
+        }
+
         sb.append("</worksheet>")
         return sb.toString()
     }
 
+    private fun buildSheetRels(drawingIndex: Int): String {
+        return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" +
+                """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">""" +
+                """<Relationship Id="rId1" """ +
+                """Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" """ +
+                """Target="../drawings/drawing$drawingIndex.xml"/>""" +
+                """</Relationships>"""
+    }
+
+    private fun buildDrawing(
+        images: List<XlsxImage>,
+        imageIndexOfImage: Map<XlsxImage, Int>
+    ): String {
+        val sb = StringBuilder(2048)
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+        sb.append("<xdr:wsDr ")
+        sb.append("xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" ")
+        sb.append("xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">")
+
+        images.forEachIndexed { picIdx, img ->
+            val globalIdx = imageIndexOfImage[img] ?: (picIdx + 1)
+            val cx = img.widthPx.toLong() * EMU_PER_PX
+            val cy = img.heightPx.toLong() * EMU_PER_PX
+
+            sb.append("<xdr:oneCellAnchor>")
+            sb.append("<xdr:from>")
+            sb.append("<xdr:col>").append(img.colIdx).append("</xdr:col>")
+            sb.append("<xdr:colOff>0</xdr:colOff>")
+            sb.append("<xdr:row>").append(img.rowIdx).append("</xdr:row>")
+            sb.append("<xdr:rowOff>0</xdr:rowOff>")
+            sb.append("</xdr:from>")
+            sb.append("<xdr:ext cx=\"").append(cx).append("\" cy=\"").append(cy).append("\"/>")
+            sb.append("<xdr:pic>")
+            sb.append("<xdr:nvPicPr>")
+            sb.append("<xdr:cNvPr id=\"").append(picIdx + 1)
+                .append("\" name=\"Picture ").append(picIdx + 1).append("\"/>")
+            sb.append("<xdr:cNvPicPr/>")
+            sb.append("</xdr:nvPicPr>")
+            sb.append("<xdr:blipFill>")
+            sb.append("<a:blip xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" ")
+            sb.append("r:embed=\"rId").append(picIdx + 1).append("\"/>")
+            sb.append("<a:stretch><a:fillRect/></a:stretch>")
+            sb.append("</xdr:blipFill>")
+            sb.append("<xdr:spPr>")
+            sb.append("<a:xfrm>")
+            sb.append("<a:off x=\"0\" y=\"0\"/>")
+            sb.append("<a:ext cx=\"").append(cx).append("\" cy=\"").append(cy).append("\"/>")
+            sb.append("</a:xfrm>")
+            sb.append("<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>")
+            sb.append("</xdr:spPr>")
+            sb.append("</xdr:pic>")
+            sb.append("<xdr:clientData/>")
+            sb.append("</xdr:oneCellAnchor>")
+        }
+
+        sb.append("</xdr:wsDr>")
+        return sb.toString()
+    }
+
+    private fun buildDrawingRels(
+        images: List<XlsxImage>,
+        imageIndexOfImage: Map<XlsxImage, Int>
+    ): String {
+        val sb = StringBuilder(512)
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+        sb.append("<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">")
+        images.forEachIndexed { picIdx, img ->
+            val globalIdx = imageIndexOfImage[img] ?: (picIdx + 1)
+            sb.append("<Relationship Id=\"rId").append(picIdx + 1).append("\" ")
+            sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" ")
+            sb.append("Target=\"../media/image").append(globalIdx).append(".")
+                .append(img.extension).append("\"/>")
+        }
+        sb.append("</Relationships>")
+        return sb.toString()
+    }
+
     /**
-     * Автоширина колонок. Для каждой колонки — по самой длинной строке
-     * среди всех ячеек. Многострочный текст — по самой длинной строке.
+     * Ширина колонок по самой длинной строке. Первые [skipRows]
+     * строк игнорируются (шапка не должна растягивать таблицу).
      */
-    private fun buildCols(rows: List<XlsxRow>): String {
+    private fun buildCols(rows: List<XlsxRow>, skipRows: Int): String {
         if (rows.isEmpty()) return ""
 
         val maxCols = rows.maxOfOrNull { it.cells.size } ?: 0
         if (maxCols == 0) return ""
 
         val widths = DoubleArray(maxCols)
-        rows.forEach { row ->
+        rows.forEachIndexed { rowIdx, row ->
+            if (rowIdx < skipRows) return@forEachIndexed
             row.cells.forEachIndexed { colIdx, cell ->
                 val text = when (cell) {
                     is XlsxCell.Text -> cell.value
