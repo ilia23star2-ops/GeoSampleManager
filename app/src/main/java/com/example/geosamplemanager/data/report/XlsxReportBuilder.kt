@@ -8,10 +8,9 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
  *
  * FIX 5.9-xlsx-formatting:
  *  - порядок колонок: Найдена первая.
- *  - skipWidthRows = 5 (шапка не растягивает колонки).
- *  - вставка фото: каждая картинка — отдельная строка под
- *    «Фото: N шт.». Декодер data-uri передаёт вызывающая сторона
- *    (UI), потому что Base64 живёт в android.util.
+ *  - skipWidthRows = 6 (метаданные + шапка не растягивают колонки).
+ *  - вставка фото: каждое фото — отдельная строка под «Фото: N шт.».
+ *    Декодер data-uri передаёт вызывающая сторона (UI).
  */
 
 /** Декодированная картинка: сырые байты + расширение ("jpg"/"png"). */
@@ -34,29 +33,17 @@ data class DecodedImage(
 
 object XlsxReportBuilder {
 
-    /** Номер строки с заголовками колонок в листе «Наряд». */
     private const val ORDER_HEADER_ROW = 6
-
-    /** Первая строка данных в листе «Наряд». */
     private const val ORDER_FIRST_DATA_ROW = 7
-
-    /** Колонка «Прил.» — 9-я, индекс 8 (0-based). */
     private const val ORDER_COL_APPENDIX = 8
-
-    /** Колонка «№ пробы» — 3-я, индекс 2 (0-based). */
     private const val ORDER_COL_SAMPLE = 2
-
-    /** Первая строка блока приложений (после заголовка и пустой строки). */
     private const val APP_FIRST_BLOCK_ROW = 3
 
-    /** Сколько первых строк листа «Наряд» не учитывать при ширине. */
-    private const val ORDER_SKIP_WIDTH_ROWS = 5
+    /** Пропускаем 6 строк: 4 метаданные + пустая + шапка. */
+    private const val ORDER_SKIP_WIDTH_ROWS = 6
 
-    /** Размер картинки в пикселях. */
     private const val IMAGE_WIDTH_PX = 240
     private const val IMAGE_HEIGHT_PX = 180
-
-    /** Колонка, к которой привязываются картинки в блоке приложений (B). */
     private const val APP_IMAGE_COL = 1
 
     private fun displayType(row: SampleRow): String = when (row.status) {
@@ -82,40 +69,26 @@ object XlsxReportBuilder {
         }
     }
 
-    /** Размещение блока приложения на листе «Приложения». */
     private data class AppendixPlacement(
         val number: Int,
         val titleRow: Int
     )
 
-    /**
-     * Размер блока приложения в строках.
-     * Картинки идут по одной на строку, поэтому photos.size
-     * добавляется отдельно.
-     */
     private fun appendixBlockSize(sample: ReportSample): Int {
         var size = 0
-        size += 1                                  // «Приложение N»
-        size += 1                                  // «№ пробы:»
-        size += 1                                  // «Скважина:»
-        if (sample.note != null) size += 1         // «Заметка:»
+        size += 1
+        size += 1
+        size += 1
+        if (sample.note != null) size += 1
         if (sample.photos.isNotEmpty()) {
-            size += 1                              // «Фото: N шт.»
-            size += sample.photos.size             // по одной строке под картинку
+            size += 1
+            size += sample.photos.size
         }
-        size += 1                                  // «↩ К пробе»
-        size += 1                                  // пустая строка
+        size += 1
+        size += 1
         return size
     }
 
-    /**
-     * Собрать листы отчёта по одному наряду.
-     *
-     * @param imageDecoder — опциональный декодер data-uri в байты.
-     *   null — картинки не вставляются (для тестов).
-     *   Возвращает null, если конкретную картинку декодировать
-     *   не удалось (тогда эта картинка просто пропускается).
-     */
     fun build(
         data: ReportData,
         imageDecoder: ((String) -> DecodedImage?)? = null
@@ -125,9 +98,7 @@ object XlsxReportBuilder {
 
         val withAppendix = data.samples.filter { it.hasAppendix }
 
-        // ============================================================
-        // Шаг 1. Пре-сканирование блоков приложений.
-        // ============================================================
+        // Шаг 1. Пре-сканирование блоков.
         val placementById = mutableMapOf<String, AppendixPlacement>()
         var cursor = APP_FIRST_BLOCK_ROW
         withAppendix.forEachIndexed { idx, sample ->
@@ -138,9 +109,7 @@ object XlsxReportBuilder {
             cursor += appendixBlockSize(sample)
         }
 
-        // ============================================================
-        // Шаг 2. Лист «Наряд» — с колонкой «Найдена» в начале.
-        // ============================================================
+        // Шаг 2. Лист «Наряд».
         val orderRows = mutableListOf<XlsxRow>()
         val orderHyperlinks = mutableListOf<XlsxHyperlink>()
 
@@ -151,19 +120,13 @@ object XlsxReportBuilder {
             )
         )
         orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Участок:"), XlsxCell.Text(data.areaName)))
         )
         orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}"))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Наряд:"), XlsxCell.Text("№${data.orderNumber}")))
         )
         orderRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt))
-            )
+            XlsxRow(listOf(XlsxCell.Text("Дата:"), XlsxCell.Text(data.generatedAt)))
         )
         orderRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
@@ -238,18 +201,13 @@ object XlsxReportBuilder {
             return listOf(orderSheet)
         }
 
-        // ============================================================
-        // Шаг 3. Лист «Приложения» — картинки + обратные ссылки.
-        // ============================================================
+        // Шаг 3. Лист «Приложения».
         val appRows = mutableListOf<XlsxRow>()
         val appHyperlinks = mutableListOf<XlsxHyperlink>()
         val appImages = mutableListOf<XlsxImage>()
 
         appRows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Приложения")),
-                styleId = XlsxStyles.BOLD
-            )
+            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.BOLD)
         )
         appRows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
@@ -300,11 +258,8 @@ object XlsxReportBuilder {
                         )
                     )
                 )
-
-                // Каждое фото — отдельная строка под «Фото: N шт.».
-                // Пустая строка + привязка картинки к ней.
                 sample.photos.forEach { photo ->
-                    val imageRowIdx = appRows.size // 0-based индекс пустой строки
+                    val imageRowIdx = appRows.size
                     val decoded = imageDecoder?.invoke(photo.dataUri)
                     if (decoded != null) {
                         appImages.add(
