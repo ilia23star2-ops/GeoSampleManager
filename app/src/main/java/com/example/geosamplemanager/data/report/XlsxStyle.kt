@@ -6,11 +6,11 @@ import com.example.geosamplemanager.ui.screens.SampleRow
  * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
  * Добавлен стиль LINK — синий текст с подчёркиванием.
  *
- * Индексы стилей (styleId) фиксированы и соответствуют
- * порядку записей в xl/styles.xml.
- *
- * Приоритет окраски строки — как в HTML-отчёте:
- *   found → hasImportError → postponed → isBlank → weightControl → default.
+ * FIX 5.9-xlsx-formatting:
+ *  - fillMap — уникальные цвета заливки → индекс fill'а в styles.xml.
+ *  - Раньше fillIdFor хардкодил индексы 2..7, но фактический порядок
+ *    fills в styles.xml был сдвинут на -1 (из-за пропуска idx == 0).
+ *    Все fillId были неверные → Excel молча рисовал белый фон.
  */
 
 /** Определение стиля ячейки. */
@@ -34,7 +34,7 @@ object XlsxStyles {
     const val CONTROL = 7
     const val LINK = 8
 
-    /** Все определения по порядку индексов. */
+    /** Все определения по порядку индексов (индексы = индекс в cellXfs). */
     val all: List<StyleDef> = listOf(
         StyleDef(),                                        // 0 DEFAULT
         StyleDef(bold = true),                             // 1 BOLD
@@ -46,6 +46,25 @@ object XlsxStyles {
         StyleDef(fillColor = "CE93D8", border = true),     // 7 CONTROL
         StyleDef(fontColor = "1976D2", underline = true, border = true) // 8 LINK
     )
+
+    /**
+     * Уникальные непустые цвета заливки → индекс fill'а в styles.xml.
+     * Начинается с 2, потому что 0 (none) и 1 (gray125) зарезервированы.
+     *
+     * Порядок — по первому появлению в [all].
+     */
+    val fillMap: Map<String, Int> by lazy {
+        val map = LinkedHashMap<String, Int>()
+        var idx = 2
+        all.forEach { def ->
+            val c = def.fillColor ?: return@forEach
+            if (c !in map) {
+                map[c] = idx
+                idx++
+            }
+        }
+        map
+    }
 
     /**
      * Стиль строки данных пробы.
@@ -67,14 +86,7 @@ object XlsxStyles {
         else -> 0
     }
 
-    /** Индекс fill для стиля. */
-    internal fun fillIdFor(def: StyleDef): Int = when (def.fillColor) {
-        "F0F0F0" -> 2
-        "A5D6A7" -> 3
-        "EF9A9A" -> 4
-        "90CAF9" -> 5
-        "FFF59D" -> 6
-        "CE93D8" -> 7
-        else -> 0
-    }
+    /** Индекс fill для стиля. 0 — нет заливки. */
+    internal fun fillIdFor(def: StyleDef): Int =
+        def.fillColor?.let { fillMap[it] } ?: 0
 }
