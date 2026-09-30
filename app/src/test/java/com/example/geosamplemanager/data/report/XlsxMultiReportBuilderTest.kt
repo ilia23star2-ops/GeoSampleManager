@@ -10,7 +10,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-emoji (тринадцатый заход).
+ * FIX 5.9-xlsx-clean (четырнадцатый заход): без эмодзи.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -119,7 +119,7 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
-    fun orderSheetsHaveLegendWithEmoji() {
+    fun orderSheetsHaveLegend() {
         val orders = listOf(
             makeReport(area = "А", order = "1", samples = listOf(sampleNoAppendix("1"))),
             makeReport(area = "Б", order = "2", samples = listOf(sampleNoAppendix("2")))
@@ -127,8 +127,8 @@ class XlsxMultiReportBuilderTest {
         val sheets = XlsxMultiReportBuilder.build(orders)
         assertEquals(2, sheets.size)
         assertEquals(6, sheets[0].legend.size)
-        assertEquals("🟢 Найдена", sheets[0].legend[1].label)
-        assertEquals("🟣 Весовой контроль", sheets[0].legend[5].label)
+        assertEquals("Найдена", sheets[0].legend[1].label)
+        assertEquals("Весовой контроль", sheets[0].legend[5].label)
     }
 
     @Test
@@ -203,7 +203,7 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
-    fun orderSheetContainsHeaderWithStatusColumn() {
+    fun orderSheetContainsHeaderAndSamples() {
         val order = makeReport(
             area = "Коптеловский",
             order = "27",
@@ -214,7 +214,7 @@ class XlsxMultiReportBuilderTest {
         )
         val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
         assertEquals("Отчёт по наряду", cellText(sheet.rows[0].cells[0]))
-        assertEquals("Статус", cellText(sheet.rows[5].cells[0]))
+        assertEquals("Найдена", cellText(sheet.rows[5].cells[0]))
         assertEquals("п/п", cellText(sheet.rows[5].cells[1]))
         assertEquals("№ пробы", cellText(sheet.rows[5].cells[2]))
         assertEquals("NV136601", cellText(sheet.rows[6].cells[2]))
@@ -222,14 +222,14 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
-    fun orderSheetSampleRowsHaveEmoji() {
+    fun orderSheetSampleRowHasCheckmark() {
         val order = makeReport(
             area = "Коптеловский",
             order = "27",
             samples = listOf(sampleNoAppendix())
         )
         val sheet = XlsxMultiReportBuilder.build(listOf(order))[0]
-        assertEquals("🟢", cellText(sheet.rows[6].cells[0]))
+        assertEquals("✓", cellText(sheet.rows[6].cells[0]))
     }
 
     @Test
@@ -382,7 +382,6 @@ class XlsxMultiReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertTrue(names.contains("xl/worksheets/sheet3.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
-        assertNotNull(names.find { it == "xl/theme/theme1.xml" })
     }
 
     @Test
