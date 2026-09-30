@@ -6,10 +6,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-header (30.09.2026, четвёртый заход):
- *  - XlsxCell.Blank — пустая ячейка со стилем (пишется в XML).
- *    Нужна, чтобы заполнить все ячейки merged-диапазона шапки:
- *    мобильные просмотрщики иначе не показывают фон.
+ * FIX 5.9-xlsx-colors (30.09.2026, пятый заход):
+ *  - cellStyleXfs теперь содержит по одной записи на каждый стиль
+ *    (11 штук), и xfId указывает на свою запись.
+ *    Раньше был один cellStyleXfs с xfId="0" — некоторые вьюеры
+ *    наследовали fill/font оттуда и игнорировали cellXfs.
+ *  - В fill убран bgColor — оставлен только fgColor.
  */
 
 // ====================================================================
@@ -29,17 +31,8 @@ sealed class XlsxCell {
         override val styleId: Int? = null
     ) : XlsxCell()
 
-    /**
-     * Пустая ячейка БЕЗ стиля. В XML не пишется вообще.
-     * Нужна для пропуска колонок.
-     */
     data object Empty : XlsxCell()
 
-    /**
-     * Пустая ячейка СО стилем. В XML пишется как `<c r=".." s=".."/>`.
-     * Нужна для заполнения merged-диапазона, чтобы фон отображался
-     * во всех просмотрщиках.
-     */
     data class Blank(
         override val styleId: Int? = null
     ) : XlsxCell()
@@ -166,7 +159,7 @@ object XlsxWriter {
                 writeEntry(
                     zip,
                     "xl/drawings/drawing$drawingIndex.xml",
-                    buildDrawing(sheet.images, imageIndexOfImage)
+                    buildDrawing(sheet.images)
                 )
                 writeEntry(
                     zip,
@@ -267,11 +260,19 @@ object XlsxWriter {
         return sb.toString()
     }
 
+    /**
+     * xl/styles.xml.
+     *
+     * FIX 5.9-xlsx-colors: cellStyleXfs — по одной записи на каждый
+     * стиль, xfId в cellXfs указывает на свою. Некоторые вьюеры
+     * (в частности Android) наследуют fill/font из cellStyleXfs
+     * через xfId и игнорируют cellXfs, если xfId=0.
+     */
     private fun buildStyles(): String {
         val styles = XlsxStyles.all
         val fillMap = XlsxStyles.fillMap
 
-        val sb = StringBuilder(2048)
+        val sb = StringBuilder(4096)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
 
@@ -287,7 +288,6 @@ object XlsxWriter {
         fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
             sb.append("<fill><patternFill patternType=\"solid\">")
             sb.append("<fgColor rgb=\"FF").append(color).append("\"/>")
-            sb.append("<bgColor indexed=\"64\"/>")
             sb.append("</patternFill></fill>")
         }
         sb.append("</fills>")
@@ -300,11 +300,8 @@ object XlsxWriter {
         sb.append("<diagonal/></border>")
         sb.append("</borders>")
 
-        sb.append("<cellStyleXfs count=\"1\">")
-        sb.append("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>")
-        sb.append("</cellStyleXfs>")
-
-        sb.append("<cellXfs count=\"").append(styles.size).append("\">")
+        // cellStyleXfs — по одной записи на каждый стиль.
+        sb.append("<cellStyleXfs count=\"").append(styles.size).append("\">")
         styles.forEach { def ->
             val fontId = XlsxStyles.fontIdFor(def)
             val fillId = XlsxStyles.fillIdFor(def)
@@ -312,14 +309,32 @@ object XlsxWriter {
             sb.append("<xf numFmtId=\"0\" ")
             sb.append("fontId=\"").append(fontId).append("\" ")
             sb.append("fillId=\"").append(fillId).append("\" ")
+            sb.append("borderId=\"").append(borderId).append("\"/>")
+        }
+        sb.append("</cellStyleXfs>")
+
+        // cellXfs — каждому свой xfId.
+        sb.append("<cellXfs count=\"").append(styles.size).append("\">")
+        styles.forEachIndexed { idx, def ->
+            val fontId = XlsxStyles.fontIdFor(def)
+            val fillId = XlsxStyles.fillIdFor(def)
+            val borderId = if (def.border) 1 else 0
+            sb.append("<xf numFmtId=\"0\" ")
+            sb.append("fontId=\"").append(fontId).append("\" ")
+            sb.append("fillId=\"").append(fillId).append("\" ")
             sb.append("borderId=\"").append(borderId).append("\" ")
-            sb.append("xfId=\"0\"")
+            sb.append("xfId=\"").append(idx).append("\"")
             if (fontId > 0) sb.append(" applyFont=\"1\"")
             if (fillId > 0) sb.append(" applyFill=\"1\"")
             if (borderId > 0) sb.append(" applyBorder=\"1\"")
             sb.append("/>")
         }
         sb.append("</cellXfs>")
+
+        // cellStyles — обязательная секция, одна builtin.
+        sb.append("<cellStyles count=\"1\">")
+        sb.append("<cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/>")
+        sb.append("</cellStyles>")
 
         sb.append("</styleSheet>")
         return sb.toString()
@@ -363,8 +378,6 @@ object XlsxWriter {
                         sb.append("</c>")
                     }
                     is XlsxCell.Blank -> {
-                        // Пустая ячейка со стилем. Без t/v — Excel
-                        // воспримет как пустую, но фон/границы применит.
                         sb.append("<c r=\"").append(ref).append("\"")
                             .append(styleAttr).append("/>")
                     }
@@ -409,10 +422,7 @@ object XlsxWriter {
                 """</Relationships>"""
     }
 
-    private fun buildDrawing(
-        images: List<XlsxImage>,
-        @Suppress("UNUSED_PARAMETER") imageIndexOfImage: Map<XlsxImage, Int>
-    ): String {
+    private fun buildDrawing(images: List<XlsxImage>): String {
         val sb = StringBuilder(2048)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<xdr:wsDr ")
