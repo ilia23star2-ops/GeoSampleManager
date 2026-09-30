@@ -6,20 +6,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links):
- * Добавлена поддержка внутренних гиперссылок.
+ * FIX 5.9-xlsx-ui: toBytes() — сборка zip в памяти.
  *
- * FIX 5.9-xlsx-ui (30.09.2026):
- *  - toBytes(): сборка zip в памяти, потом запись одним куском.
+ * FIX 5.9-xlsx-formatting: fillMap, skipWidthRows, applyFill, images.
  *
- * FIX 5.9-xlsx-formatting (30.09.2026, второй заход):
- *  - buildStyles использует XlsxStyles.fillMap.
- *  - buildCols: автоширина колонок.
- *  - applyFill / applyFont / applyBorder в <xf> — без них многие
- *    просмотрщики игнорируют заливку и границы.
- *  - skipWidthRows — сколько первых строк листа не учитывать при
- *    расчёте ширины (шапка не растягивает таблицу).
- *  - XlsxSheet.images — вставка картинок (drawing + media).
+ * FIX 5.9-xlsx-header (30.09.2026, третий заход):
+ *  - XlsxSheet.mergeCells — список диапазонов для объединения ячеек
+ *    (например, "A1:I1"). Рендерится как <mergeCells> после
+ *    <sheetData>, до <hyperlinks>.
  */
 
 // ====================================================================
@@ -52,13 +46,6 @@ data class XlsxHyperlink(
     val location: String
 )
 
-/**
- * Картинка на листе. Привязка к верхнему левому углу ячейки
- * (colIdx, rowIdx), размер в пикселях.
- *
- * bytes — уже декодированные данные (jpg/png).
- * extension — "jpg" | "png".
- */
 data class XlsxImage(
     val bytes: ByteArray,
     val extension: String,
@@ -94,7 +81,8 @@ data class XlsxSheet(
     val rows: List<XlsxRow>,
     val hyperlinks: List<XlsxHyperlink> = emptyList(),
     val images: List<XlsxImage> = emptyList(),
-    val skipWidthRows: Int = 0
+    val skipWidthRows: Int = 0,
+    val mergeCells: List<String> = emptyList()
 )
 
 // ====================================================================
@@ -106,11 +94,7 @@ object XlsxWriter {
     private const val MIN_COL_WIDTH = 4.0
     private const val MAX_COL_WIDTH = 100.0
     private const val COL_WIDTH_PADDING = 2.0
-
-    /** 1 px = 9525 EMU (English Metric Units) — единица размеров в OOXML. */
     private const val EMU_PER_PX = 9525L
-
-    /** 1 px ≈ 0.75 pt — высота строки. */
     private const val ROW_HEIGHT_PX_TO_PT = 0.75
 
     fun write(sheets: List<XlsxSheet>, out: OutputStream) {
@@ -129,18 +113,14 @@ object XlsxWriter {
                 rows = s.rows,
                 hyperlinks = s.hyperlinks,
                 images = s.images,
-                skipWidthRows = s.skipWidthRows
+                skipWidthRows = s.skipWidthRows,
+                mergeCells = s.mergeCells
             )
         }
 
-        // Плоский список всех картинок (в порядке листов, потом внутри листа).
-        // Нужен для Content_Types и media/imageN.ext.
         val allImages = mutableListOf<XlsxImage>()
         sanitized.forEach { sheet -> allImages.addAll(sheet.images) }
 
-        // Для каждого листа с картинками — свой drawing.
-        // Номер drawing = порядковый номер такого листа (1, 2, ...).
-        // Также каждая картинка получает уникальный номер imageN.ext.
         val drawingIndexOfSheet = IntArray(sanitized.size) { -1 }
         val imageIndexOfImage = HashMap<XlsxImage, Int>()
         var drawingCounter = 0
@@ -169,21 +149,16 @@ object XlsxWriter {
             writeEntry(zip, path, buildSheet(sheet, drawingIndex))
 
             if (drawingIndex > 0) {
-                // sheetN.xml.rels — связь листа с drawing.
                 writeEntry(
                     zip,
                     "xl/worksheets/_rels/sheet${sheetIdx + 1}.xml.rels",
                     buildSheetRels(drawingIndex)
                 )
-
-                // xl/drawings/drawingN.xml — описание якорей.
                 writeEntry(
                     zip,
                     "xl/drawings/drawing$drawingIndex.xml",
                     buildDrawing(sheet.images, imageIndexOfImage)
                 )
-
-                // xl/drawings/_rels/drawingN.xml.rels — связи с media.
                 writeEntry(
                     zip,
                     "xl/drawings/_rels/drawing$drawingIndex.xml.rels",
@@ -192,7 +167,6 @@ object XlsxWriter {
             }
         }
 
-        // Медиа-файлы.
         allImages.forEach { img ->
             val idx = imageIndexOfImage[img] ?: return@forEach
             val entry = ZipEntry("xl/media/image$idx.${img.extension}")
@@ -204,10 +178,6 @@ object XlsxWriter {
         zip.close()
         return buffer.toByteArray()
     }
-
-    // ================================================================
-    // Content Types
-    // ================================================================
 
     private fun buildContentTypes(
         sheets: List<XlsxSheet>,
@@ -221,7 +191,6 @@ object XlsxWriter {
         sb.append("ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>")
         sb.append("<Default Extension=\"xml\" ContentType=\"application/xml\"/>")
 
-        // MIME-типы для картинок — если такие есть.
         val exts = allImages.map { it.extension }.toSet()
         if ("jpg" in exts || "jpeg" in exts) {
             sb.append("<Default Extension=\"jpg\" ContentType=\"image/jpeg\"/>")
@@ -326,8 +295,6 @@ object XlsxWriter {
         sb.append("<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/>")
         sb.append("</cellStyleXfs>")
 
-        // FIX: applyFont / applyFill / applyBorder — без них мобильные
-        // просмотрщики игнорируют стили. Ставим 1, если значение > 0.
         sb.append("<cellXfs count=\"").append(styles.size).append("\">")
         styles.forEach { def ->
             val fontId = XlsxStyles.fontIdFor(def)
@@ -356,7 +323,6 @@ object XlsxWriter {
         sb.append("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">")
         sb.append(buildCols(sheet.rows, sheet.skipWidthRows))
 
-        // Высоты строк с картинками: одна строка = высота картинки.
         val rowHeightByIndex: Map<Int, Double> = sheet.images
             .associate { it.rowIdx to (it.heightPx * ROW_HEIGHT_PX_TO_PT) }
 
@@ -393,6 +359,15 @@ object XlsxWriter {
             sb.append("</row>")
         }
         sb.append("</sheetData>")
+
+        // mergeCells идёт ПОСЛЕ sheetData, ДО hyperlinks.
+        if (sheet.mergeCells.isNotEmpty()) {
+            sb.append("<mergeCells count=\"").append(sheet.mergeCells.size).append("\">")
+            sheet.mergeCells.forEach { ref ->
+                sb.append("<mergeCell ref=\"").append(ref).append("\"/>")
+            }
+            sb.append("</mergeCells>")
+        }
 
         if (sheet.hyperlinks.isNotEmpty()) {
             sb.append("<hyperlinks>")
@@ -431,7 +406,6 @@ object XlsxWriter {
         sb.append("xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">")
 
         images.forEachIndexed { picIdx, img ->
-            val globalIdx = imageIndexOfImage[img] ?: (picIdx + 1)
             val cx = img.widthPx.toLong() * EMU_PER_PX
             val cy = img.heightPx.toLong() * EMU_PER_PX
 
@@ -488,10 +462,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * Ширина колонок по самой длинной строке. Первые [skipRows]
-     * строк игнорируются (шапка не должна растягивать таблицу).
-     */
     private fun buildCols(rows: List<XlsxRow>, skipRows: Int): String {
         if (rows.isEmpty()) return ""
 
@@ -531,10 +501,6 @@ object XlsxWriter {
         sb.append("</cols>")
         return sb.toString()
     }
-
-    // ================================================================
-    // Утилиты
-    // ================================================================
 
     private fun writeEntry(zip: ZipOutputStream, path: String, content: String) {
         val entry = ZipEntry(path)
