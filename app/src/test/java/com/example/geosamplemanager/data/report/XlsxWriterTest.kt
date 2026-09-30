@@ -2,6 +2,7 @@ package com.example.geosamplemanager.data.report
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -9,10 +10,9 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-xlsx-legend (девятый заход):
- *  - sheetViews и sheetFormatPr в worksheet;
- *  - bgColor = fgColor в solid fill;
- *  - легенда: J1..J6, ширину J фиксированную.
+ * FIX 5.9-xlsx-legend (десятый заход):
+ *  - fills содержат и rgb, и indexed;
+ *  - indexedFor возвращает правильные индексы.
  */
 class XlsxWriterTest {
 
@@ -232,22 +232,39 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun fillHasBgColorSameAsFgColor() {
+    fun fillHasBothRgbAndIndexed() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        // Оба цвета одинаковы.
+        // Зелёный FOUND: rgb + indexed="42".
+        assertTrue(styles.contains("rgb=\"FFA5D6A7\" indexed=\"42\""))
+        // Красный ERROR.
+        assertTrue(styles.contains("rgb=\"FFEF9A9A\" indexed=\"29\""))
+        // Жёлтый BLANK.
+        assertTrue(styles.contains("rgb=\"FFFFF59D\" indexed=\"43\""))
+        // Фиолетовый CONTROL.
+        assertTrue(styles.contains("rgb=\"FFCE93D8\" indexed=\"46\""))
+        // Синий POSTPONED.
+        assertTrue(styles.contains("rgb=\"FF90CAF9\" indexed=\"44\""))
+        // Заголовок TITLE.
+        assertTrue(styles.contains("rgb=\"FFBBDEFB\" indexed=\"44\""))
+    }
+
+    @Test
+    fun bgColorHasSameRgbAndIndexed() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        // bgColor для зелёного — те же значения.
         assertTrue(styles.contains(
-            "<fgColor rgb=\"FFA5D6A7\"/><bgColor rgb=\"FFA5D6A7\"/>"
+            "<bgColor rgb=\"FFA5D6A7\" indexed=\"42\"/>"
         ))
-        assertTrue(styles.contains(
-            "<fgColor rgb=\"FFBBDEFB\"/><bgColor rgb=\"FFBBDEFB\"/>"
-        ))
-        // indexed="64" больше нет.
-        assertFalse(styles.contains("indexed=\"64\""))
     }
 
     @Test
@@ -415,6 +432,25 @@ class XlsxWriterTest {
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertTrue(sheet.contains("<col min=\"10\" max=\"10\""))
+    }
+
+    @Test
+    fun indexedForReturnsExpectedValues() {
+        assertEquals(22, XlsxStyles.indexedFor("F0F0F0"))
+        assertEquals(42, XlsxStyles.indexedFor("A5D6A7"))
+        assertEquals(29, XlsxStyles.indexedFor("EF9A9A"))
+        assertEquals(44, XlsxStyles.indexedFor("90CAF9"))
+        assertEquals(43, XlsxStyles.indexedFor("FFF59D"))
+        assertEquals(46, XlsxStyles.indexedFor("CE93D8"))
+        assertEquals(44, XlsxStyles.indexedFor("BBDEFB"))
+        assertEquals(41, XlsxStyles.indexedFor("E3F2FD"))
+    }
+
+    @Test
+    fun indexedForReturnsNullForUnknown() {
+        assertEquals(null, XlsxStyles.indexedFor("000000"))
+        assertEquals(null, XlsxStyles.indexedFor("FFFFFF"))
+        assertEquals(null, XlsxStyles.indexedFor(null))
     }
 
     @Test
