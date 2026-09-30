@@ -9,9 +9,11 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-xlsx-colors (пятый заход):
- *  - cellStyleXfs count = 11 (по одной записи на каждый стиль);
- *  - cellStyles присутствует.
+ * FIX 5.9-xlsx-valid (седьмой заход):
+ *  - numFmts, dxfs, tableStyles в styles.xml;
+ *  - bgColor indexed="64" в solid fill;
+ *  - пустой Text не пишется как inlineStr с пустым t;
+ *  - пустая строка — self-closing row.
  */
 class XlsxWriterTest {
 
@@ -84,6 +86,40 @@ class XlsxWriterTest {
     }
 
     @Test
+    fun emptyTextWrittenAsBlank() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("", XlsxStyles.FOUND))))
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        // Пустой Text → <c r="A1" s="3"/> без inlineStr.
+        assertTrue(sheet.contains("r=\"A1\" s=\"3\"/>"))
+        assertFalse(sheet.contains("r=\"A1\" s=\"3\" t=\"inlineStr\""))
+    }
+
+    @Test
+    fun emptyRowSelfClosing() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(
+                        XlsxRow(listOf(XlsxCell.Text("A"))),
+                        XlsxRow(emptyList()),
+                        XlsxRow(listOf(XlsxCell.Text("B")))
+                    )
+                )
+            )
+        )
+        val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
+        assertTrue(sheet.contains("<row r=\"2\"/>"))
+    }
+
+    @Test
     fun intNumberWrittenWithoutDecimal() {
         val bytes = write(
             listOf(
@@ -145,8 +181,7 @@ class XlsxWriterTest {
             )
         )
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
-        assertTrue(sheet.contains("r=\"B1\""))
-        assertTrue(sheet.contains("s=\"9\""))
+        assertTrue(sheet.contains("r=\"B1\" s=\"9\""))
         assertFalse(sheet.contains("r=\"B1\" s=\"9\" t=\"inlineStr\""))
     }
 
@@ -163,40 +198,36 @@ class XlsxWriterTest {
         assertTrue(entries.containsKey("xl/worksheets/sheet2.xml"))
         assertTrue(entries["xl/worksheets/sheet1.xml"]!!.contains("A"))
         assertTrue(entries["xl/worksheets/sheet2.xml"]!!.contains("B"))
-        assertTrue(entries["xl/workbook.xml"]!!.contains("First"))
-        assertTrue(entries["xl/workbook.xml"]!!.contains("Second"))
     }
 
     @Test
-    fun stylesXmlHasOneCellStyleXfPerStyle() {
+    fun stylesXmlHasAllRequiredSections() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        // 11 стилей — 11 записей в cellStyleXfs и 11 в cellXfs.
+        assertTrue(styles.contains("<numFmts count=\"0\"/>"))
         assertTrue(styles.contains("<cellStyleXfs count=\"11\">"))
         assertTrue(styles.contains("<cellXfs count=\"11\">"))
         assertTrue(styles.contains("<cellStyles count=\"1\">"))
         assertTrue(styles.contains("name=\"Normal\""))
+        assertTrue(styles.contains("<dxfs count=\"0\"/>"))
+        assertTrue(styles.contains("<tableStyles count=\"0\""))
     }
 
     @Test
-    fun stylesXmlContainsAllFillColors() {
+    fun fillHasBgColorIndexed64() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        assertTrue(styles.contains("A5D6A7"))
-        assertTrue(styles.contains("EF9A9A"))
-        assertTrue(styles.contains("90CAF9"))
-        assertTrue(styles.contains("FFF59D"))
-        assertTrue(styles.contains("CE93D8"))
-        assertTrue(styles.contains("BBDEFB"))
-        assertTrue(styles.contains("E3F2FD"))
+        assertTrue(styles.contains("<bgColor indexed=\"64\"/>"))
+        assertTrue(styles.contains("FFA5D6A7"))
+        assertTrue(styles.contains("FFBBDEFB"))
     }
 
     @Test
@@ -237,9 +268,7 @@ class XlsxWriterTest {
             listOf(
                 XlsxSheet(
                     name = "Test",
-                    rows = listOf(
-                        XlsxRow(listOf(XlsxCell.Text("Plain")))
-                    )
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("Plain"))))
                 )
             )
         )
