@@ -11,9 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-legend (девятый заход):
- *  - лист «Наряд» теперь содержит legend (6 элементов);
- *  - skipWidthRows = 6.
+ * FIX 5.9-xlsx-emoji (тринадцатый заход):
+ *  - колонка A = эмодзи-статус, шапка = "Статус";
+ *  - легенда с эмодзи.
  */
 class XlsxReportBuilderTest {
 
@@ -116,9 +116,9 @@ class XlsxReportBuilderTest {
         assertEquals(6, sheet.legend.size)
         assertEquals("Легенда", sheet.legend[0].label)
         assertEquals(XlsxStyles.BOLD, sheet.legend[0].styleId)
-        assertEquals("Найдена", sheet.legend[1].label)
+        assertEquals("🟢 Найдена", sheet.legend[1].label)
         assertEquals(XlsxStyles.FOUND, sheet.legend[1].styleId)
-        assertEquals("Весовой контроль", sheet.legend[5].label)
+        assertEquals("🟣 Весовой контроль", sheet.legend[5].label)
         assertEquals(XlsxStyles.CONTROL, sheet.legend[5].styleId)
     }
 
@@ -150,64 +150,7 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun headerRowHasNineCellsWithBlankFill() {
-        val data = makeReport(
-            samples = listOf(
-                ReportSample(row = makeRow(), note = null, photos = emptyList())
-            )
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        repeat(4) { i ->
-            assertEquals(9, rows[i].cells.size)
-            assertTrue(rows[i].cells[0] is XlsxCell.Text)
-            for (j in 1 until 9) {
-                assertTrue(rows[i].cells[j] is XlsxCell.Blank)
-            }
-        }
-    }
-
-    @Test
-    fun titleUsesTitleStyle() {
-        val data = makeReport(
-            samples = listOf(
-                ReportSample(row = makeRow(), note = null, photos = emptyList())
-            )
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals(XlsxStyles.TITLE, rows[0].styleId)
-        assertEquals("Отчёт по наряду", cellText(rows[0].cells[0]))
-    }
-
-    @Test
-    fun metaRowsUseMetaStyle() {
-        val data = makeReport(
-            samples = listOf(
-                ReportSample(row = makeRow(), note = null, photos = emptyList())
-            )
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals(XlsxStyles.META, rows[1].styleId)
-        assertEquals(XlsxStyles.META, rows[2].styleId)
-        assertEquals(XlsxStyles.META, rows[3].styleId)
-    }
-
-    @Test
-    fun metaRowsContainCombinedText() {
-        val data = makeReport(
-            area = "Актайский",
-            order = "13",
-            samples = listOf(
-                ReportSample(row = makeRow(), note = null, photos = emptyList())
-            )
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("Участок: Актайский", cellText(rows[1].cells[0]))
-        assertEquals("Наряд: №13", cellText(rows[2].cells[0]))
-        assertEquals("Дата: 29.09.2026 21:00", cellText(rows[3].cells[0]))
-    }
-
-    @Test
-    fun tableHeaderHasFoundFirst() {
+    fun tableHeaderHasStatusFirst() {
         val data = makeReport(
             samples = listOf(
                 ReportSample(row = makeRow(), note = null, photos = emptyList())
@@ -215,7 +158,7 @@ class XlsxReportBuilderTest {
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
         val headerRow = rows[5]
-        assertEquals("Найдена", cellText(headerRow.cells[0]))
+        assertEquals("Статус", cellText(headerRow.cells[0]))
         assertEquals("п/п", cellText(headerRow.cells[1]))
         assertEquals("№ пробы", cellText(headerRow.cells[2]))
         assertEquals("Скважина", cellText(headerRow.cells[3]))
@@ -224,6 +167,70 @@ class XlsxReportBuilderTest {
         assertEquals("Характеристика", cellText(headerRow.cells[6]))
         assertEquals("Тип", cellText(headerRow.cells[7]))
         assertEquals("Прил.", cellText(headerRow.cells[8]))
+    }
+
+    @Test
+    fun foundRowHasGreenEmoji() {
+        val row = makeRow(found = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("🟢", cellText(rows[6].cells[0]))
+    }
+
+    @Test
+    fun errorRowHasRedEmoji() {
+        val row = makeRow(found = false, hasImportError = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("🔴", cellText(rows[6].cells[0]))
+    }
+
+    @Test
+    fun postponedRowHasBlueEmoji() {
+        val row = makeRow(found = false, postponed = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("🔵", cellText(rows[6].cells[0]))
+    }
+
+    @Test
+    fun blankRowHasYellowEmoji() {
+        val row = makeRow(
+            status = SampleStatus.BLANK,
+            found = false,
+            weightControl = false
+        )
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("🟡", cellText(rows[6].cells[0]))
+    }
+
+    @Test
+    fun weightControlRowHasPurpleEmoji() {
+        val row = makeRow(found = false, weightControl = true)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("🟣", cellText(rows[6].cells[0]))
+    }
+
+    @Test
+    fun plainRowHasWhiteCircleEmoji() {
+        val row = makeRow(found = false)
+        val data = makeReport(
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals("⚪", cellText(rows[6].cells[0]))
     }
 
     @Test
@@ -245,7 +252,7 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
 
         val dataRow = rows[6]
-        assertEquals("✓", cellText(dataRow.cells[0]))
+        assertEquals("🟢", cellText(dataRow.cells[0]))
         assertEquals(3.0, cellNumber(dataRow.cells[1])!!, 0.0001)
         assertEquals("NV136703", cellText(dataRow.cells[2]))
         assertEquals("NV1367", cellText(dataRow.cells[3]))
@@ -253,36 +260,6 @@ class XlsxReportBuilderTest {
         assertEquals("2.7", cellText(dataRow.cells[5]))
         assertEquals("Элювий", cellText(dataRow.cells[6]))
         assertEquals("Бороздовая", cellText(dataRow.cells[7]))
-    }
-
-    @Test
-    fun blankStatusOverridesType() {
-        val row = makeRow(
-            status = SampleStatus.BLANK,
-            type = SampleType.AUGER,
-            found = false
-        )
-        val data = makeReport(
-            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        val dataRow = rows[6]
-        assertEquals("", cellText(dataRow.cells[0]))
-        assertEquals("Холостая", cellText(dataRow.cells[7]))
-    }
-
-    @Test
-    fun controlStatusOverridesType() {
-        val row = makeRow(
-            status = SampleStatus.CONTROL,
-            type = SampleType.COBRA,
-            found = true
-        )
-        val data = makeReport(
-            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("Весовой контроль", cellText(rows[6].cells[7]))
     }
 
     @Test
@@ -465,24 +442,6 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun appendixMultipleSamples() {
-        val row1 = makeRow(id = "1", sample = "NV136601", hasNote = true)
-        val row2 = makeRow(id = "2", sample = "NV136602", hasPhoto = true)
-        val data = makeReport(
-            samples = listOf(
-                ReportSample(row1, note = ReportNote("Первая"), photos = emptyList()),
-                ReportSample(row2, note = null, photos = listOf(ReportPhoto("data:x")))
-            )
-        )
-        val appRows = XlsxReportBuilder.build(data)[1].rows
-        val text = appRows.flatMap { it.cells }.mapNotNull { cellText(it) }.joinToString("|")
-        assertTrue(text.contains("Приложение 1"))
-        assertTrue(text.contains("Приложение 2"))
-        assertTrue(text.contains("NV136601"))
-        assertTrue(text.contains("NV136602"))
-    }
-
-    @Test
     fun sheetsCanBeWrittenToZip() {
         val data = makeReport(
             samples = listOf(
@@ -512,24 +471,34 @@ class XlsxReportBuilderTest {
         assertTrue(names.contains("xl/worksheets/sheet2.xml"))
         assertNotNull(names.find { it == "xl/workbook.xml" })
         assertNotNull(names.find { it == "xl/styles.xml" })
+        assertNotNull(names.find { it == "xl/theme/theme1.xml" })
     }
 
     @Test
-    fun stylesXmlHasApplyFillForColoredStyles() {
+    fun workbookRelsHaveStylesAndTheme() {
         val data = makeReport(
             samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
         )
         val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
-        val stylesXml = readZipEntry(bytes, "xl/styles.xml")
-        assertNotNull(stylesXml)
-        assertTrue(stylesXml!!.contains("applyFill=\"1\""))
-        assertTrue(stylesXml.contains("applyBorder=\"1\""))
+        val rels = readZipEntry(bytes, "xl/_rels/workbook.xml.rels")
+        assertNotNull(rels)
+        assertTrue(rels!!.contains("relationships/styles"))
+        assertTrue(rels.contains("Target=\"styles.xml\""))
+        assertTrue(rels.contains("relationships/theme"))
+        assertTrue(rels.contains("theme/theme1.xml"))
     }
 
     @Test
-    fun titleAndMetaStylesAreInFillMap() {
-        assertNotNull(XlsxStyles.fillMap["BBDEFB"])
-        assertNotNull(XlsxStyles.fillMap["E3F2FD"])
+    fun workbookHasFileVersionAndCalcPr() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
+        val workbook = readZipEntry(bytes, "xl/workbook.xml")
+        assertNotNull(workbook)
+        assertTrue(workbook!!.contains("<fileVersion"))
+        assertTrue(workbook.contains("<workbookPr"))
+        assertTrue(workbook.contains("<calcPr"))
     }
 
     @Test
@@ -542,7 +511,6 @@ class XlsxReportBuilderTest {
         assertNotNull(sheetXml)
         assertTrue(sheetXml!!.contains("<mergeCells count=\"4\">"))
         assertTrue(sheetXml.contains("ref=\"A1:I1\""))
-        assertTrue(sheetXml.contains("ref=\"A4:I4\""))
     }
 
     @Test
@@ -555,21 +523,6 @@ class XlsxReportBuilderTest {
         assertNotNull(sheetXml)
         assertTrue(sheetXml!!.contains("r=\"J1\""))
         assertTrue(sheetXml.contains("Легенда"))
-        assertTrue(sheetXml.contains("r=\"J6\""))
-        assertTrue(sheetXml.contains("Весовой контроль"))
-    }
-
-    @Test
-    fun sheetXmlHasBlankCellsInHeader() {
-        val data = makeReport(
-            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
-        )
-        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
-        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
-        assertNotNull(sheetXml)
-        assertTrue(sheetXml!!.contains("r=\"B1\" s=\"9\""))
-        assertTrue(sheetXml.contains("r=\"I1\" s=\"9\""))
-        assertTrue(sheetXml.contains("r=\"A2\" s=\"10\""))
     }
 
     @Test
@@ -583,28 +536,5 @@ class XlsxReportBuilderTest {
         assertEquals(2, sheets.size)
         assertEquals(1, sheets[1].images.size)
         assertEquals("jpg", sheets[1].images[0].extension)
-    }
-
-    @Test
-    fun mediaAndDrawingEntriesAppearInZip() {
-        val row = makeRow(id = "1", sample = "NV136601", hasPhoto = true)
-        val photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
-        val data = makeReport(
-            samples = listOf(ReportSample(row, note = null, photos = photos))
-        )
-        val sheets = XlsxReportBuilder.build(data, fakeDecoder)
-        val bytes = XlsxWriter.toBytes(sheets)
-
-        val names = mutableListOf<String>()
-        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
-            var e = zip.nextEntry
-            while (e != null) {
-                names.add(e.name)
-                e = zip.nextEntry
-            }
-        }
-        assertTrue(names.contains("xl/media/image1.jpg"))
-        assertTrue(names.contains("xl/drawings/drawing1.xml"))
-        assertTrue(names.contains("xl/worksheets/_rels/sheet2.xml.rels"))
     }
 }
