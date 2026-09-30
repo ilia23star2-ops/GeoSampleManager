@@ -3,13 +3,13 @@
 ## Текущий фокус
 
 **Фича `feature/5.9-full-project`, серия 5.9.**
-Пачка `report-xlsx` в фиче. Генераторы (XLSX и HTML, одиночные и
-мульти) готовы. Осталось подключить UI и кнопку Excel.
+Пачка `report-xlsx` в фиче. Все генераторы и UI готовы. Осталась
+**последняя пачка серии** — `multi-report-ui`.
 
 ## Ближайший заход — `multi-report-ui`
 
 **Что делаем:** экран выбора нарядов для мульти-отчёта. Дерево
-(участок → наряды), строка фильтра сверху, галочки. Две кнопки:
+(участок → наряды), строка фильтра, галочки. Две кнопки:
 «Экспорт в Excel» и «Экспорт в HTML». Диалог при совпадении имён
 листов.
 
@@ -17,46 +17,65 @@
 
 1. **Экран — отдельный** `MultiReportScreen` (не диалог).
 2. **Список — дерево** участок → наряды, сверху строка фильтра.
-3. **При совпадении имён** — диалог: подтвердить (суффикс « (2)») или
-   пропустить.
+3. **При совпадении имён** — диалог: подтвердить (суффикс ` (2)`)
+   или пропустить.
 4. **Две кнопки:** «Экспорт в Excel» и «Экспорт в HTML».
 
 **Подключает:**
 
-- `XlsxMultiReportBuilder` → `XlsxWriter.write` (уже готовы).
-- `MultiHtmlReportGenerator` → запись в файл (по аналогии
-  с `StatsViewModel.generateHtmlReport`).
+- `XlsxMultiReportBuilder` + `XlsxWriter` (готовы).
+- `MultiHtmlReportGenerator` (готов).
 
 **Файлов:** ~5–6.
 
 - `MultiReportScreen.kt` — новый экран.
 - `MultiReportViewModel.kt` — новый ViewModel.
 - `NavGraph.kt` / `Screen.kt` — навигация.
-- `StatsScreen.kt` — кнопка входа (в `AreaDetailsPanel` — «Отчёт по
-  участку» или в `OrderDetailsPanel` — «Мультиотчёт»).
-- Тесты — на ViewModel или чистую логику (если получится оторвать
-  от Android).
+- `StatsScreen.kt` — кнопка входа (в `AreaDetailsPanel` —
+  «Отчёт по участку» или в `OrderDetailsPanel` — «Мультиотчёт»).
+- Тесты — на ViewModel или чистую логику.
 
 **Ветка:** `fix/5.9-multi-report-ui` от `feature/5.9-full-project`.
-**Где:** дома (нужна сборка + device-check).
+**Где:** дома (сборка + device-check).
 
 **Файлы для запроса в начале захода:**
 
 - `ui/navigation/NavGraph.kt`
 - `ui/navigation/Screen.kt`
-- `ui/screens/StatsModels.kt` (уже есть в чате)
+- `ui/screens/StatsModels.kt`
 - `ui/screens/StatsDialogs.kt`
-- `ui/screens/StatsViewModel.kt` (уже есть в чате)
-- `ui/screens/StatsScreen.kt` (уже есть в чате)
+- `ui/screens/StatsViewModel.kt`
+- `ui/screens/StatsScreen.kt`
 
-## После `multi-report-ui` — `xlsx-ui`
+## После `multi-report-ui`
 
-**Что делаем:** кнопка Excel в одиночном `ReportFormatDialog`
-(в `StatsScreen.kt`).
+**Пачка `report-xlsx` закрывается полностью.** Переход на
+**Редактирование** (следующая вкладка из очереди:
+Статистика → Редактирование → БД → Настройки → Главная).
 
-Сейчас там:
+## Отложенные задачи
 
-```kotlin
-ReportFormat.EXCEL -> scope.launch {
-    snackbarHostState.showSnackbar("Excel-отчёт — в разработке")
-}
+- **И-24.** Vosk обрывает длинные номера по короткой паузе. Отложено
+  до серии `e4d`.
+- **И-35.** Vosk путает «четвёртая» / «четырнадцатая». До `e4d`.
+- **D.** Команды выбора наряда/участка голосом. Ждёт `e4d`.
+- **Confidence threshold Vosk.** Проверить `build.gradle`.
+- **Визуальная пометка pin в UI.** Панель ГП.
+
+## Device-check — незакрытые пункты (старые серии)
+
+### Серия `5.8.6`
+
+- **5f:** отмена голосом/кнопкой мгновенно снимает отметку.
+- **5g:** «пять четвертых» → Unknown; «четвёртая» → `MarkOrdinal(4)`.
+
+### Серия `5.8.10`
+
+- **a (И-10):** свернуть «Характеристика» → перезапуск → скрыто.
+- **b (И-9):** снести → свежий APK → онбординг появился.
+- **c:** «первая вторая третья» → «Отмечено: первая, вторая, третья».
+
+## Заморозка (не трогать)
+
+- Схема БД (version = 2).
+- `AI_RULES.md` — актуален.
