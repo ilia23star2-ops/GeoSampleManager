@@ -44,6 +44,10 @@ import java.util.Locale
  *  - buildReportData(orderId) — общий сборщик ReportData (для HTML и XLSX).
  *  - generateXlsxReport(orderId, uri) — запись .xlsx через XlsxReportBuilder
  *    и XlsxWriter.
+ *
+ * FIX 5.9-xlsx-ui (30.09.2026, второй заход):
+ *  - mode "wt" → "w" для XLSX (text mode мог портить бинарные данные).
+ *  - логирование размера записанного файла для отладки.
  */
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -301,16 +305,18 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             withContext(Dispatchers.IO) {
-            getApplication<Application>().contentResolver
-                .openOutputStream(uri, "w")
-                ?.use { out ->
-                    XlsxWriter.write(sheets, out)
-                    out.flush()
-                }
+                val bytes = html.toByteArray(Charsets.UTF_8)
+                getApplication<Application>().contentResolver
+                    .openOutputStream(uri, "w")
+                    ?.use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
                     ?: run {
                         _message.value = "Не удалось открыть файл для записи"
                         return@withContext false
                     }
+                Log.i(TAG, "HTML-отчёт записан: ${bytes.size} байт")
             }
             true
         } catch (e: Exception) {
@@ -323,6 +329,9 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * FIX 5.9-xlsx-ui: запись .xlsx по одному наряду.
      * Использует тот же ReportData, что и HTML-отчёт.
+     *
+     * FIX 5.9-xlsx-ui (второй заход): mode "wt" → "w" — text mode
+     * мог портить бинарный xlsx. Плюс логирование размера.
      */
     suspend fun generateXlsxReport(orderId: Long, uri: Uri): Boolean {
         return try {
@@ -330,16 +339,20 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.IO) {
                 val sheets = XlsxReportBuilder.build(data)
+                val bytes = XlsxWriter.toBytes(sheets)
+                Log.i(TAG, "XLSX собран: ${bytes.size} байт, листов: ${sheets.size}")
+
                 getApplication<Application>().contentResolver
-                    .openOutputStream(uri, "wt")
+                    .openOutputStream(uri, "w")
                     ?.use { out ->
-                        XlsxWriter.write(sheets, out)
+                        out.write(bytes)
                         out.flush()
                     }
                     ?: run {
                         _message.value = "Не удалось открыть файл для записи"
                         return@withContext false
                     }
+                Log.i(TAG, "XLSX-отчёт записан: ${bytes.size} байт")
             }
             true
         } catch (e: Exception) {
