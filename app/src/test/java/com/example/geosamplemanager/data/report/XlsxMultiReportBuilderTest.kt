@@ -6,13 +6,14 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
 import com.example.geosamplemanager.ui.screens.SampleType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi):
- * Тесты мультинарядного построителя.
+ * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi).
+ *
+ * FIX 5.9-xlsx-formatting:
+ *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
  */
 class XlsxMultiReportBuilderTest {
 
@@ -89,10 +90,6 @@ class XlsxMultiReportBuilderTest {
     private fun cellText(cell: XlsxCell): String? =
         (cell as? XlsxCell.Text)?.value
 
-    // ================================================================
-    // Базовые случаи
-    // ================================================================
-
     @Test
     fun emptyInputReturnsEmptyList() {
         val sheets = XlsxMultiReportBuilder.build(emptyList())
@@ -139,14 +136,14 @@ class XlsxMultiReportBuilderTest {
         assertEquals("Отчёт по наряду", cellText(sheet.rows[0].cells[0]))
         assertEquals("Коптеловский", cellText(sheet.rows[1].cells[1]))
         assertEquals("№27", cellText(sheet.rows[2].cells[1]))
-        assertEquals("п/п", cellText(sheet.rows[5].cells[0]))
-        assertEquals("NV136601", cellText(sheet.rows[6].cells[1]))
-        assertEquals("NV136602", cellText(sheet.rows[7].cells[1]))
+        // Новая шапка: Найдена, п/п, № пробы, ...
+        assertEquals("Найдена", cellText(sheet.rows[5].cells[0]))
+        assertEquals("п/п", cellText(sheet.rows[5].cells[1]))
+        assertEquals("№ пробы", cellText(sheet.rows[5].cells[2]))
+        // Данные: sample теперь в колонке 2.
+        assertEquals("NV136601", cellText(sheet.rows[6].cells[2]))
+        assertEquals("NV136602", cellText(sheet.rows[7].cells[2]))
     }
-
-    // ================================================================
-    // Общий лист приложений
-    // ================================================================
 
     @Test
     fun appendixSheetAppendedAfterOrders() {
@@ -227,12 +224,9 @@ class XlsxMultiReportBuilderTest {
         assertEquals(1, appSheet.hyperlinks.size)
         val link = appSheet.hyperlinks[0]
         assertTrue(link.location.contains("Б — Наряд 2"))
-        assertTrue(link.location.contains("B7"))
+        // Sample теперь в колонке C (индекс 2), строка 7.
+        assertTrue(link.location.contains("C7"))
     }
-
-    // ================================================================
-    // Имена листов: дубли
-    // ================================================================
 
     @Test
     fun duplicateNamesGetSuffix() {
@@ -268,10 +262,6 @@ class XlsxMultiReportBuilderTest {
         assertTrue(sheets[1].name.endsWith(" (2)"))
     }
 
-    // ================================================================
-    // Интеграция с XlsxWriter
-    // ================================================================
-
     @Test
     fun multiSheetsCanBeWrittenToZip() {
         val orders = listOf(
@@ -281,9 +271,7 @@ class XlsxMultiReportBuilderTest {
         val sheets = XlsxMultiReportBuilder.build(orders)
         assertEquals(3, sheets.size)
 
-        val out = java.io.ByteArrayOutputStream()
-        XlsxWriter.write(sheets, out)
-        val bytes = out.toByteArray()
+        val bytes = XlsxWriter.toBytes(sheets)
         assertTrue(bytes.size > 0)
 
         val names = mutableListOf<String>()
