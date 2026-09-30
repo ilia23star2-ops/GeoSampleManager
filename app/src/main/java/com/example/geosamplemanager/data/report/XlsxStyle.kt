@@ -3,14 +3,13 @@ package com.example.geosamplemanager.data.report
 import com.example.geosamplemanager.ui.screens.SampleRow
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links): LINK.
- *
- * FIX 5.9-xlsx-formatting:
- *  - fillMap — уникальные цвета заливки → индекс fill'а в styles.xml.
- *
- * FIX 5.9-xlsx-header (30.09.2026, третий заход):
- *  - TITLE — жирный + фон BBDEFB (шапка-заголовок).
- *  - META — фон E3F2FD (участок/наряд/дата).
+ * FIX 5.9-xlsx-legend (30.09.2026, десятый заход):
+ *  - indexedColorMap: hex-цвет → ближайший индекс стандартной
+ *    палитры Excel 97 (0–63). Нужно для вьюеров, которые не
+ *    понимают rgb, но понимают indexed.
+ *  - fillIdFor и indexedFor используются одновременно в
+ *    XlsxWriter.buildStyles: <fgColor rgb="..." indexed="N"/>.
+ *    Excel возьмёт rgb, примитивный вьюер — indexed.
  */
 
 data class StyleDef(
@@ -62,6 +61,22 @@ object XlsxStyles {
         map
     }
 
+    /**
+     * Соответствие наших hex-цветов ближайшим индексам стандартной
+     * палитры Excel 97 (0–63). Используется как fallback: пишем
+     * вместе с rgb, чтобы старый вьюер взял indexed.
+     */
+    private val indexedColorMap: Map<String, Int> = mapOf(
+        "F0F0F0" to 22,   // C0C0C0 светло-серый
+        "A5D6A7" to 42,   // CCFFCC светло-зелёный
+        "EF9A9A" to 29,   // FF8080 светло-красный
+        "90CAF9" to 44,   // 99CCFF светло-синий
+        "FFF59D" to 43,   // FFFF99 светло-жёлтый
+        "CE93D8" to 46,   // CC99FF светло-фиолетовый
+        "BBDEFB" to 44,   // 99CCFF светло-синий
+        "E3F2FD" to 41    // CCFFFF бледно-голубой
+    )
+
     fun styleForRow(row: SampleRow): Int = when {
         row.found -> FOUND
         row.hasImportError -> ERROR
@@ -79,4 +94,8 @@ object XlsxStyles {
 
     internal fun fillIdFor(def: StyleDef): Int =
         def.fillColor?.let { fillMap[it] } ?: 0
+
+    /** Ближайший indexed-цвет для hex. null — если маппинга нет. */
+    internal fun indexedFor(hex: String?): Int? =
+        hex?.let { indexedColorMap[it] }
 }
