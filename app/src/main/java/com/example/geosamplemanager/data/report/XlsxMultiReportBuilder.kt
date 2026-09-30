@@ -4,8 +4,8 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-header: шапка объединена A1:I1..A4:I4, с фоном.
- * skipWidthRows = 5.
+ * FIX 5.9-xlsx-header (четвёртый заход): шапка заполнена Blank'ами,
+ * skipWidthRows = 6.
  */
 
 object XlsxMultiReportBuilder {
@@ -16,13 +16,24 @@ object XlsxMultiReportBuilder {
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
     private const val SHEET_NAME_MAX = 31
-    private const val ORDER_SKIP_WIDTH_ROWS = 5
+    private const val ORDER_SKIP_WIDTH_ROWS = 6
+
+    private const val COLUMNS = 9
 
     private const val IMAGE_WIDTH_PX = 240
     private const val IMAGE_HEIGHT_PX = 180
     private const val APP_IMAGE_COL = 1
 
     private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
+
+    private fun headerRow(text: String, style: Int): XlsxRow {
+        val cells = ArrayList<XlsxCell>(COLUMNS)
+        cells.add(XlsxCell.Text(text, style))
+        repeat(COLUMNS - 1) {
+            cells.add(XlsxCell.Blank(style))
+        }
+        return XlsxRow(cells, styleId = style)
+    }
 
     private data class BlockPlacement(
         val orderIdx: Int,
@@ -103,30 +114,10 @@ object XlsxMultiReportBuilder {
         val rows = mutableListOf<XlsxRow>()
         val links = mutableListOf<XlsxHyperlink>()
 
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Отчёт по наряду")),
-                styleId = XlsxStyles.TITLE
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Участок: ${data.areaName}")),
-                styleId = XlsxStyles.META
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Наряд: №${data.orderNumber}")),
-                styleId = XlsxStyles.META
-            )
-        )
-        rows.add(
-            XlsxRow(
-                listOf(XlsxCell.Text("Дата: ${data.generatedAt}")),
-                styleId = XlsxStyles.META
-            )
-        )
+        rows.add(headerRow("Отчёт по наряду", XlsxStyles.TITLE))
+        rows.add(headerRow("Участок: ${data.areaName}", XlsxStyles.META))
+        rows.add(headerRow("Наряд: №${data.orderNumber}", XlsxStyles.META))
+        rows.add(headerRow("Дата: ${data.generatedAt}", XlsxStyles.META))
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         rows.add(
@@ -209,9 +200,7 @@ object XlsxMultiReportBuilder {
         val links = mutableListOf<XlsxHyperlink>()
         val images = mutableListOf<XlsxImage>()
 
-        rows.add(
-            XlsxRow(listOf(XlsxCell.Text("Приложения")), styleId = XlsxStyles.TITLE)
-        )
+        rows.add(headerRow("Приложения", XlsxStyles.TITLE))
         rows.add(XlsxRow(listOf(XlsxCell.Empty)))
 
         orders.forEachIndexed { orderIdx, data ->
