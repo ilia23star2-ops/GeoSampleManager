@@ -4,8 +4,8 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-header (четвёртый заход): шапка заполнена Blank'ами,
- * skipWidthRows = 6.
+ * FIX 5.9-xlsx-legend (девятый заход):
+ *  - в каждый лист наряда добавлена легенда цветов.
  */
 
 object XlsxMultiReportBuilder {
@@ -17,7 +17,6 @@ object XlsxMultiReportBuilder {
     private const val APP_FIRST_BLOCK_ROW = 3
     private const val SHEET_NAME_MAX = 31
     private const val ORDER_SKIP_WIDTH_ROWS = 6
-
     private const val COLUMNS = 9
 
     private const val IMAGE_WIDTH_PX = 240
@@ -25,6 +24,15 @@ object XlsxMultiReportBuilder {
     private const val APP_IMAGE_COL = 1
 
     private val HEADER_MERGES = listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4")
+
+    private val LEGEND = listOf(
+        XlsxLegendItem("Легенда", XlsxStyles.BOLD),
+        XlsxLegendItem("Найдена", XlsxStyles.FOUND),
+        XlsxLegendItem("Ошибка импорта", XlsxStyles.ERROR),
+        XlsxLegendItem("Отложена", XlsxStyles.POSTPONED),
+        XlsxLegendItem("Холостая", XlsxStyles.BLANK),
+        XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
+    )
 
     private fun headerRow(text: String, style: Int): XlsxRow {
         val cells = ArrayList<XlsxCell>(COLUMNS)
@@ -185,7 +193,8 @@ object XlsxMultiReportBuilder {
             hyperlinks = links,
             images = emptyList(),
             skipWidthRows = ORDER_SKIP_WIDTH_ROWS,
-            mergeCells = HEADER_MERGES
+            mergeCells = HEADER_MERGES,
+            legend = LEGEND
         )
     }
 
