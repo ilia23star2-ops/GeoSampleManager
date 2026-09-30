@@ -10,9 +10,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-header (четвёртый заход):
- *  - шапка — 9 ячеек в каждой строке (первая с текстом, остальные Blank);
- *  - skipWidthRows = 6.
+ * FIX 5.9-xlsx-legend (девятый заход):
+ *  - каждый лист наряда имеет legend;
+ *  - лист «Приложения» — без легенды.
  */
 class XlsxMultiReportBuilderTest {
 
@@ -121,6 +121,18 @@ class XlsxMultiReportBuilderTest {
     }
 
     @Test
+    fun orderSheetsHaveLegend() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleNoAppendix("1"))),
+            makeReport(area = "Б", order = "2", samples = listOf(sampleNoAppendix("2")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders)
+        assertEquals(2, sheets.size)
+        assertEquals(6, sheets[0].legend.size)
+        assertEquals(6, sheets[1].legend.size)
+    }
+
+    @Test
     fun threeOrdersNoAppendixThreeSheets() {
         val orders = listOf(
             makeReport(area = "А", order = "1", samples = listOf(sampleNoAppendix("1"))),
@@ -221,6 +233,16 @@ class XlsxMultiReportBuilderTest {
         assertEquals("А — Наряд 1", sheets[0].name)
         assertEquals("Б — Наряд 2", sheets[1].name)
         assertEquals("Приложения", sheets[2].name)
+    }
+
+    @Test
+    fun appendixSheetHasNoLegend() {
+        val orders = listOf(
+            makeReport(area = "А", order = "1", samples = listOf(sampleWithNote("1")))
+        )
+        val sheets = XlsxMultiReportBuilder.build(orders)
+        assertEquals(2, sheets.size)
+        assertTrue(sheets[1].legend.isEmpty())
     }
 
     @Test
