@@ -4,13 +4,14 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi):
- * Мультинарядный отчёт. N нарядов → N листов + один общий лист
- * «Приложения» в конце.
+ * FIX 5.9-report-xlsx / подзаход 5 (xlsx-multi).
  *
- * FIX 5.9-xlsx-formatting (30.09.2026):
- *  - Порядок колонок: «Найдена» теперь первая, левее «п/п».
- *  - Индексы колонок сдвинуты: sample=2, appendix=8.
+ * FIX 5.9-xlsx-formatting:
+ *  - порядок колонок: Найдена первая.
+ *  - skipWidthRows = 5.
+ *  - картинки в общем листе приложений: каждое фото — отдельная
+ *    строка под «Фото: N шт.». Декодер data-uri передаёт вызывающая
+ *    сторона (UI).
  */
 
 object XlsxMultiReportBuilder {
@@ -22,6 +23,11 @@ object XlsxMultiReportBuilder {
     private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
     private const val SHEET_NAME_MAX = 31
+    private const val ORDER_SKIP_WIDTH_ROWS = 5
+
+    private const val IMAGE_WIDTH_PX = 240
+    private const val IMAGE_HEIGHT_PX = 180
+    private const val APP_IMAGE_COL = 1
 
     private data class BlockPlacement(
         val orderIdx: Int,
@@ -30,7 +36,14 @@ object XlsxMultiReportBuilder {
         val titleRow: Int
     )
 
-    fun build(orders: List<ReportData>): List<XlsxSheet> {
+    /**
+     * @param imageDecoder — опциональный декодер data-uri в байты.
+     *   null — картинки не вставляются (для тестов).
+     */
+    fun build(
+        orders: List<ReportData>,
+        imageDecoder: ((String) -> DecodedImage?)? = null
+    ): List<XlsxSheet> {
         if (orders.isEmpty()) return emptyList()
 
         val orderSheetNames = uniqueSheetNames(orders)
@@ -81,7 +94,8 @@ object XlsxMultiReportBuilder {
                 orders = orders,
                 orderSheetNames = orderSheetNames,
                 orderRowById = orderRowById,
-                placementByKey = placementByKey
+                placementByKey = placementByKey,
+                imageDecoder = imageDecoder
             )
         }
 
@@ -183,17 +197,25 @@ object XlsxMultiReportBuilder {
             }
         }
 
-        return XlsxSheet(name = sheetName, rows = rows, hyperlinks = links)
+        return XlsxSheet(
+            name = sheetName,
+            rows = rows,
+            hyperlinks = links,
+            images = emptyList(),
+            skipWidthRows = ORDER_SKIP_WIDTH_ROWS
+        )
     }
 
     private fun buildAppendixSheet(
         orders: List<ReportData>,
         orderSheetNames: List<String>,
         orderRowById: List<Map<String, Int>>,
-        placementByKey: Map<Pair<Int, String>, BlockPlacement>
+        placementByKey: Map<Pair<Int, String>, BlockPlacement>,
+        imageDecoder: ((String) -> DecodedImage?)?
     ): XlsxSheet {
         val rows = mutableListOf<XlsxRow>()
         val links = mutableListOf<XlsxHyperlink>()
+        val images = mutableListOf<XlsxImage>()
 
         rows.add(
             XlsxRow(
@@ -256,6 +278,23 @@ object XlsxMultiReportBuilder {
                             )
                         )
                     )
+                    sample.photos.forEach { photo ->
+                        val imageRowIdx = rows.size
+                        val decoded = imageDecoder?.invoke(photo.dataUri)
+                        if (decoded != null) {
+                            images.add(
+                                XlsxImage(
+                                    bytes = decoded.bytes,
+                                    extension = decoded.extension,
+                                    colIdx = APP_IMAGE_COL,
+                                    rowIdx = imageRowIdx,
+                                    widthPx = IMAGE_WIDTH_PX,
+                                    heightPx = IMAGE_HEIGHT_PX
+                                )
+                            )
+                        }
+                        rows.add(XlsxRow(listOf(XlsxCell.Empty)))
+                    }
                 }
 
                 val backLinkRowNum = rows.size + 1
@@ -281,7 +320,13 @@ object XlsxMultiReportBuilder {
             }
         }
 
-        return XlsxSheet(name = APPENDIX_SHEET_NAME, rows = rows, hyperlinks = links)
+        return XlsxSheet(
+            name = APPENDIX_SHEET_NAME,
+            rows = rows,
+            hyperlinks = links,
+            images = images,
+            skipWidthRows = 0
+        )
     }
 
     private fun uniqueSheetNames(orders: List<ReportData>): List<String> {
@@ -322,7 +367,10 @@ object XlsxMultiReportBuilder {
         size += 1
         size += 1
         if (sample.note != null) size += 1
-        if (sample.photos.isNotEmpty()) size += 1
+        if (sample.photos.isNotEmpty()) {
+            size += 1
+            size += sample.photos.size
+        }
         size += 1
         size += 1
         return size
