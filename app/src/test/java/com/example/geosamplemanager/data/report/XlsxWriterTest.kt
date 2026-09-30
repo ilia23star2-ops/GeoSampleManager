@@ -10,11 +10,9 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-xlsx-theme (одиннадцатый заход):
- *  - xl/theme/theme1.xml;
- *  - связь на theme в workbook.xml.rels;
- *  - Override в [Content_Types].xml;
- *  - theme=N в fills.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход):
+ *  - тема убрана: нет theme1.xml, нет theme rel, нет theme в fills.
+ *  - fills: rgb + indexed.
  */
 class XlsxWriterTest {
 
@@ -53,90 +51,6 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun themeEntryPresent() {
-        val bytes = write(
-            listOf(
-                XlsxSheet(
-                    name = "Test",
-                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
-                )
-            )
-        )
-        val entries = readEntries(bytes)
-        assertTrue(entries.containsKey("xl/theme/theme1.xml"))
-    }
-
-    @Test
-    fun themeContainsOurColors() {
-        val bytes = write(
-            listOf(
-                XlsxSheet(
-                    name = "Test",
-                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
-                )
-            )
-        )
-        val theme = readEntries(bytes)["xl/theme/theme1.xml"] ?: ""
-        assertTrue(theme.contains("<a:accent1><a:srgbClr val=\"A5D6A7\"/>"))
-        assertTrue(theme.contains("<a:accent2><a:srgbClr val=\"EF9A9A\"/>"))
-        assertTrue(theme.contains("<a:accent3><a:srgbClr val=\"90CAF9\"/>"))
-        assertTrue(theme.contains("<a:accent4><a:srgbClr val=\"FFF59D\"/>"))
-        assertTrue(theme.contains("<a:accent5><a:srgbClr val=\"CE93D8\"/>"))
-        assertTrue(theme.contains("<a:accent6><a:srgbClr val=\"BBDEFB\"/>"))
-    }
-
-    @Test
-    fun workbookRelsHaveThemeLink() {
-        val bytes = write(
-            listOf(
-                XlsxSheet(
-                    name = "Test",
-                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
-                )
-            )
-        )
-        val rels = readEntries(bytes)["xl/_rels/workbook.xml.rels"] ?: ""
-        assertTrue(rels.contains("relationships/theme"))
-        assertTrue(rels.contains("theme/theme1.xml"))
-    }
-
-    @Test
-    fun contentTypesHaveThemeOverride() {
-        val bytes = write(
-            listOf(
-                XlsxSheet(
-                    name = "Test",
-                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
-                )
-            )
-        )
-        val ct = readEntries(bytes)["[Content_Types].xml"] ?: ""
-        assertTrue(ct.contains("/xl/theme/theme1.xml"))
-        assertTrue(ct.contains("officedocument.theme+xml"))
-    }
-
-    @Test
-    fun fillsHaveThemeAttribute() {
-        val bytes = write(
-            listOf(
-                XlsxSheet(
-                    name = "Test",
-                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
-                )
-            )
-        )
-        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        // FOUND: theme=4.
-        assertTrue(styles.contains("theme=\"4\" rgb=\"FFA5D6A7\""))
-        // ERROR: theme=5.
-        assertTrue(styles.contains("theme=\"5\" rgb=\"FFEF9A9A\""))
-        // BLANK: theme=7.
-        assertTrue(styles.contains("theme=\"7\" rgb=\"FFFFF59D\""))
-        // CONTROL: theme=8.
-        assertTrue(styles.contains("theme=\"8\" rgb=\"FFCE93D8\""))
-    }
-
-    @Test
     fun requiredEntriesPresent() {
         val bytes = write(
             listOf(
@@ -153,6 +67,67 @@ class XlsxWriterTest {
         assertTrue(entries.containsKey("xl/_rels/workbook.xml.rels"))
         assertTrue(entries.containsKey("xl/worksheets/sheet1.xml"))
         assertTrue(entries.containsKey("xl/styles.xml"))
+    }
+
+    @Test
+    fun noThemeEntry() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val entries = readEntries(bytes)
+        assertFalse(entries.containsKey("xl/theme/theme1.xml"))
+    }
+
+    @Test
+    fun workbookRelsHaveStylesNoTheme() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val rels = readEntries(bytes)["xl/_rels/workbook.xml.rels"] ?: ""
+        assertTrue(rels.contains("relationships/styles"))
+        assertTrue(rels.contains("Target=\"styles.xml\""))
+        assertFalse(rels.contains("relationships/theme"))
+    }
+
+    @Test
+    fun workbookHasFileVersionAndCalcPr() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val workbook = readEntries(bytes)["xl/workbook.xml"] ?: ""
+        assertTrue(workbook.contains("<fileVersion"))
+        assertTrue(workbook.contains("<workbookPr"))
+        assertTrue(workbook.contains("<calcPr"))
+    }
+
+    @Test
+    fun contentTypesNoThemeOverride() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(
+                    name = "Test",
+                    rows = listOf(XlsxRow(listOf(XlsxCell.Text("x"))))
+                )
+            )
+        )
+        val ct = readEntries(bytes)["[Content_Types].xml"] ?: ""
+        assertFalse(ct.contains("theme1.xml"))
+        assertFalse(ct.contains("officedocument.theme+xml"))
     }
 
     @Test
@@ -318,20 +293,30 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun fillHasRgbAndIndexedAndTheme() {
+    fun fillHasRgbAndIndexed() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        // FOUND: rgb + indexed + theme.
-        assertTrue(styles.contains(
-            "theme=\"4\" rgb=\"FFA5D6A7\" indexed=\"42\""
-        ))
-        assertTrue(styles.contains(
-            "theme=\"5\" rgb=\"FFEF9A9A\" indexed=\"29\""
-        ))
+        assertTrue(styles.contains("rgb=\"FFA5D6A7\" indexed=\"42\""))
+        assertTrue(styles.contains("rgb=\"FFEF9A9A\" indexed=\"29\""))
+        assertTrue(styles.contains("rgb=\"FFFFF59D\" indexed=\"43\""))
+        assertTrue(styles.contains("rgb=\"FFCE93D8\" indexed=\"46\""))
+        assertTrue(styles.contains("rgb=\"FF90CAF9\" indexed=\"44\""))
+        assertTrue(styles.contains("rgb=\"FFBBDEFB\" indexed=\"44\""))
+    }
+
+    @Test
+    fun fillHasNoThemeAttribute() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
+        assertFalse(styles.contains("theme=\""))
     }
 
     @Test
@@ -502,18 +487,6 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun themeForReturnsExpectedValues() {
-        assertEquals(4, XlsxStyles.themeFor("A5D6A7"))
-        assertEquals(5, XlsxStyles.themeFor("EF9A9A"))
-        assertEquals(6, XlsxStyles.themeFor("90CAF9"))
-        assertEquals(7, XlsxStyles.themeFor("FFF59D"))
-        assertEquals(8, XlsxStyles.themeFor("CE93D8"))
-        assertEquals(9, XlsxStyles.themeFor("BBDEFB"))
-        assertEquals(2, XlsxStyles.themeFor("F0F0F0"))
-        assertEquals(3, XlsxStyles.themeFor("E3F2FD"))
-    }
-
-    @Test
     fun indexedForReturnsExpectedValues() {
         assertEquals(22, XlsxStyles.indexedFor("F0F0F0"))
         assertEquals(42, XlsxStyles.indexedFor("A5D6A7"))
@@ -523,6 +496,13 @@ class XlsxWriterTest {
         assertEquals(46, XlsxStyles.indexedFor("CE93D8"))
         assertEquals(44, XlsxStyles.indexedFor("BBDEFB"))
         assertEquals(41, XlsxStyles.indexedFor("E3F2FD"))
+    }
+
+    @Test
+    fun indexedForReturnsNullForUnknown() {
+        assertEquals(null, XlsxStyles.indexedFor("000000"))
+        assertEquals(null, XlsxStyles.indexedFor("FFFFFF"))
+        assertEquals(null, XlsxStyles.indexedFor(null))
     }
 
     @Test
