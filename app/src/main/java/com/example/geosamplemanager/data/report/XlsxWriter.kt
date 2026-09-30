@@ -6,11 +6,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-valid (30.09.2026, седьмой заход):
- *  - styles.xml: добавлены обязательные секции numFmts, dxfs, tableStyles;
- *  - fill: добавлен <bgColor indexed="64"/> (без него Excel не рисует solid);
- *  - пустой XlsxCell.Text не пишется как inlineStr с пустым <t/>;
- *  - пустая XlsxRow пишется как <row r="N"/>.
+ * FIX 5.9-xlsx-valid (30.09.2026, восьмой заход):
+ *  - КРИТИЧНО: порядок элементов внутри <font> по ECMA-376:
+ *      b, i, strike, condense, extend, outline, shadow,
+ *      u, vertAlign, sz, color, name, family, charset, scheme.
+ *    Раньше было <color/><sz/><u/><name/> — невалидно, Excel
+ *    выбрасывал всю таблицу стилей, цвета терялись.
+ *    Стало для LINK: <u/><sz/><color/><name/>.
+ *  - Пустая строка (все ячейки Empty) — self-closing <row/>.
  */
 
 sealed class XlsxCell {
@@ -251,11 +254,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * xl/styles.xml — каноничная структура:
-     * numFmts, fonts, fills, borders, cellStyleXfs, cellXfs, cellStyles,
-     * dxfs, tableStyles.
-     */
     private fun buildStyles(): String {
         val styles = XlsxStyles.all
         val fillMap = XlsxStyles.fillMap
@@ -266,10 +264,16 @@ object XlsxWriter {
 
         sb.append("<numFmts count=\"0\"/>")
 
+        // FIX: порядок по ECMA-376 CT_Font:
+        //   b, i, strike, condense, extend, outline, shadow,
+        //   u, vertAlign, sz, color, name, family, charset, scheme.
         sb.append("<fonts count=\"3\">")
+        // 0 — обычный: sz, name
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
+        // 1 — жирный: b, sz, name
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
-        sb.append("<font><color rgb=\"FF1976D2\"/><sz val=\"11\"/><u/>")
+        // 2 — ссылка: u, sz, color, name (именно в таком порядке!)
+        sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/>")
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
@@ -354,8 +358,9 @@ object XlsxWriter {
             val rowNum = rowIdx + 1
             val ht = rowHeightByIndex[rowIdx]
 
-            // Пустая строка → self-closing <row/>.
-            if (row.cells.isEmpty()) {
+            // Пустая строка (нет значащих ячеек) — self-closing.
+            val hasContent = row.cells.any { it !is XlsxCell.Empty }
+            if (!hasContent) {
                 sb.append("<row r=\"").append(rowNum).append("\"")
                 if (ht != null && ht > 0) {
                     sb.append(" ht=\"").append(ht).append("\" customHeight=\"1\"")
@@ -377,7 +382,6 @@ object XlsxWriter {
                     " s=\"$effectiveStyle\"" else ""
                 when (cell) {
                     is XlsxCell.Text -> {
-                        // Пустой текст — рендерим как Blank, без <is><t/>.
                         if (cell.value.isEmpty()) {
                             sb.append("<c r=\"").append(ref).append("\"")
                                 .append(styleAttr).append("/>")
