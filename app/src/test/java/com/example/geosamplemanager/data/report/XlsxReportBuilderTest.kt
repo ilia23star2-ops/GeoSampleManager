@@ -15,7 +15,10 @@ import org.junit.Test
  *
  * FIX 5.9-xlsx-formatting:
  *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
- *  - индексы сдвинуты на +1 для sample/well/... по сравнению с /4.
+ *  - skipWidthRows = 6.
+ *
+ * FIX 5.9-xlsx-photos:
+ *  - build() принимает imageDecoder; картинки попадают в лист «Приложения».
  */
 class XlsxReportBuilderTest {
 
@@ -78,7 +81,6 @@ class XlsxReportBuilderTest {
     private fun cellNumber(cell: XlsxCell): Double? =
         (cell as? XlsxCell.Number)?.value
 
-    /** Прочитать содержимое zip-элемента как строку UTF-8. null — если нет. */
     private fun readZipEntry(bytes: ByteArray, path: String): String? {
         java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
             var e = zip.nextEntry
@@ -92,8 +94,12 @@ class XlsxReportBuilderTest {
         return null
     }
 
+    private val fakeDecoder: (String) -> DecodedImage = { _ ->
+        DecodedImage(bytes = byteArrayOf(1, 2, 3, 4), extension = "jpg")
+    }
+
     // ================================================================
-    // Лист 1 — наряд
+    // Лист «Наряд»
     // ================================================================
 
     @Test
@@ -160,7 +166,6 @@ class XlsxReportBuilderTest {
             weight = 2.7,
             characteristic = "Элювий",
             type = SampleType.CHANNEL,
-            status = SampleStatus.NORMAL,
             found = true
         )
         val data = makeReport(
@@ -359,7 +364,6 @@ class XlsxReportBuilderTest {
         val h = appSheet.hyperlinks[0]
         assertTrue(h.ref.startsWith("A"))
         assertTrue(h.location.contains("Наряд"))
-        // Столбец sample теперь C (индекс 2), строка 7.
         assertTrue(h.location.contains("C7"))
     }
 
@@ -375,7 +379,7 @@ class XlsxReportBuilderTest {
     }
 
     // ================================================================
-    // Лист 2 — приложения
+    // Лист «Приложения»
     // ================================================================
 
     @Test
@@ -430,7 +434,8 @@ class XlsxReportBuilderTest {
         assertEquals("Дубль", cellText(appRows[5].cells[1]))
         assertEquals("Фото:", cellText(appRows[6].cells[0]))
         assertEquals("1 шт.", cellText(appRows[6].cells[1]))
-        assertEquals("↩ К пробе NV136601", cellText(appRows[7].cells[0]))
+        // Строка 7 — пустая под картинку, строка 8 — обратная ссылка.
+        assertEquals("↩ К пробе NV136601", cellText(appRows[8].cells[0]))
     }
 
     @Test
@@ -532,5 +537,73 @@ class XlsxReportBuilderTest {
         assertNotNull(sheetXml)
         assertTrue(sheetXml!!.contains("<cols>"))
         assertTrue(sheetXml.contains("customWidth=\"1\""))
+    }
+
+    @Test
+    fun stylesXmlHasApplyFillForColoredStyles() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
+        val stylesXml = readZipEntry(bytes, "xl/styles.xml")
+        assertNotNull(stylesXml)
+        // applyFill должен быть хотя бы для FOUND.
+        assertTrue(stylesXml!!.contains("applyFill=\"1\""))
+        assertTrue(stylesXml.contains("applyBorder=\"1\""))
+    }
+
+    // ================================================================
+    // FIX 5.9-xlsx-photos
+    // ================================================================
+
+    @Test
+    fun imageGoesToAppendixSheetWhenDecoderProvided() {
+        val row = makeRow(id = "1", sample = "NV136601", hasPhoto = true)
+        val photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
+        val data = makeReport(
+            samples = listOf(ReportSample(row, note = null, photos = photos))
+        )
+        val sheets = XlsxReportBuilder.build(data, fakeDecoder)
+        assertEquals(2, sheets.size)
+        assertEquals(1, sheets[1].images.size)
+        val img = sheets[1].images[0]
+        assertEquals("jpg", img.extension)
+        assertEquals(1, img.colIdx)
+    }
+
+    @Test
+    fun noImagesWhenDecoderReturnsNull() {
+        val row = makeRow(id = "1", sample = "NV136601", hasPhoto = true)
+        val photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
+        val data = makeReport(
+            samples = listOf(ReportSample(row, note = null, photos = photos))
+        )
+        val sheets = XlsxReportBuilder.build(data) { _ -> null }
+        assertEquals(2, sheets.size)
+        assertTrue(sheets[1].images.isEmpty())
+    }
+
+    @Test
+    fun mediaAndDrawingEntriesAppearInZip() {
+        val row = makeRow(id = "1", sample = "NV136601", hasPhoto = true)
+        val photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
+        val data = makeReport(
+            samples = listOf(ReportSample(row, note = null, photos = photos))
+        )
+        val sheets = XlsxReportBuilder.build(data, fakeDecoder)
+        val bytes = XlsxWriter.toBytes(sheets)
+
+        val names = mutableListOf<String>()
+        java.util.zip.ZipInputStream(java.io.ByteArrayInputStream(bytes)).use { zip ->
+            var e = zip.nextEntry
+            while (e != null) {
+                names.add(e.name)
+                e = zip.nextEntry
+            }
+        }
+        assertTrue(names.contains("xl/media/image1.jpg"))
+        assertTrue(names.contains("xl/drawings/drawing1.xml"))
+        assertTrue(names.contains("xl/drawings/_rels/drawing1.xml.rels"))
+        assertTrue(names.contains("xl/worksheets/_rels/sheet2.xml.rels"))
     }
 }
