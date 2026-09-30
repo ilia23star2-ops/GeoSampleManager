@@ -3,18 +3,12 @@ package com.example.geosamplemanager.data.report
 import com.example.geosamplemanager.ui.screens.SampleRow
 
 /**
- * FIX 5.9-xlsx-theme (30.09.2026, одиннадцатый заход):
- *  - themeIndexFor: hex-цвет → индекс слота в теме документа.
- *    Нужен для Office Online: он иногда уважает theme, но режет rgb.
- *  - В XlsxWriter пишем одновременно rgb + indexed + theme.
- *    Excel возьмёт theme, старый вьюер — indexed, продвинутый — rgb.
- *
- * Соответствие слотов темы:
- *   0 = lt1 (background1)
- *   1 = dk1 (text1)
- *   2 = lt2 (background2)
- *   3 = dk2 (text2)
- *   4 = accent1 ... 9 = accent6
+ * FIX 5.9-xlsx-clean (30.09.2026, четырнадцатый заход):
+ *  - убран themeIndexMap и themeFor. Причина: Excel Online, увидев
+ *    theme="N", брал цвет из своей встроенной темы, а не из нашей
+ *    theme1.xml — цвета «перепутывались».
+ *  - Оставляем rgb (Excel, LibreOffice, Bree, мобильные) + indexed
+ *    (примитивные вьюеры). Оба работают корректно.
  */
 
 data class StyleDef(
@@ -66,24 +60,6 @@ object XlsxStyles {
         map
     }
 
-    /**
-     * Индекс слота в теме документа. Соответствует цветам,
-     * которые XlsxWriter пишет в theme1.xml.
-     *
-     * Тема заменена на наши цвета — accent1 = A5D6A7, и т.д.
-     * Если Office Online уважает theme, он увидит правильную заливку.
-     */
-    private val themeIndexMap: Map<String, Int> = mapOf(
-        "F0F0F0" to 2,   // lt2
-        "E3F2FD" to 3,   // dk2 (переиспользуем как light-blue)
-        "A5D6A7" to 4,   // accent1
-        "EF9A9A" to 5,   // accent2
-        "90CAF9" to 6,   // accent3
-        "FFF59D" to 7,   // accent4
-        "CE93D8" to 8,   // accent5
-        "BBDEFB" to 9    // accent6
-    )
-
     private val indexedColorMap: Map<String, Int> = mapOf(
         "F0F0F0" to 22,
         "A5D6A7" to 42,
@@ -115,7 +91,4 @@ object XlsxStyles {
 
     internal fun indexedFor(hex: String?): Int? =
         hex?.let { indexedColorMap[it] }
-
-    internal fun themeFor(hex: String?): Int? =
-        hex?.let { themeIndexMap[it] }
 }
