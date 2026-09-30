@@ -11,10 +11,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-xlsx-header:
- *  - шапка объединена A1:I1..A4:I4;
- *  - строки шапки имеют стили TITLE / META;
- *  - skipWidthRows = 5.
+ * FIX 5.9-xlsx-header (четвёртый заход):
+ *  - шапка — 9 ячеек в каждой строке (первая с текстом, остальные Blank);
+ *  - skipWidthRows = 6.
  */
 class XlsxReportBuilderTest {
 
@@ -125,6 +124,28 @@ class XlsxReportBuilderTest {
     }
 
     @Test
+    fun headerRowHasNineCellsWithBlankFill() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row = makeRow(), note = null, photos = emptyList())
+            )
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        // Шапка — 4 строки, каждая по 9 ячеек.
+        repeat(4) { i ->
+            assertEquals(9, rows[i].cells.size)
+            // Первая — с текстом, остальные — Blank.
+            assertTrue(rows[i].cells[0] is XlsxCell.Text)
+            for (j in 1 until 9) {
+                assertTrue(
+                    "Ячейка [$i][$j] должна быть Blank",
+                    rows[i].cells[j] is XlsxCell.Blank
+                )
+            }
+        }
+    }
+
+    @Test
     fun titleUsesTitleStyle() {
         val data = makeReport(
             samples = listOf(
@@ -150,7 +171,7 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun metaRowsContainSingleCombinedText() {
+    fun metaRowsContainCombinedText() {
         val data = makeReport(
             area = "Актайский",
             order = "13",
@@ -267,10 +288,6 @@ class XlsxReportBuilderTest {
         val rows = XlsxReportBuilder.build(data)[0].rows
         assertEquals("—", cellText(rows[6].cells[4]))
     }
-
-    // ================================================================
-    // Стили строк
-    // ================================================================
 
     @Test
     fun tableHeaderStyleIsHeader() {
@@ -522,6 +539,21 @@ class XlsxReportBuilderTest {
         assertTrue(sheetXml!!.contains("<mergeCells count=\"4\">"))
         assertTrue(sheetXml.contains("ref=\"A1:I1\""))
         assertTrue(sheetXml.contains("ref=\"A4:I4\""))
+    }
+
+    @Test
+    fun sheetXmlHasBlankCellsInHeader() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
+        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
+        assertNotNull(sheetXml)
+        // B1 — Blank со стилем TITLE (9), без inlineStr.
+        assertTrue(sheetXml!!.contains("r=\"B1\" s=\"9\""))
+        assertTrue(sheetXml.contains("r=\"I1\" s=\"9\""))
+        // A2 — Blank со стилем META (10).
+        assertTrue(sheetXml.contains("r=\"A2\" s=\"10\""))
     }
 
     // ================================================================
