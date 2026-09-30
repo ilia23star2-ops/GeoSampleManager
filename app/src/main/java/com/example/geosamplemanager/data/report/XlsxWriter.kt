@@ -6,9 +6,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-legend (десятый заход):
- *  - fills: пишем одновременно rgb и indexed. Excel возьмёт rgb,
- *    старый вьюер — indexed.
+ * FIX 5.9-xlsx-theme (одиннадцатый заход):
+ *  - Добавлен xl/theme/theme1.xml с нашей палитрой (accent1..accent6).
+ *  - В workbook.xml.rels — связь на theme.
+ *  - В [Content_Types].xml — Override для theme.
+ *  - В fills пишем три атрибута: rgb + indexed + theme.
+ *    Excel Online может уважать theme там, где игнорирует rgb.
  */
 
 sealed class XlsxCell {
@@ -142,6 +145,7 @@ object XlsxWriter {
         writeEntry(zip, "_rels/.rels", buildRootRels())
         writeEntry(zip, "xl/workbook.xml", buildWorkbook(sanitized))
         writeEntry(zip, "xl/_rels/workbook.xml.rels", buildWorkbookRels(sanitized))
+        writeEntry(zip, "xl/theme/theme1.xml", buildTheme())
         writeEntry(zip, "xl/styles.xml", buildStyles())
 
         sanitized.forEachIndexed { sheetIdx, sheet ->
@@ -207,6 +211,9 @@ object XlsxWriter {
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>")
         sb.append("<Override PartName=\"/xl/styles.xml\" ")
         sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>")
+        // Theme override.
+        sb.append("<Override PartName=\"/xl/theme/theme1.xml\" ")
+        sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/>")
         sheets.forEachIndexed { idx, _ ->
             sb.append("<Override PartName=\"/xl/worksheets/sheet${idx + 1}.xml\" ")
             sb.append("ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>")
@@ -255,8 +262,68 @@ object XlsxWriter {
             sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" ")
             sb.append("Target=\"worksheets/sheet").append(idx + 1).append(".xml\"/>")
         }
+        // rId для theme — следующий после листов.
+        val themeRid = sheets.size + 1
+        sb.append("<Relationship Id=\"rId").append(themeRid).append("\" ")
+        sb.append("Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" ")
+        sb.append("Target=\"theme/theme1.xml\"/>")
         sb.append("</Relationships>")
         return sb.toString()
+    }
+
+    /**
+     * xl/theme/theme1.xml — наша палитра.
+     * accent1..accent6 — цвета для FOUND, ERROR, POSTPONED, BLANK,
+     * CONTROL, TITLE. lt2 и dk2 переиспользованы под HEADER и META.
+     */
+    private fun buildTheme(): String {
+        return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""" +
+            """<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="GeoSampleTheme">""" +
+            """<a:themeElements>""" +
+            """<a:clrScheme name="GeoSampleColors">""" +
+            """<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>""" +
+            """<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>""" +
+            """<a:dk2><a:srgbClr val="E3F2FD"/></a:dk2>""" +
+            """<a:lt2><a:srgbClr val="F0F0F0"/></a:lt2>""" +
+            """<a:accent1><a:srgbClr val="A5D6A7"/></a:accent1>""" +
+            """<a:accent2><a:srgbClr val="EF9A9A"/></a:accent2>""" +
+            """<a:accent3><a:srgbClr val="90CAF9"/></a:accent3>""" +
+            """<a:accent4><a:srgbClr val="FFF59D"/></a:accent4>""" +
+            """<a:accent5><a:srgbClr val="CE93D8"/></a:accent5>""" +
+            """<a:accent6><a:srgbClr val="BBDEFB"/></a:accent6>""" +
+            """<a:hlink><a:srgbClr val="1976D2"/></a:hlink>""" +
+            """<a:folHlink><a:srgbClr val="954F72"/></a:folHlink>""" +
+            """</a:clrScheme>""" +
+            """<a:fontScheme name="Office">""" +
+            """<a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>""" +
+            """<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>""" +
+            """</a:fontScheme>""" +
+            """<a:fmtScheme name="Office">""" +
+            """<a:fillStyleLst>""" +
+            """<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>""" +
+            """<a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill>""" +
+            """<a:solidFill><a:schemeClr val="phClr"><a:shade val="80000"/></a:schemeClr></a:solidFill>""" +
+            """</a:fillStyleLst>""" +
+            """<a:lnStyleLst>""" +
+            """<a:ln w="6350" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
+            """<a:ln w="12700" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
+            """<a:ln w="19050" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/><a:miter lim="800000"/></a:ln>""" +
+            """</a:lnStyleLst>""" +
+            """<a:effectStyleLst>""" +
+            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
+            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
+            """<a:effectStyle><a:effectLst/></a:effectStyle>""" +
+            """</a:effectStyleLst>""" +
+            """<a:bgFillStyleLst>""" +
+            """<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>""" +
+            """<a:solidFill><a:schemeClr val="phClr"><a:tint val="95000"/><a:satMod val="170000"/></a:schemeClr></a:solidFill>""" +
+            """<a:solidFill><a:schemeClr val="phClr"><a:shade val="80000"/></a:schemeClr></a:solidFill>""" +
+            """</a:bgFillStyleLst>""" +
+            """</a:fmtScheme>""" +
+            """</a:themeElements>""" +
+            """<a:objectDefaults/>""" +
+            """<a:extraClrSchemeLst/>""" +
+            """</a:theme>"""
     }
 
     private fun buildStyles(): String {
@@ -276,19 +343,23 @@ object XlsxWriter {
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // FIX: пишем и rgb, и indexed одновременно.
-        // Excel возьмёт rgb (наш точный цвет), примитивный вьюер —
-        // indexed (ближайший стандартный).
+        // FIX: пишем rgb + indexed + theme одновременно.
+        // Excel Online иногда предпочитает theme.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
         fillMap.entries.sortedBy { it.value }.forEach { (color, _) ->
             val indexed = XlsxStyles.indexedFor(color)
+            val theme = XlsxStyles.themeFor(color)
             sb.append("<fill><patternFill patternType=\"solid\">")
-            sb.append("<fgColor rgb=\"FF").append(color).append("\"")
+            sb.append("<fgColor")
+            if (theme != null) sb.append(" theme=\"").append(theme).append("\"")
+            sb.append(" rgb=\"FF").append(color).append("\"")
             if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
             sb.append("/>")
-            sb.append("<bgColor rgb=\"FF").append(color).append("\"")
+            sb.append("<bgColor")
+            if (theme != null) sb.append(" theme=\"").append(theme).append("\"")
+            sb.append(" rgb=\"FF").append(color).append("\"")
             if (indexed != null) sb.append(" indexed=\"").append(indexed).append("\"")
             sb.append("/>")
             sb.append("</patternFill></fill>")
