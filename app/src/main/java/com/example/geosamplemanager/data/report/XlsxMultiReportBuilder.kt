@@ -8,42 +8,21 @@ import com.example.geosamplemanager.ui.screens.SampleStatus
  * Мультинарядный отчёт. N нарядов → N листов + один общий лист
  * «Приложения» в конце.
  *
- * Отличия от XlsxReportBuilder:
- *  - один файл — много листов;
- *  - лист «Приложения» один общий, блоки идут в порядке нарядов,
- *    нумерация сквозная (Приложение 1, 2, 3, ...);
- *  - имена листов — «<Участок> — Наряд <номер>» с защитой от дублей
- *    (суффикс « (2)», « (3)», ...);
- *  - обратные ссылки из блока приложений ведут в лист своего наряда.
- *
- * Порядок нарядов и их состав определяет вызывающая сторона (UI).
- * Билдер — чистая функция: List<ReportData> → List<XlsxSheet>.
+ * FIX 5.9-xlsx-formatting (30.09.2026):
+ *  - Порядок колонок: «Найдена» теперь первая, левее «п/п».
+ *  - Индексы колонок сдвинуты: sample=2, appendix=8.
  */
 
 object XlsxMultiReportBuilder {
 
-    /** Имя общего листа приложений. */
     private const val APPENDIX_SHEET_NAME = "Приложения"
-
-    /** Номер строки с заголовками колонок в листе «Наряд». */
     private const val ORDER_HEADER_ROW = 6
-
-    /** Первая строка данных в листе «Наряд». */
     private const val ORDER_FIRST_DATA_ROW = 7
-
-    /** Колонка «Прил.» — 9-я, индекс 8 (0-based). */
     private const val ORDER_COL_APPENDIX = 8
-
-    /** Колонка «№ пробы» — 2-я, индекс 1 (0-based). */
-    private const val ORDER_COL_SAMPLE = 1
-
-    /** Первая строка блока приложений (после заголовка и пустой строки). */
+    private const val ORDER_COL_SAMPLE = 2
     private const val APP_FIRST_BLOCK_ROW = 3
-
-    /** Максимальная длина имени листа в Excel. */
     private const val SHEET_NAME_MAX = 31
 
-    /** Размещение блока приложения на общем листе. */
     private data class BlockPlacement(
         val orderIdx: Int,
         val sampleId: String,
@@ -51,17 +30,6 @@ object XlsxMultiReportBuilder {
         val titleRow: Int
     )
 
-    // ================================================================
-    // Публичный API
-    // ================================================================
-
-    /**
-     * Собрать листы мультинарядного отчёта.
-     *
-     * @param orders список нарядов в нужном порядке.
-     * @return листы: сначала все наряды, затем один общий «Приложения»
-     *   (если есть хоть одно приложение). Пустой вход → пустой список.
-     */
     fun build(orders: List<ReportData>): List<XlsxSheet> {
         if (orders.isEmpty()) return emptyList()
 
@@ -91,16 +59,12 @@ object XlsxMultiReportBuilder {
         }
         val placementByKey = placements.associateBy { it.orderIdx to it.sampleId }
 
-        // Карта строк листа наряда: orderIdx → (sampleId → rowNum).
         val orderRowById: List<Map<String, Int>> = orders.map { data ->
             data.samples.mapIndexed { i, s ->
                 s.row.id to (ORDER_FIRST_DATA_ROW + i)
             }.toMap()
         }
 
-        // ============================================================
-        // Шаг 2. Листы нарядов.
-        // ============================================================
         val orderSheets = orders.mapIndexed { orderIdx, data ->
             buildOrderSheet(
                 sheetName = orderSheetNames[orderIdx],
@@ -110,9 +74,6 @@ object XlsxMultiReportBuilder {
             )
         }
 
-        // ============================================================
-        // Шаг 3. Общий лист приложений (если есть).
-        // ============================================================
         val appendixSheet = if (placements.isEmpty()) {
             null
         } else {
@@ -130,10 +91,6 @@ object XlsxMultiReportBuilder {
             orderSheets + appendixSheet
         }
     }
-
-    // ================================================================
-    // Лист наряда
-    // ================================================================
 
     private fun buildOrderSheet(
         sheetName: String,
@@ -170,6 +127,7 @@ object XlsxMultiReportBuilder {
         rows.add(
             XlsxRow(
                 listOf(
+                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("п/п"),
                     XlsxCell.Text("№ пробы"),
                     XlsxCell.Text("Скважина"),
@@ -177,7 +135,6 @@ object XlsxMultiReportBuilder {
                     XlsxCell.Text("Вес"),
                     XlsxCell.Text("Характеристика"),
                     XlsxCell.Text("Тип"),
-                    XlsxCell.Text("Найдена"),
                     XlsxCell.Text("Прил.")
                 ),
                 styleId = XlsxStyles.HEADER
@@ -202,6 +159,7 @@ object XlsxMultiReportBuilder {
             rows.add(
                 XlsxRow(
                     listOf(
+                        XlsxCell.Text(if (row.found) "✓" else ""),
                         XlsxCell.Number(row.serialNumber.toDouble()),
                         XlsxCell.Text(row.sampleNumber),
                         XlsxCell.Text(row.wellNumber),
@@ -209,7 +167,6 @@ object XlsxMultiReportBuilder {
                         XlsxCell.Text(weightText(row)),
                         XlsxCell.Text(row.characteristic),
                         XlsxCell.Text(displayType(row)),
-                        XlsxCell.Text(if (row.found) "✓" else ""),
                         appendixCell
                     ),
                     styleId = XlsxStyles.styleForRow(row)
@@ -228,10 +185,6 @@ object XlsxMultiReportBuilder {
 
         return XlsxSheet(name = sheetName, rows = rows, hyperlinks = links)
     }
-
-    // ================================================================
-    // Общий лист приложений
-    // ================================================================
 
     private fun buildAppendixSheet(
         orders: List<ReportData>,
@@ -331,15 +284,6 @@ object XlsxMultiReportBuilder {
         return XlsxSheet(name = APPENDIX_SHEET_NAME, rows = rows, hyperlinks = links)
     }
 
-    // ================================================================
-    // Имена листов
-    // ================================================================
-
-    /**
-     * Имена листов нарядов: «<Участок> — Наряд <номер>».
-     * Дубли (совпали участок+номер) — суффикс « (2)», « (3)», ...
-     * с сохранением лимита в 31 символ.
-     */
     private fun uniqueSheetNames(orders: List<ReportData>): List<String> {
         val used = mutableSetOf<String>()
         return orders.mapIndexed { idx, data ->
@@ -372,20 +316,15 @@ object XlsxMultiReportBuilder {
         }
     }
 
-    // ================================================================
-    // Вспомогательные
-    // ================================================================
-
-    /** Размер блока приложения (сколько строк он занимает). */
     private fun appendixBlockSize(sample: ReportSample): Int {
         var size = 0
-        size += 1                                  // «Приложение N»
-        size += 1                                  // «№ пробы:»
-        size += 1                                  // «Скважина:»
-        if (sample.note != null) size += 1         // «Заметка:»
-        if (sample.photos.isNotEmpty()) size += 1  // «Фото:»
-        size += 1                                  // «↩ К пробе»
-        size += 1                                  // пустая строка
+        size += 1
+        size += 1
+        size += 1
+        if (sample.note != null) size += 1
+        if (sample.photos.isNotEmpty()) size += 1
+        size += 1
+        size += 1
         return size
     }
 
