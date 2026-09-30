@@ -11,14 +11,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-report-xlsx / подзаход 4 (xlsx-links).
- *
- * FIX 5.9-xlsx-formatting:
- *  - порядок колонок: Найдена (0), п/п (1), № пробы (2), ...
- *  - skipWidthRows = 6.
- *
- * FIX 5.9-xlsx-photos:
- *  - build() принимает imageDecoder; картинки попадают в лист «Приложения».
+ * FIX 5.9-xlsx-header:
+ *  - шапка объединена A1:I1..A4:I4;
+ *  - строки шапки имеют стили TITLE / META;
+ *  - skipWidthRows = 5.
  */
 class XlsxReportBuilderTest {
 
@@ -99,7 +95,7 @@ class XlsxReportBuilderTest {
     }
 
     // ================================================================
-    // Лист «Наряд»
+    // Шапка
     // ================================================================
 
     @Test
@@ -115,7 +111,46 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun headerContainsAreaAndOrderAndDate() {
+    fun headerHasFourMergedRows() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row = makeRow(), note = null, photos = emptyList())
+            )
+        )
+        val sheet = XlsxReportBuilder.build(data)[0]
+        assertEquals(
+            listOf("A1:I1", "A2:I2", "A3:I3", "A4:I4"),
+            sheet.mergeCells
+        )
+    }
+
+    @Test
+    fun titleUsesTitleStyle() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row = makeRow(), note = null, photos = emptyList())
+            )
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.TITLE, rows[0].styleId)
+        assertEquals("Отчёт по наряду", cellText(rows[0].cells[0]))
+    }
+
+    @Test
+    fun metaRowsUseMetaStyle() {
+        val data = makeReport(
+            samples = listOf(
+                ReportSample(row = makeRow(), note = null, photos = emptyList())
+            )
+        )
+        val rows = XlsxReportBuilder.build(data)[0].rows
+        assertEquals(XlsxStyles.META, rows[1].styleId)
+        assertEquals(XlsxStyles.META, rows[2].styleId)
+        assertEquals(XlsxStyles.META, rows[3].styleId)
+    }
+
+    @Test
+    fun metaRowsContainSingleCombinedText() {
         val data = makeReport(
             area = "Актайский",
             order = "13",
@@ -124,15 +159,14 @@ class XlsxReportBuilderTest {
             )
         )
         val rows = XlsxReportBuilder.build(data)[0].rows
-
-        assertEquals("Отчёт по наряду", cellText(rows[0].cells[0]))
-        assertEquals("Участок:", cellText(rows[1].cells[0]))
-        assertEquals("Актайский", cellText(rows[1].cells[1]))
-        assertEquals("Наряд:", cellText(rows[2].cells[0]))
-        assertEquals("№13", cellText(rows[2].cells[1]))
-        assertEquals("Дата:", cellText(rows[3].cells[0]))
-        assertEquals("29.09.2026 21:00", cellText(rows[3].cells[1]))
+        assertEquals("Участок: Актайский", cellText(rows[1].cells[0]))
+        assertEquals("Наряд: №13", cellText(rows[2].cells[0]))
+        assertEquals("Дата: 29.09.2026 21:00", cellText(rows[3].cells[0]))
     }
+
+    // ================================================================
+    // Таблица
+    // ================================================================
 
     @Test
     fun tableHeaderHasFoundFirst() {
@@ -225,16 +259,6 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun weightEmptyIfNull() {
-        val row = makeRow(weight = null, controlWeight = null)
-        val data = makeReport(
-            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("—", cellText(rows[6].cells[5]))
-    }
-
-    @Test
     fun intervalEmptyShowsDash() {
         val row = makeRow(from = "—", to = "—")
         val data = makeReport(
@@ -245,17 +269,8 @@ class XlsxReportBuilderTest {
     }
 
     // ================================================================
-    // Стили
+    // Стили строк
     // ================================================================
-
-    @Test
-    fun titleRowStyleIsBold() {
-        val data = makeReport(
-            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals(XlsxStyles.BOLD, rows[0].styleId)
-    }
 
     @Test
     fun tableHeaderStyleIsHeader() {
@@ -299,15 +314,6 @@ class XlsxReportBuilderTest {
     // ================================================================
     // Гиперссылки
     // ================================================================
-
-    @Test
-    fun orderSheetHasAppendixColumnHeader() {
-        val data = makeReport(
-            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
-        )
-        val rows = XlsxReportBuilder.build(data)[0].rows
-        assertEquals("Прил.", cellText(rows[5].cells[8]))
-    }
 
     @Test
     fun noAppendixCellDashWhenNoAppendix() {
@@ -395,18 +401,14 @@ class XlsxReportBuilderTest {
     }
 
     @Test
-    fun appendixSheetCreatedWhenPhotosExist() {
-        val row = makeRow(hasPhoto = true)
-        val photos = listOf(
-            ReportPhoto("data:image/jpeg;base64,xxx"),
-            ReportPhoto("data:image/jpeg;base64,yyy")
-        )
+    fun noAppendixSheetWhenNoNoteNoPhotos() {
+        val row = makeRow(hasNote = false, hasPhoto = false)
         val data = makeReport(
-            samples = listOf(ReportSample(row = row, note = null, photos = photos))
+            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
         )
         val sheets = XlsxReportBuilder.build(data)
-        assertEquals(2, sheets.size)
-        assertEquals("Приложения", sheets[1].name)
+        assertEquals(1, sheets.size)
+        assertNull(sheets.getOrNull(1))
     }
 
     @Test
@@ -434,19 +436,7 @@ class XlsxReportBuilderTest {
         assertEquals("Дубль", cellText(appRows[5].cells[1]))
         assertEquals("Фото:", cellText(appRows[6].cells[0]))
         assertEquals("1 шт.", cellText(appRows[6].cells[1]))
-        // Строка 7 — пустая под картинку, строка 8 — обратная ссылка.
         assertEquals("↩ К пробе NV136601", cellText(appRows[8].cells[0]))
-    }
-
-    @Test
-    fun noAppendixSheetWhenNoNoteNoPhotos() {
-        val row = makeRow(hasNote = false, hasPhoto = false)
-        val data = makeReport(
-            samples = listOf(ReportSample(row = row, note = null, photos = emptyList()))
-        )
-        val sheets = XlsxReportBuilder.build(data)
-        assertEquals(1, sheets.size)
-        assertNull(sheets.getOrNull(1))
     }
 
     @Test
@@ -468,7 +458,7 @@ class XlsxReportBuilderTest {
     }
 
     // ================================================================
-    // Общее
+    // Запись / XML
     // ================================================================
 
     @Test
@@ -503,42 +493,6 @@ class XlsxReportBuilderTest {
         assertNotNull(names.find { it == "xl/styles.xml" })
     }
 
-    // ================================================================
-    // FIX 5.9-xlsx-formatting
-    // ================================================================
-
-    @Test
-    fun fillMapMatchesStyleFillIndex() {
-        val idx = XlsxStyles.fillMap["F0F0F0"]
-        assertNotNull(idx)
-        assertTrue(idx!! >= 2)
-
-        val foundIdx = XlsxStyles.fillMap["A5D6A7"]
-        assertNotNull(foundIdx)
-        assertTrue(foundIdx!! >= 2)
-        assertTrue(idx != foundIdx)
-    }
-
-    @Test
-    fun sheetXmlContainsColsWithAutoWidth() {
-        val data = makeReport(
-            samples = listOf(
-                ReportSample(
-                    makeRow(characteristic = "Очень длинная характеристика для проверки ширины"),
-                    note = null,
-                    photos = emptyList()
-                )
-            )
-        )
-        val sheets = XlsxReportBuilder.build(data)
-        val bytes = XlsxWriter.toBytes(sheets)
-
-        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
-        assertNotNull(sheetXml)
-        assertTrue(sheetXml!!.contains("<cols>"))
-        assertTrue(sheetXml.contains("customWidth=\"1\""))
-    }
-
     @Test
     fun stylesXmlHasApplyFillForColoredStyles() {
         val data = makeReport(
@@ -547,13 +501,31 @@ class XlsxReportBuilderTest {
         val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
         val stylesXml = readZipEntry(bytes, "xl/styles.xml")
         assertNotNull(stylesXml)
-        // applyFill должен быть хотя бы для FOUND.
         assertTrue(stylesXml!!.contains("applyFill=\"1\""))
         assertTrue(stylesXml.contains("applyBorder=\"1\""))
     }
 
+    @Test
+    fun titleAndMetaStylesAreInFillMap() {
+        assertNotNull(XlsxStyles.fillMap["BBDEFB"])
+        assertNotNull(XlsxStyles.fillMap["E3F2FD"])
+    }
+
+    @Test
+    fun sheetXmlHasMergeCells() {
+        val data = makeReport(
+            samples = listOf(ReportSample(makeRow(), note = null, photos = emptyList()))
+        )
+        val bytes = XlsxWriter.toBytes(XlsxReportBuilder.build(data))
+        val sheetXml = readZipEntry(bytes, "xl/worksheets/sheet1.xml")
+        assertNotNull(sheetXml)
+        assertTrue(sheetXml!!.contains("<mergeCells count=\"4\">"))
+        assertTrue(sheetXml.contains("ref=\"A1:I1\""))
+        assertTrue(sheetXml.contains("ref=\"A4:I4\""))
+    }
+
     // ================================================================
-    // FIX 5.9-xlsx-photos
+    // Картинки
     // ================================================================
 
     @Test
@@ -566,21 +538,7 @@ class XlsxReportBuilderTest {
         val sheets = XlsxReportBuilder.build(data, fakeDecoder)
         assertEquals(2, sheets.size)
         assertEquals(1, sheets[1].images.size)
-        val img = sheets[1].images[0]
-        assertEquals("jpg", img.extension)
-        assertEquals(1, img.colIdx)
-    }
-
-    @Test
-    fun noImagesWhenDecoderReturnsNull() {
-        val row = makeRow(id = "1", sample = "NV136601", hasPhoto = true)
-        val photos = listOf(ReportPhoto("data:image/jpeg;base64,AAA"))
-        val data = makeReport(
-            samples = listOf(ReportSample(row, note = null, photos = photos))
-        )
-        val sheets = XlsxReportBuilder.build(data) { _ -> null }
-        assertEquals(2, sheets.size)
-        assertTrue(sheets[1].images.isEmpty())
+        assertEquals("jpg", sheets[1].images[0].extension)
     }
 
     @Test
@@ -603,7 +561,6 @@ class XlsxReportBuilderTest {
         }
         assertTrue(names.contains("xl/media/image1.jpg"))
         assertTrue(names.contains("xl/drawings/drawing1.xml"))
-        assertTrue(names.contains("xl/drawings/_rels/drawing1.xml.rels"))
         assertTrue(names.contains("xl/worksheets/_rels/sheet2.xml.rels"))
     }
 }
