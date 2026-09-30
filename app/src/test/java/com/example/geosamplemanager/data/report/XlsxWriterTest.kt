@@ -9,10 +9,9 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-xlsx-header (четвёртый заход):
- *  - cellXfs count теперь = 11 (добавлены TITLE и META);
- *  - проверяем наличие BBDEFB и E3F2FD в styles.xml;
- *  - XlsxCell.Blank пишется со стилем, но без текста.
+ * FIX 5.9-xlsx-colors (пятый заход):
+ *  - cellStyleXfs count = 11 (по одной записи на каждый стиль);
+ *  - cellStyles присутствует.
  */
 class XlsxWriterTest {
 
@@ -148,7 +147,6 @@ class XlsxWriterTest {
         val sheet = readEntries(bytes)["xl/worksheets/sheet1.xml"] ?: ""
         assertTrue(sheet.contains("r=\"B1\""))
         assertTrue(sheet.contains("s=\"9\""))
-        // У Blank нет inlineStr-текста.
         assertFalse(sheet.contains("r=\"B1\" s=\"9\" t=\"inlineStr\""))
     }
 
@@ -170,16 +168,28 @@ class XlsxWriterTest {
     }
 
     @Test
-    fun stylesXmlContainsAllStyles() {
+    fun stylesXmlHasOneCellStyleXfPerStyle() {
         val bytes = write(
             listOf(
                 XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
             )
         )
         val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
-        // 11 стилей: DEFAULT, BOLD, HEADER, FOUND, ERROR, POSTPONED,
-        // BLANK, CONTROL, LINK, TITLE, META.
+        // 11 стилей — 11 записей в cellStyleXfs и 11 в cellXfs.
+        assertTrue(styles.contains("<cellStyleXfs count=\"11\">"))
         assertTrue(styles.contains("<cellXfs count=\"11\">"))
+        assertTrue(styles.contains("<cellStyles count=\"1\">"))
+        assertTrue(styles.contains("name=\"Normal\""))
+    }
+
+    @Test
+    fun stylesXmlContainsAllFillColors() {
+        val bytes = write(
+            listOf(
+                XlsxSheet(name = "Test", rows = listOf(XlsxRow(listOf(XlsxCell.Text("x")))))
+            )
+        )
+        val styles = readEntries(bytes)["xl/styles.xml"] ?: ""
         assertTrue(styles.contains("A5D6A7"))
         assertTrue(styles.contains("EF9A9A"))
         assertTrue(styles.contains("90CAF9"))
