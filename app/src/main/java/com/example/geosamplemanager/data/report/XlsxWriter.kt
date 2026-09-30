@@ -6,12 +6,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-colors (30.09.2026, пятый заход):
- *  - cellStyleXfs теперь содержит по одной записи на каждый стиль
- *    (11 штук), и xfId указывает на свою запись.
- *    Раньше был один cellStyleXfs с xfId="0" — некоторые вьюеры
- *    наследовали fill/font оттуда и игнорировали cellXfs.
- *  - В fill убран bgColor — оставлен только fgColor.
+ * FIX 5.9-xlsx-valid (30.09.2026, шестой заход):
+ *  - ПОРЯДОК элементов внутри <font> по ECMA-376:
+ *      b, i, strike, outline, shadow, condense, extend, color, sz, u,
+ *      vertAlign, scheme, name.
+ *    Раньше в LINK-шрифте было <u/><sz/><color/><name/> — Excel
+ *    браковал всю таблицу стилей, ячейки теряли стили, цвета пропадали.
+ *    Стало: <color/><sz/><u/><name/>.
+ *  - <dimension ref="A1:..."/> в начале листа — стандартный атрибут.
  */
 
 // ====================================================================
@@ -263,10 +265,11 @@ object XlsxWriter {
     /**
      * xl/styles.xml.
      *
-     * FIX 5.9-xlsx-colors: cellStyleXfs — по одной записи на каждый
-     * стиль, xfId в cellXfs указывает на свою. Некоторые вьюеры
-     * (в частности Android) наследуют fill/font из cellStyleXfs
-     * через xfId и игнорируют cellXfs, если xfId=0.
+     * FIX 5.9-xlsx-valid:
+     *  - порядок элементов внутри <font> по ECMA-376:
+     *    b, i, strike, outline, shadow, condense, extend, color, sz, u, ... name;
+     *  - cellStyleXfs — по одной записи на каждый стиль, xfId = idx;
+     *  - cellStyles содержит Normal.
      */
     private fun buildStyles(): String {
         val styles = XlsxStyles.all
@@ -276,10 +279,19 @@ object XlsxWriter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
 
+        // fonts: 0 — обычный, 1 — жирный, 2 — ссылка.
+        // Порядок: <sz>, <color> (если есть), <u> (если есть), <b> (если есть), <name>.
+        // Строго по CT_Font: b, i, strike, ..., color, sz, u, ..., name.
+        // Значит, для жирного: <b/> идёт ПЕРВЫМ, потом <sz/>, потом <name/>.
+        // Для ссылки: <color/> до <sz/>, <u/> после <sz/>.
         sb.append("<fonts count=\"3\">")
+        // 0 — обычный
         sb.append("<font><sz val=\"11\"/><name val=\"Calibri\"/></font>")
+        // 1 — жирный (b идёт до sz, как требует схема)
         sb.append("<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>")
-        sb.append("<font><u/><sz val=\"11\"/><color rgb=\"FF1976D2\"/><name val=\"Calibri\"/></font>")
+        // 2 — ссылка (color до sz, u после sz)
+        sb.append("<font><color rgb=\"FF1976D2\"/><sz val=\"11\"/><u/>")
+        sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
@@ -300,7 +312,6 @@ object XlsxWriter {
         sb.append("<diagonal/></border>")
         sb.append("</borders>")
 
-        // cellStyleXfs — по одной записи на каждый стиль.
         sb.append("<cellStyleXfs count=\"").append(styles.size).append("\">")
         styles.forEach { def ->
             val fontId = XlsxStyles.fontIdFor(def)
@@ -313,7 +324,6 @@ object XlsxWriter {
         }
         sb.append("</cellStyleXfs>")
 
-        // cellXfs — каждому свой xfId.
         sb.append("<cellXfs count=\"").append(styles.size).append("\">")
         styles.forEachIndexed { idx, def ->
             val fontId = XlsxStyles.fontIdFor(def)
@@ -331,7 +341,6 @@ object XlsxWriter {
         }
         sb.append("</cellXfs>")
 
-        // cellStyles — обязательная секция, одна builtin.
         sb.append("<cellStyles count=\"1\">")
         sb.append("<cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/>")
         sb.append("</cellStyles>")
@@ -345,6 +354,13 @@ object XlsxWriter {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
         sb.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" ")
         sb.append("xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">")
+
+        // dimension — необязателен, но его отсутствие триггерит
+        // "recovery" в некоторых версиях Excel.
+        sb.append("<dimension ref=\"A1:")
+        sb.append(cellRef(maxColsOf(sheet), maxRowsOf(sheet)))
+        sb.append("\"/>")
+
         sb.append(buildCols(sheet.rows, sheet.skipWidthRows))
 
         val rowHeightByIndex: Map<Int, Double> = sheet.images
@@ -369,7 +385,8 @@ object XlsxWriter {
                     is XlsxCell.Text -> {
                         sb.append("<c r=\"").append(ref).append("\"").append(styleAttr)
                             .append(" t=\"inlineStr\">")
-                        sb.append("<is><t>").append(escapeXml(cell.value)).append("</t></is>")
+                        sb.append("<is><t xml:space=\"preserve\">")
+                            .append(escapeXml(cell.value)).append("</t></is>")
                         sb.append("</c>")
                     }
                     is XlsxCell.Number -> {
@@ -411,6 +428,17 @@ object XlsxWriter {
 
         sb.append("</worksheet>")
         return sb.toString()
+    }
+
+    /** Последняя колонка листа (0-based). Минимум 0. */
+    private fun maxColsOf(sheet: XlsxSheet): Int {
+        val m = sheet.rows.maxOfOrNull { it.cells.size } ?: 0
+        return if (m == 0) 0 else m - 1
+    }
+
+    /** Последняя строка листа (1-based). Минимум 1. */
+    private fun maxRowsOf(sheet: XlsxSheet): Int {
+        return if (sheet.rows.isEmpty()) 1 else sheet.rows.size
     }
 
     private fun buildSheetRels(drawingIndex: Int): String {
