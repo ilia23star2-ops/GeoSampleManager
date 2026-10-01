@@ -6,12 +6,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * FIX 5.9-xlsx-clean (четырнадцатый заход):
- *  - Убрана тема (theme1.xml, theme rel, theme override). Excel Online
- *    при наличии theme="N" брал цвет из своей встроенной темы, а не
- *    из нашей — цвета «перепутывались».
- *  - В fills оставлены только rgb + indexed. Оба дают корректный цвет.
- *  - Оставлен фикс styles rel из захода 50 — он был корневым.
+ * FIX 5.9-xlsx-clean (четырнадцатый заход): rgb + indexed, без theme.
+ *
+ * FIX 5.9-cleanup-2 (01.10.2026):
+ *  - убраны предупреждения компилятора:
+ *    * явные метки rowLoop@ / cellLoop@ в buildSheet;
+ *    * удалён неиспользуемый параметр imageIndexOfImage в buildDrawing.
  */
 
 sealed class XlsxCell {
@@ -252,12 +252,6 @@ object XlsxWriter {
         return sb.toString()
     }
 
-    /**
-     * FIX (ключевое): styles.xml доступен через relationship.
-     * Без этой связи Excel «восстанавливал» файл и терял стили.
-     *
-     * Порядок rId: 1..N — worksheets, N+1 — styles.
-     */
     private fun buildWorkbookRels(sheets: List<XlsxSheet>): String {
         val sb = StringBuilder(512)
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
@@ -292,8 +286,6 @@ object XlsxWriter {
         sb.append("<name val=\"Calibri\"/></font>")
         sb.append("</fonts>")
 
-        // FIX: только rgb + indexed. Без theme — Excel Online больше
-        // не берёт чужой цвет из своей встроенной палитры.
         sb.append("<fills count=\"").append(2 + fillMap.size).append("\">")
         sb.append("<fill><patternFill patternType=\"none\"/></fill>")
         sb.append("<fill><patternFill patternType=\"gray125\"/></fill>")
@@ -381,7 +373,7 @@ object XlsxWriter {
             .associate { it.rowIdx to (it.heightPx * ROW_HEIGHT_PX_TO_PT) }
 
         sb.append("<sheetData>")
-        sheet.rows.forEachIndexed { rowIdx, row ->
+        sheet.rows.forEachIndexed rowLoop@{ rowIdx, row ->
             val rowNum = rowIdx + 1
             val ht = rowHeightByIndex[rowIdx]
             val legendItem = sheet.legend.getOrNull(rowIdx)
@@ -393,7 +385,7 @@ object XlsxWriter {
                     sb.append(" ht=\"").append(ht).append("\" customHeight=\"1\"")
                 }
                 sb.append("/>")
-                return@forEachIndexed
+                return@rowLoop
             }
 
             sb.append("<row r=\"").append(rowNum).append("\"")
@@ -402,8 +394,8 @@ object XlsxWriter {
             }
             sb.append(">")
 
-            row.cells.forEachIndexed { colIdx, cell ->
-                if (cell is XlsxCell.Empty) return@forEachIndexed
+            row.cells.forEachIndexed cellLoop@{ colIdx, cell ->
+                if (cell is XlsxCell.Empty) return@cellLoop
                 val ref = cellRef(colIdx, rowNum)
                 val effectiveStyle = cell.styleId ?: row.styleId
                 val styleAttr = if (effectiveStyle != XlsxStyles.DEFAULT)
