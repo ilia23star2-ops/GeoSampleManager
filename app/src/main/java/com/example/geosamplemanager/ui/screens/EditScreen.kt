@@ -1,6 +1,7 @@
 package com.example.geosamplemanager.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -24,22 +25,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
- * FIX 5.9-edit-screen-search (заход 2/6):
- * Вкладка «Редактирование».
- *
- * Адаптивный экран:
- *  - широкий (>= 600 dp) — дерево слева (35%), карточка пробы справа;
- *  - узкий — дерево во весь экран, при выборе пробы — карточка с «Назад».
- *
- * Функции:
- *  - дерево участок → наряд → проба;
- *  - поиск: подстрока по № пробы / № скважины / характеристике;
- *  - фильтры-чипы: найдены / не найдены / отложены / ВК / холостые / ошибки;
- *  - авто-разворот дерева при непустом поиске;
- *  - выбор одной пробы;
- *  - карточка с полями (read-only);
- *  - «Редактировать» → EditSampleDialog;
- *  - «Удалить» → DeleteSampleDialog.
+ * FIX 5.9-edit-add-sample/3:
+ *  - цвет статуса строки виден ВСЕГДА (и при выделении тоже);
+ *  - выделение — рамка primary 2dp + лёгкий overlay 0.18 поверх
+ *    цветного фона (не затирает цвет статуса).
  */
 @Composable
 fun EditScreen(viewModel: EditViewModel = viewModel()) {
@@ -56,6 +45,7 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
 
     var editDialogRow by remember { mutableStateOf<SampleRow?>(null) }
     var deleteDialogRow by remember { mutableStateOf<SampleRow?>(null) }
+    var addForOrderId by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(message) {
         message?.let {
@@ -93,6 +83,7 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onSearchChange = { viewModel.setSearchQuery(it) },
                     onFilterToggle = { viewModel.toggleFilter(it) },
                     onClearFilters = { viewModel.clearFilters() },
+                    onAddToOrder = { addForOrderId = it },
                     modifier = Modifier.fillMaxHeight().width(treeWidth)
                 )
                 VerticalDivider()
@@ -121,6 +112,7 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onSearchChange = { viewModel.setSearchQuery(it) },
                     onFilterToggle = { viewModel.toggleFilter(it) },
                     onClearFilters = { viewModel.clearFilters() },
+                    onAddToOrder = { addForOrderId = it },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -160,6 +152,28 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
             },
             onDismiss = { deleteDialogRow = null }
         )
+    }
+
+    addForOrderId?.let { orderId ->
+        val order = data.findOrder(orderId)
+        if (order != null) {
+            AddSampleDialog(
+                orderTitle = order.orderTitle,
+                wellOptions = viewModel.wellsInOrder(orderId),
+                commonPrefix = viewModel.commonPrefix(orderId),
+                initialWellNumber = selectedSample?.wellNumber,
+                suggestSampleNumber = { w -> viewModel.suggestSampleNumber(w, orderId) },
+                suggestIntervalFrom = { w -> viewModel.suggestIntervalFrom(w, orderId) },
+                findConflict = { sn -> viewModel.findConflictInOrder(orderId, sn) },
+                onAdd = { w, sn, from, to, weight, ch, t, st ->
+                    viewModel.addSample(orderId, w, sn, from, to, weight, ch, t, st)
+                    addForOrderId = null
+                },
+                onDismiss = { addForOrderId = null }
+            )
+        } else {
+            addForOrderId = null
+        }
     }
 }
 
@@ -225,6 +239,7 @@ private fun EditTreePanel(
     onSearchChange: (String) -> Unit,
     onFilterToggle: (EditFilter) -> Unit,
     onClearFilters: () -> Unit,
+    onAddToOrder: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -239,7 +254,6 @@ private fun EditTreePanel(
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
 
-            // Поиск.
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = onSearchChange,
@@ -279,14 +293,12 @@ private fun EditTreePanel(
                 textStyle = MaterialTheme.typography.bodySmall
             )
 
-            // Фильтры-чипы.
             FiltersChipRow(
                 activeFilters = activeFilters,
                 onFilterToggle = onFilterToggle,
                 onClearFilters = onClearFilters
             )
 
-            // Заголовок и кнопка «Развернуть/Свернуть».
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -346,7 +358,8 @@ private fun EditTreePanel(
                             is EditTreeItem.OrderHeader -> OrderHeaderRow(
                                 order = item.order,
                                 expanded = item.expanded,
-                                onToggle = { onToggleOrder(item.order.orderId) }
+                                onToggle = { onToggleOrder(item.order.orderId) },
+                                onAdd = { onAddToOrder(item.order.orderId) }
                             )
                             is EditTreeItem.SampleItem -> SampleItemRow(
                                 row = item.row,
@@ -456,7 +469,8 @@ private fun AreaHeaderRow(
 private fun OrderHeaderRow(
     order: EditOrderUi,
     expanded: Boolean,
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    onAdd: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -469,7 +483,7 @@ private fun OrderHeaderRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
+                .padding(horizontal = 10.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -479,86 +493,144 @@ private fun OrderHeaderRow(
                 modifier = Modifier.size(18.dp)
             )
             Spacer(Modifier.width(6.dp))
-            Text(
-                order.orderTitle,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                "${order.samples.size} проб",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    order.orderTitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "${order.samples.size} проб",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 10.sp
+                )
+            }
+            IconButton(
+                onClick = onAdd,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "Добавить пробу",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
 
+@Composable
+private fun sampleRowBackground(row: SampleRow): Color {
+    if (row.found) return Color(0xFFA5D6A7).copy(alpha = 0.35f)
+    return when {
+        row.hasImportError -> Color(0xFFEF9A9A).copy(alpha = 0.35f)
+        row.postponed -> Color(0xFF90CAF9).copy(alpha = 0.35f)
+        row.isBlank -> Color(0xFFFFF59D).copy(alpha = 0.35f)
+        row.weightControl -> Color(0xFFCE93D8).copy(alpha = 0.30f)
+        else -> Color.Transparent
+    }
+}
+
+/**
+ * FIX 5.9-edit-add-sample/3:
+ * Цвет статуса виден ВСЕГДА. При выделении — оверлей + рамка,
+ * базовый цвет не затирается.
+ */
 @Composable
 private fun SampleItemRow(
     row: SampleRow,
     selected: Boolean,
     onClick: () -> Unit
 ) {
-    Surface(
+    val baseBg = sampleRowBackground(row)
+    val selectedOverlay = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 2.dp, start = 24.dp, end = 4.dp)
-            .clickable { onClick() },
-        color = if (selected)
-            MaterialTheme.colorScheme.primaryContainer
-        else
-            Color.Transparent,
-        shape = RoundedCornerShape(4.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(baseBg)
+            .then(
+                if (selected) Modifier.background(selectedOverlay) else Modifier
+            )
+            .then(
+                if (selected) Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(4.dp)
+                ) else Modifier
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    row.sampleNumber,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "скв. ${row.wellNumber} · №${row.numberInWell}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 10.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            if (row.found) {
-                Icon(
-                    Icons.Filled.CheckCircle,
-                    contentDescription = "Найдена",
-                    tint = Color(0xFF2E7D32),
-                    modifier = Modifier.size(16.dp).padding(end = 2.dp)
-                )
-            }
-            if (row.postponed) {
-                Icon(
-                    Icons.Filled.PauseCircle,
-                    contentDescription = "Отложена",
-                    tint = Color(0xFF1976D2),
-                    modifier = Modifier.size(16.dp).padding(end = 2.dp)
-                )
-            }
-            if (row.weightControl) {
-                Icon(
-                    Icons.Filled.Scale,
-                    contentDescription = "ВК",
-                    tint = Color(0xFF7B1FA2),
-                    modifier = Modifier.size(16.dp).padding(end = 2.dp)
-                )
-            }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                row.sampleNumber,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "скв. ${row.wellNumber} · №${row.numberInWell}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (row.found) {
+            Icon(
+                Icons.Filled.CheckCircle,
+                contentDescription = "Найдена",
+                tint = Color(0xFF2E7D32),
+                modifier = Modifier.size(18.dp).padding(end = 2.dp)
+            )
+        }
+        if (row.postponed) {
+            Icon(
+                Icons.Filled.PauseCircle,
+                contentDescription = "Отложена",
+                tint = Color(0xFF1976D2),
+                modifier = Modifier.size(18.dp).padding(end = 2.dp)
+            )
+        }
+        if (row.weightControl) {
+            Icon(
+                Icons.Filled.Scale,
+                contentDescription = "ВК",
+                tint = Color(0xFF7B1FA2),
+                modifier = Modifier.size(18.dp).padding(end = 2.dp)
+            )
+        }
+        if (row.hasImportError) {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = "Ошибка",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(18.dp).padding(end = 2.dp)
+            )
+        }
+        if (row.hasNote) {
+            Icon(
+                Icons.Filled.EditNote,
+                contentDescription = "Заметка",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp).padding(end = 2.dp)
+            )
+        }
+        if (row.hasPhoto) {
+            Icon(
+                Icons.Filled.PhotoCamera,
+                contentDescription = "Фото",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp).padding(end = 2.dp)
+            )
         }
     }
 }
@@ -625,6 +697,50 @@ private fun EditDetailsPanel(
                     fontWeight = FontWeight.Bold
                 )
 
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    StatusBadge(
+                        label = if (sample.found) "Найдена" else "Не найдена",
+                        bg = if (sample.found) Color(0xFF2E7D32)
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        fg = if (sample.found) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    StatusBadge(
+                        label = if (sample.postponed) "Отложена" else "Не отложена",
+                        bg = if (sample.postponed) Color(0xFF1976D2)
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        fg = if (sample.postponed) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    StatusBadge(
+                        label = if (sample.weightControl) "ВК" else "Не ВК",
+                        bg = if (sample.weightControl) Color(0xFF7B1FA2)
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        fg = if (sample.weightControl) Color.White
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (sample.isBlank) {
+                        StatusBadge(
+                            label = "Холостая",
+                            bg = Color(0xFFF9A825),
+                            fg = Color.White
+                        )
+                    }
+                    if (sample.hasImportError) {
+                        StatusBadge(
+                            label = "Ошибка",
+                            bg = MaterialTheme.colorScheme.error,
+                            fg = MaterialTheme.colorScheme.onError
+                        )
+                    }
+                }
+
                 HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
 
                 InfoRow("Скважина / выработка", sample.wellNumber)
@@ -638,19 +754,10 @@ private fun EditDetailsPanel(
                 InfoRow("Характеристика", sample.characteristic)
                 InfoRow("Тип", displayType(sample.type, sample.status))
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-
-                InfoRow("Найдена", if (sample.found) "Да" else "Нет")
-                InfoRow("Отложена", if (sample.postponed) "Да" else "Нет")
-                InfoRow("Весовой контроль", if (sample.weightControl) "Да" else "Нет")
-                if (sample.hasNote) InfoRow("Заметка", "есть")
-                if (sample.hasPhoto) InfoRow("Фото", "есть")
-                if (sample.hasImportError) {
-                    InfoRow(
-                        "Ошибка",
-                        "да",
-                        valueColor = MaterialTheme.colorScheme.error
-                    )
+                if (sample.hasNote || sample.hasPhoto) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
+                    if (sample.hasNote) InfoRow("Заметка", "есть")
+                    if (sample.hasPhoto) InfoRow("Фото", "есть")
                 }
             }
         }
@@ -683,6 +790,26 @@ private fun EditDetailsPanel(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun StatusBadge(
+    label: String,
+    bg: Color,
+    fg: Color
+) {
+    Surface(
+        color = bg,
+        shape = RoundedCornerShape(4.dp)
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = fg,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
     }
 }
 

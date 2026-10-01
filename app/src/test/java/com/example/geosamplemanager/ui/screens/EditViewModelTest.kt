@@ -13,14 +13,12 @@ import org.junit.Test
  * FIX 5.9-edit-viewmodel:
  * Тесты чистой логики ViewModel редактора.
  *
- * Покрываем:
- *  - buildEditTree: сортировка, фильтрация сирот, пустой случай;
- *  - EditTreeData.findSample: поиск и отсутствие.
- *
- * Не покрываем (только device-check):
- *  - подписка на Room Flow;
- *  - saveSample / deleteSample (нужен настоящий repo);
- *  - выбор и развёрнутость (Compose-состояние).
+ * HOTFIX 5.9-edit-add-sample:
+ *  - сортировка проб в buildEditTree изменена с serialNumber на
+ *    (wellNumber, numberInWell). Тест samplesWithinOrder*
+ *    обновлён: sampleNumber теперь начинается с wellNumber, чтобы
+ *    numberInWell извлекался корректно.
+ *  - добавлен тест сортировки по wellNumber.
  */
 class EditViewModelTest {
 
@@ -85,19 +83,41 @@ class EditViewModelTest {
         )
     }
 
+    /**
+     * Пробы в наряде сортируются по (wellNumber, numberInWell).
+     * numberInWell вычисляется из sampleNumber относительно wellNumber,
+     * поэтому sampleNumber должен начинаться с wellNumber.
+     */
     @Test
-    fun samplesWithinOrderSortedBySerialNumber() {
+    fun samplesWithinOrderSortedByWellAndNumberInWell() {
         val tree = buildEditTree(
             listOf(area(1, "Test")),
             listOf(order(10, 1, "27")),
             listOf(
-                sample(100, 10, 3, "N3"),
-                sample(101, 10, 1, "N1"),
-                sample(102, 10, 2, "N2")
+                sample(100, 10, 3, "NV136603"),
+                sample(101, 10, 1, "NV136601"),
+                sample(102, 10, 2, "NV136602")
             )
         )
         assertEquals(
-            listOf("N1", "N2", "N3"),
+            listOf("NV136601", "NV136602", "NV136603"),
+            tree.areas[0].orders[0].samples.map { it.sampleNumber }
+        )
+    }
+
+    @Test
+    fun samplesWithinOrderSortedByWellFirst() {
+        // Пробы из двух скважин. Сортировка: сначала NV1366, потом NV1367.
+        val tree = buildEditTree(
+            listOf(area(1, "Test")),
+            listOf(order(10, 1, "27")),
+            listOf(
+                sample(100, 10, 2, "NV136701", wellNum = "NV1367"),
+                sample(101, 10, 1, "NV136601", wellNum = "NV1366")
+            )
+        )
+        assertEquals(
+            listOf("NV136601", "NV136701"),
             tree.areas[0].orders[0].samples.map { it.sampleNumber }
         )
     }
@@ -114,7 +134,6 @@ class EditViewModelTest {
 
     @Test
     fun orphanOrderWithoutAreaIsIgnored() {
-        // Наряд ссылается на несуществующий участок id=2 — не показываем.
         val tree = buildEditTree(
             listOf(area(1, "Test")),
             listOf(order(10, 2, "27")),
@@ -126,11 +145,10 @@ class EditViewModelTest {
 
     @Test
     fun orphanSamplesWithoutOrderIsIgnored() {
-        // Проба ссылается на несуществующий наряд id=999 — не показываем.
         val tree = buildEditTree(
             listOf(area(1, "Test")),
             listOf(order(10, 1, "27")),
-            listOf(sample(100, 999, 1, "N1"))
+            listOf(sample(100, 999, 1, "NV136601"))
         )
         assertEquals(1, tree.areas.size)
         assertEquals(1, tree.areas[0].orders.size)
@@ -147,10 +165,10 @@ class EditViewModelTest {
                 order(20, 2, "5")
             ),
             listOf(
-                sample(100, 10, 1, "A1"),
-                sample(101, 10, 2, "A2"),
-                sample(102, 11, 1, "B1"),
-                sample(103, 20, 1, "C1")
+                sample(100, 10, 1, "NV136601"),
+                sample(101, 10, 2, "NV136602"),
+                sample(102, 11, 1, "NV136601"),
+                sample(103, 20, 1, "NV136601")
             )
         )
         assertEquals(2, tree.areas.size)
@@ -192,11 +210,11 @@ class EditViewModelTest {
         val tree = buildEditTree(
             listOf(area(1, "Test")),
             listOf(order(10, 1, "27")),
-            listOf(sample(100, 10, 1, "N1"))
+            listOf(sample(100, 10, 1, "NV136601"))
         )
         val found = tree.findSample("100")
         assertNotNull(found)
-        assertEquals("N1", found!!.sampleNumber)
+        assertEquals("NV136601", found!!.sampleNumber)
     }
 
     @Test
@@ -204,7 +222,7 @@ class EditViewModelTest {
         val tree = buildEditTree(
             listOf(area(1, "Test")),
             listOf(order(10, 1, "27")),
-            listOf(sample(100, 10, 1, "N1"))
+            listOf(sample(100, 10, 1, "NV136601"))
         )
         assertNull(tree.findSample("999"))
     }
@@ -221,12 +239,44 @@ class EditViewModelTest {
             listOf(area(1, "А"), area(2, "Б")),
             listOf(order(10, 1, "1"), order(20, 2, "2")),
             listOf(
-                sample(100, 10, 1, "A1"),
-                sample(200, 20, 1, "B1")
+                sample(100, 10, 1, "NV136601"),
+                sample(200, 20, 1, "NV136601")
             )
         )
         val found = tree.findSample("200")
         assertNotNull(found)
-        assertEquals("B1", found!!.sampleNumber)
+        assertEquals("200", found!!.id)
+    }
+
+    // ================================================================
+    // EditTreeData.findOrder — FIX 5.9-edit-add-sample.
+    // ================================================================
+
+    @Test
+    fun findOrderReturnsExistingOrder() {
+        val tree = buildEditTree(
+            listOf(area(1, "Test")),
+            listOf(order(10, 1, "27")),
+            emptyList()
+        )
+        val found = tree.findOrder(10L)
+        assertNotNull(found)
+        assertEquals("27", found!!.orderNumber)
+    }
+
+    @Test
+    fun findOrderReturnsNullForMissingId() {
+        val tree = buildEditTree(
+            listOf(area(1, "Test")),
+            listOf(order(10, 1, "27")),
+            emptyList()
+        )
+        assertNull(tree.findOrder(999L))
+    }
+
+    @Test
+    fun findOrderReturnsNullOnEmptyTree() {
+        val tree = buildEditTree(emptyList(), emptyList(), emptyList())
+        assertNull(tree.findOrder(1L))
     }
 }

@@ -13,6 +13,18 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
+/**
+ * FIX 5.9-edit-add-sample/3:
+ * План сдвига одной существующей пробы.
+ * Сдвигается номер пробы и интервал. Остальные поля — не трогаются.
+ */
+data class SampleShiftPlan(
+    val sampleId: Long,
+    val newSampleNumber: String,
+    val newIntervalFrom: Double?,
+    val newIntervalTo: Double?
+)
+
 class DatabaseRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -51,18 +63,13 @@ class DatabaseRepository(context: Context) {
 
     suspend fun getAllOrders(): List<OrderEntity> = orderDao.getAllOrders()
 
-    /** Flow всех нарядов. Для реактивного обновления списка в сверке. */
     fun getAllOrdersFlow(): Flow<List<OrderEntity>> = orderDao.getAllOrdersFlow()
 
     // ============ ПРОБЫ ============
 
     fun getSamplesForOrder(orderId: Long): Flow<List<SampleEntity>> =
         sampleDao.getSamplesForOrder(orderId)
-        
-    /**
-     * FIX 5.9-stats-reactive:
-     * Flow всех проб — для реактивной статистики.
-     */
+
     fun getAllSamplesFlow(): Flow<List<SampleEntity>> =
         sampleDao.getAllSamplesFlow()
 
@@ -95,11 +102,52 @@ class DatabaseRepository(context: Context) {
     suspend fun searchSamples(query: String?): List<SampleEntity> =
         sampleDao.searchSamples(query)
 
+    /**
+     * HOTFIX 5.9-edit-add-sample/3:
+     * Возвращаем List<Long> — исходный тип. Регресс из подзахода 3
+     * (была ошибочно List<String>) ломал ReconciliationViewModel.
+     */
     suspend fun findOrderIdsByQuery(query: String): List<Long> =
         sampleDao.findOrderIdsByQuery(query)
 
     suspend fun getOrderIdsWithSamples(): List<Long> =
         sampleDao.getOrderIdsWithSamples()
+
+    /**
+     * FIX 5.9-edit-add-sample/3:
+     * Добавить пробу со сдвигом существующих.
+     *
+     * Сдвиг = список SampleShiftPlan. У каждой сдвигаемой пробы
+     * меняется sampleNumber и (опционально) интервал.
+     *
+     * HOTFIX UNIQUE (из подзахода 2):
+     * Сдвиги применяются в ОБРАТНОМ порядке — от старшего к младшему.
+     * Иначе SQLite падает на UNIQUE (order_id, sample_number).
+     */
+    suspend fun addSampleWithShift(
+        newSample: SampleEntity,
+        shifts: List<SampleShiftPlan>
+    ): Long {
+        return db.withTransaction {
+            shifts.reversed().forEach { shift ->
+                val existing = sampleDao.getSampleById(shift.sampleId)
+                    ?: return@forEach
+                if (existing.sampleNumber != shift.newSampleNumber ||
+                    existing.intervalFrom != shift.newIntervalFrom ||
+                    existing.intervalTo != shift.newIntervalTo
+                ) {
+                    sampleDao.update(
+                        existing.copy(
+                            sampleNumber = shift.newSampleNumber,
+                            intervalFrom = shift.newIntervalFrom,
+                            intervalTo = shift.newIntervalTo
+                        )
+                    )
+                }
+            }
+            sampleDao.insert(newSample)
+        }
+    }
 
     // ============ СТАТИСТИКА ============
 
@@ -193,18 +241,6 @@ class DatabaseRepository(context: Context) {
         PhotoStorage.deleteAll(imagePaths)
     }
 
-    /**
-     * FIX 5.8.10-d:
-     * Раньше метод шёл через areaDao.getAreaId(areaName) с LIMIT 1.
-     * Если в БД когда-либо появились два участка с одинаковым
-     * area_name (без UNIQUE на areas.area_name это возможно),
-     * возвращался только один — и наряд, записанный в «другой»
-     * дубликат, не находился.
-     *
-     * Теперь ищем наряды по ИМЕНИ участка напрямую через JOIN и
-     * складываем статистику по всем совпадениям. Обычно это один
-     * наряд; в патологическом случае — сумма по дубликатам.
-     */
     suspend fun getExistingOrderStats(areaName: String, orderNumber: String): OrderStats? {
         val orderIds = orderDao.getOrderIdsByName(areaName, orderNumber)
         if (orderIds.isEmpty()) return null

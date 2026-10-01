@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.SampleShiftPlan
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -16,17 +17,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.9-edit-screen-search (заход 2/6):
- * ViewModel вкладки «Редактирование» с поиском и фильтрами.
- *
- * Функции:
- *  - реактивное дерево участок → наряд → проба;
- *  - выбор одной пробы;
- *  - сохранение правки;
- *  - удаление (с/без пересчёта);
- *  - поиск по номеру пробы, номеру скважины, характеристике;
- *  - фильтры-чипы: найдены / не найдены / отложены / ВК / холостые / ошибки;
- *  - авто-разворот дерева при непустом поиске.
+ * FIX 5.9-edit-add-sample/3:
+ *  - buildShiftPlans — сдвигает номер И интервал (не только номер);
+ *  - интервал сдвигается на step = (new.to - new.from);
+ *  - если новая холостая или интервал не задан — шаг null, интервалы
+ *    не сдвигаются;
+ *  - данные (вес, характеристика, флаги, заметки, фото) остаются
+ *    на своих сущностях.
  */
 
 data class EditTreeData(
@@ -37,6 +34,13 @@ data class EditTreeData(
             area.orders.forEach { order ->
                 order.samples.firstOrNull { it.id == sampleId }?.let { return it }
             }
+        }
+        return null
+    }
+
+    fun findOrder(orderId: Long): EditOrderUi? {
+        areas.forEach { area ->
+            area.orders.firstOrNull { it.orderId == orderId }?.let { return it }
         }
         return null
     }
@@ -55,9 +59,6 @@ data class EditOrderUi(
     val samples: List<SampleRow>
 )
 
-/**
- * Фильтры-чипы вкладки «Редактирование».
- */
 enum class EditFilter(val title: String) {
     FOUND("Найденные"),
     NOT_FOUND("Не найденные"),
@@ -66,6 +67,36 @@ enum class EditFilter(val title: String) {
     BLANK("Холостые"),
     ERRORS("Ошибки")
 }
+
+data class ShiftedSample(
+    val sampleId: String,
+    val newSampleNumber: String
+)
+
+data class InsertPlan(
+    val insertIndex: Int,
+    val newNumberInWell: Int,
+    val shifted: List<ShiftedSample>
+)
+
+data class SampleConflict(
+    val existingSampleNumber: String,
+    val existingNumberInWell: Int,
+    val existingIntervalFrom: String,
+    val existingIntervalTo: String
+)
+
+/**
+ * FIX 5.9-edit-add-sample/3:
+ * План сдвига одной пробы — номер + интервал.
+ * sampleId — String (id из SampleRow), конвертируется в Long при записи.
+ */
+data class ShiftPlan(
+    val sampleId: String,
+    val newSampleNumber: String,
+    val newIntervalFrom: Double?,
+    val newIntervalTo: Double?
+)
 
 // ====================================================================
 // Чистые функции — тестируются отдельно.
@@ -84,7 +115,12 @@ internal fun buildEditTree(
             .sortedBy { it.orderNumber }
         val orderUis = areaOrders.map { order ->
             val orderSamples = samplesByOrder[order.id].orEmpty()
-                .sortedBy { it.serialNumber }
+                .sortedWith(
+                    compareBy(
+                        { it.wellNumber },
+                        { extractNumberInWell(it.sampleNumber, it.wellNumber) }
+                    )
+                )
             val group = buildSampleGroup(order, area, orderSamples)
             EditOrderUi(
                 orderId = order.id,
@@ -103,16 +139,6 @@ internal fun buildEditTree(
     return EditTreeData(areas = areaUis)
 }
 
-/**
- * Применить поиск и фильтры к дереву.
- *
- * Поиск: подстрока (содержит) по нормализованному номеру пробы,
- * номеру скважины ИЛИ по характеристике (без регистра).
- *
- * Фильтры: ALL-логика — проба должна удовлетворять ВСЕМ выбранным.
- *
- * Пустые наряды и участки вычищаются.
- */
 internal fun applyEditFilters(
     tree: EditTreeData,
     query: String,
@@ -147,7 +173,6 @@ private fun matchesEditQuery(row: SampleRow, q: String, hasQuery: Boolean): Bool
         if (sampleDigits.contains(norm)) return true
         if (wellDigits.contains(norm)) return true
     }
-    // Текстовый поиск по характеристике (без регистра).
     return row.characteristic.lowercase().contains(q)
 }
 
@@ -165,6 +190,179 @@ private fun matchesEditFilters(row: SampleRow, filters: Set<EditFilter>): Boolea
     }
 }
 
+internal fun findCommonWellPrefix(samples: List<SampleRow>): String {
+    val wells = samples.map { it.wellNumber }
+        .filter { it.isNotBlank() }
+        .distinct()
+    if (wells.isEmpty()) return ""
+
+    val first = wells.first()
+    var matchLen = first.length
+    wells.forEach { w ->
+        var i = 0
+        while (i < matchLen && i < w.length && first[i] == w[i]) i++
+        matchLen = i
+    }
+
+    var letterEnd = 0
+    while (letterEnd < matchLen && first[letterEnd].isLetter()) letterEnd++
+    return first.substring(0, letterEnd)
+}
+
+internal fun suggestIntervalFrom(
+    wellRows: List<SampleRow>,
+    newNumberInWell: Int
+): String {
+    val before = wellRows
+        .filter { it.numberInWell < newNumberInWell && !it.isBlank }
+        .maxByOrNull { it.numberInWell } ?: return ""
+    val to = before.intervalTo
+    return if (to == "—" || to.isBlank()) "" else to
+}
+
+internal fun suggestNextSampleNumberInWell(wellRows: List<SampleRow>): Int {
+    if (wellRows.isEmpty()) return 1
+    return (wellRows.maxOf { it.numberInWell }) + 1
+}
+
+internal fun findConflict(
+    orderSamples: List<SampleRow>,
+    candidateSampleNumber: String
+): SampleConflict? {
+    val hit = orderSamples.firstOrNull {
+        it.sampleNumber == candidateSampleNumber
+    } ?: return null
+    return SampleConflict(
+        existingSampleNumber = hit.sampleNumber,
+        existingNumberInWell = hit.numberInWell,
+        existingIntervalFrom = hit.intervalFrom,
+        existingIntervalTo = hit.intervalTo
+    )
+}
+
+internal fun planInsertPosition(
+    wellNumber: String,
+    newSampleNumber: String,
+    existingSamples: List<SampleRow>
+): InsertPlan {
+    val sorted = existingSamples.sortedBy { it.numberInWell }
+
+    if (sorted.isEmpty()) {
+        val num = parseSuffixNumber(wellNumber, newSampleNumber) ?: 1
+        return InsertPlan(insertIndex = 0, newNumberInWell = num, shifted = emptyList())
+    }
+
+    val newNum = parseSuffixNumber(wellNumber, newSampleNumber)
+    val suffixLen = detectSuffixLength(
+        sampleNumber = sorted.first().sampleNumber,
+        wellNumber = wellNumber,
+        fallbackSampleNumber = newSampleNumber
+    )
+
+    if (newNum == null) {
+        val maxNum = sorted.maxOf { it.numberInWell }
+        return InsertPlan(
+            insertIndex = sorted.size,
+            newNumberInWell = maxNum + 1,
+            shifted = emptyList()
+        )
+    }
+
+    val existingNums = sorted.map { it.numberInWell }
+    val minNum = existingNums.min()
+    val maxNum = existingNums.max()
+
+    if (newNum in existingNums) {
+        val insertIndex = sorted.indexOfFirst { it.numberInWell == newNum }
+        val shifted = sorted.drop(insertIndex).map { s ->
+            val newNumberInWell = s.numberInWell + 1
+            val newSN = wellNumber + newNumberInWell.toString().padStart(suffixLen, '0')
+            ShiftedSample(sampleId = s.id, newSampleNumber = newSN)
+        }
+        return InsertPlan(insertIndex, newNum, shifted)
+    }
+
+    if (newNum > maxNum) {
+        return InsertPlan(sorted.size, newNum, emptyList())
+    }
+
+    if (newNum < minNum) {
+        return InsertPlan(0, newNum, emptyList())
+    }
+
+    val insertIndex = sorted.indexOfFirst { it.numberInWell > newNum }
+        .let { if (it < 0) sorted.size else it }
+    return InsertPlan(insertIndex, newNum, emptyList())
+}
+
+/**
+ * FIX 5.9-edit-add-sample/3:
+ * Построить список сдвигов — sampleNumber + интервалы.
+ *
+ * @param plan результат planInsertPosition (какие пробы двигаются и куда).
+ * @param wellRows пробы в скважине (исходные).
+ * @param intervalStep шаг сдвига интервала = (new.to - new.from).
+ *                     null → интервалы не двигаем (новая холостая или
+ *                     интервал не задан).
+ *
+ * Логика:
+ *  - если step != null И проба не холостая → сдвигаем from и to на step;
+ *  - иначе → интервал не трогаем (сохраняем как было);
+ *  - "—" парсится в null, сдвиг не применяется.
+ */
+internal fun buildShiftPlans(
+    plan: InsertPlan,
+    wellRows: List<SampleRow>,
+    intervalStep: Double?
+): List<ShiftPlan> {
+    val rowsById = wellRows.associateBy { it.id }
+    return plan.shifted.mapNotNull { s ->
+        val old = rowsById[s.sampleId] ?: return@mapNotNull null
+
+        val newFrom: Double?
+        val newTo: Double?
+        if (intervalStep != null && !old.isBlank) {
+            newFrom = old.intervalFrom.toDoubleOrNull()?.plus(intervalStep)
+            newTo = old.intervalTo.toDoubleOrNull()?.plus(intervalStep)
+        } else {
+            newFrom = old.intervalFrom.toDoubleOrNull()
+            newTo = old.intervalTo.toDoubleOrNull()
+        }
+
+        ShiftPlan(
+            sampleId = s.sampleId,
+            newSampleNumber = s.newSampleNumber,
+            newIntervalFrom = newFrom,
+            newIntervalTo = newTo
+        )
+    }
+}
+
+internal fun parseSuffixNumber(wellNumber: String, sampleNumber: String): Int? {
+    if (wellNumber.isNotEmpty() && sampleNumber.startsWith(wellNumber)) {
+        val suffix = sampleNumber.removePrefix(wellNumber)
+        return suffix.toIntOrNull()
+    }
+    val trailing = sampleNumber.takeLastWhile { it.isDigit() }
+    return trailing.toIntOrNull()
+}
+
+internal fun detectSuffixLength(
+    sampleNumber: String,
+    wellNumber: String,
+    fallbackSampleNumber: String
+): Int {
+    if (wellNumber.isNotEmpty() && sampleNumber.startsWith(wellNumber)) {
+        val suffix = sampleNumber.removePrefix(wellNumber)
+        if (suffix.isNotEmpty() && suffix.all { it.isDigit() }) return suffix.length
+    }
+    if (wellNumber.isNotEmpty() && fallbackSampleNumber.startsWith(wellNumber)) {
+        val suffix = fallbackSampleNumber.removePrefix(wellNumber)
+        if (suffix.isNotEmpty()) return suffix.length
+    }
+    return 2
+}
+
 // ====================================================================
 // ViewModel
 // ====================================================================
@@ -173,10 +371,7 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
 
-    /** Сырое дерево — прямо из БД, без фильтров. */
     private val _rawTree = MutableStateFlow<EditTreeData?>(null)
-
-    /** Отфильтрованное дерево — то, что видит UI. */
     private val _tree = MutableStateFlow<EditTreeData?>(null)
     val tree: StateFlow<EditTreeData?> = _tree.asStateFlow()
 
@@ -239,7 +434,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         }
         _tree.value = filtered
 
-        // Авто-разворот при непустом поиске.
         if (q.isNotBlank()) {
             val areaIds = filtered.areas.map { it.areaId }.toSet()
             val orderIds = filtered.areas
@@ -249,7 +443,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
             _expandedOrderIds.value = orderIds
         }
 
-        // Обновить/снять выбор, если проба пропала из отфильтрованного дерева.
         val selId = _selectedSampleId.value
         if (selId != null) {
             val updated = filtered.findSample(selId)
@@ -271,10 +464,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
     }
 
-    // ================================================================
-    // Поиск и фильтры
-    // ================================================================
-
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
         rebuildFilteredTree()
@@ -293,18 +482,10 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         rebuildFilteredTree()
     }
 
-    // ================================================================
-    // Выбор пробы
-    // ================================================================
-
     fun selectSample(sampleId: String?) {
         _selectedSampleId.value = sampleId
         _selectedSample.value = sampleId?.let { _tree.value?.findSample(it) }
     }
-
-    // ================================================================
-    // Развёрнутость дерева
-    // ================================================================
 
     fun toggleArea(areaId: Long) {
         _expandedAreaIds.value = if (areaId in _expandedAreaIds.value)
@@ -332,10 +513,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedAreaIds.value = emptySet()
         _expandedOrderIds.value = emptySet()
     }
-
-    // ================================================================
-    // Сохранение / удаление
-    // ================================================================
 
     fun saveSample(row: SampleRow) {
         viewModelScope.launch {
@@ -370,5 +547,154 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                 _message.value = "Ошибка удаления: ${e.message}"
             }
         }
+    }
+
+    // ================================================================
+    // Добавление пробы
+    // ================================================================
+
+    fun wellsInOrder(orderId: Long): List<String> {
+        val order = _rawTree.value?.findOrder(orderId) ?: return emptyList()
+        return order.samples.map { it.wellNumber }.distinct().sorted()
+    }
+
+    fun commonPrefix(orderId: Long): String {
+        val order = _rawTree.value?.findOrder(orderId) ?: return ""
+        return findCommonWellPrefix(order.samples)
+    }
+
+    fun suggestSampleNumber(wellNumber: String, orderId: Long): String {
+        val order = _rawTree.value?.findOrder(orderId)
+            ?: return if (wellNumber.isBlank()) "" else wellNumber + "01"
+        val wellRows = order.samples.filter { it.wellNumber == wellNumber }
+        if (wellRows.isEmpty()) {
+            return if (wellNumber.isBlank()) "" else wellNumber + "01"
+        }
+        val next = suggestNextSampleNumberInWell(wellRows)
+        val suffixLen = detectSuffixLength(
+            sampleNumber = wellRows.first().sampleNumber,
+            wellNumber = wellNumber,
+            fallbackSampleNumber = wellRows.first().sampleNumber
+        )
+        return wellNumber + next.toString().padStart(suffixLen, '0')
+    }
+
+    fun suggestIntervalFrom(wellNumber: String, orderId: Long): String {
+        val order = _rawTree.value?.findOrder(orderId) ?: return ""
+        val wellRows = order.samples
+            .filter { it.wellNumber == wellNumber && !it.isBlank }
+        if (wellRows.isEmpty()) return ""
+        val maxN = wellRows.maxOf { it.numberInWell }
+        return suggestIntervalFrom(wellRows, newNumberInWell = maxN + 1)
+    }
+
+    fun findConflictInOrder(orderId: Long, sampleNumber: String): SampleConflict? {
+        val order = _rawTree.value?.findOrder(orderId) ?: return null
+        return findConflict(order.samples, sampleNumber)
+    }
+
+    fun addSample(
+        orderId: Long,
+        wellNumber: String,
+        sampleNumber: String,
+        intervalFrom: Double?,
+        intervalTo: Double?,
+        weight: Double?,
+        characteristic: String,
+        type: SampleType,
+        status: SampleStatus
+    ) {
+        if (wellNumber.isBlank() || sampleNumber.isBlank()) {
+            _message.value = "Заполните № скважины и № пробы"
+            return
+        }
+
+        if (status != SampleStatus.BLANK) {
+            if (intervalFrom == null || intervalTo == null) {
+                _message.value = "Заполните интервал"
+                return
+            }
+        }
+
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val orderSamples = repo.getSamplesForOrderList(orderId)
+                    val wellSamples = orderSamples
+                        .filter { it.wellNumber == wellNumber }
+                        .sortedBy { it.serialNumber }
+
+                    val wellRows = wellSamples.map { e ->
+                        e.toRow(groupId = orderId.toString())
+                    }
+
+                    val plan = planInsertPosition(
+                        wellNumber = wellNumber,
+                        newSampleNumber = sampleNumber,
+                        existingSamples = wellRows
+                    )
+
+                    // FIX 5.9-edit-add-sample/3:
+                    // Шаг сдвига интервалов = длина интервала новой пробы.
+                    // Если новая холостая или интервал не задан — шага нет.
+                    val isBlankStatus = status == SampleStatus.BLANK
+                    val intervalStep: Double? =
+                        if (!isBlankStatus &&
+                            intervalFrom != null && intervalTo != null
+                        ) {
+                            intervalTo - intervalFrom
+                        } else null
+
+                    val shiftPlans = buildShiftPlans(plan, wellRows, intervalStep)
+
+                    val maxSerial = orderSamples.maxOfOrNull { it.serialNumber } ?: 0
+
+                    val newSample = SampleEntity(
+                        orderId = orderId,
+                        serialNumber = maxSerial + 1,
+                        sampleNumber = sampleNumber,
+                        wellNumber = wellNumber,
+                        intervalFrom = if (isBlankStatus) null else intervalFrom,
+                        intervalTo = if (isBlankStatus) null else intervalTo,
+                        weight = weight,
+                        sampleType = type.dbCode,
+                        status = status.dbCode,
+                        materialDesc = characteristic
+                            .takeIf { it.isNotBlank() && it != "—" }
+                    )
+
+                    val sampleShiftPlans = shiftPlans.mapNotNull { sp ->
+                        val id = sp.sampleId.toLongOrNull()
+                            ?: return@mapNotNull null
+                        SampleShiftPlan(
+                            sampleId = id,
+                            newSampleNumber = sp.newSampleNumber,
+                            newIntervalFrom = sp.newIntervalFrom,
+                            newIntervalTo = sp.newIntervalTo
+                        )
+                    }
+
+                    repo.addSampleWithShift(newSample, sampleShiftPlans)
+                }
+
+                val hadShift = planShouldShift(sampleNumber, wellNumber, orderId)
+                val shiftWord = if (hadShift) " (номера и интервалы сдвинуты)" else ""
+                _message.value = "Проба $sampleNumber добавлена$shiftWord"
+            } catch (e: Exception) {
+                _message.value = "Ошибка добавления: ${e.message}"
+            }
+        }
+    }
+
+    private fun planShouldShift(
+        sampleNumber: String,
+        wellNumber: String,
+        orderId: Long
+    ): Boolean {
+        val order = _rawTree.value?.findOrder(orderId) ?: return false
+        val wellSamples = order.samples.filter { it.wellNumber == wellNumber }
+        if (wellSamples.isEmpty()) return false
+        val newNum = parseSuffixNumber(wellNumber, sampleNumber) ?: return false
+        return wellSamples.any { it.numberInWell == newNum }
     }
 }
