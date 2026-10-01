@@ -14,23 +14,23 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 
 /**
- * FIX 5.9-db-backup-v2:
- * Диалог экспорта бэкапа.
+ * FIX 5.9-db-backup-v2: диалог экспорта бэкапа.
  *
- *  - редактируемое имя файла (без .gsmbackup);
- *  - чекбокс «Сохранить во внутреннюю папку» (по умолчанию ВКЛ);
- *    если снять — откроется системный диалог «Куда сохранить?».
+ * FIX 5.9-db-backup-fix:
+ *  - убран чекбокс «Сохранить во внутреннюю папку»;
+ *  - добавлен чекбокс «Поделиться после сохранения»;
+ *  - куда сохраняем — решает UI (публичные Загрузки или SAF fallback).
  *
- * Возвращает через onExport: (имя без расширения, saveInternal).
+ * Возвращает onExport: (имя без расширения, shareAfter).
  */
 @Composable
 fun DbBackupDialog(
     defaultName: String,
-    onExport: (name: String, saveInternal: Boolean) -> Unit,
+    onExport: (name: String, shareAfter: Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     var name by remember { mutableStateOf(defaultName) }
-    var saveInternal by remember { mutableStateOf(true) }
+    var shareAfter by remember { mutableStateOf(false) }
 
     val trimmed = name.trim()
     val valid = trimmed.isNotEmpty()
@@ -41,7 +41,8 @@ fun DbBackupDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    "Создастся архив с базой и фото. Формат — .gsmbackup.",
+                    "Архив с базой и фото сохранится в папку «Загрузки» " +
+                            "(Downloads/GeoSampleManager). Формат — .gsmbackup.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -73,28 +74,26 @@ fun DbBackupDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .toggleable(
-                            value = saveInternal,
-                            onValueChange = { saveInternal = it }
+                            value = shareAfter,
+                            onValueChange = { shareAfter = it }
                         )
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(
-                        checked = saveInternal,
-                        onCheckedChange = { saveInternal = it }
+                        checked = shareAfter,
+                        onCheckedChange = { shareAfter = it }
                     )
                     Spacer(Modifier.width(6.dp))
                     Column {
                         Text(
-                            "Сохранить во внутреннюю папку",
+                            "Поделиться после сохранения",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            if (saveInternal)
-                                "Файл останется внутри приложения (db_backups/)"
-                            else
-                                "Откроется системный диалог — можно на флешку, Drive",
+                            "Откроется диалог «Отправить» — можно в Drive, " +
+                                    "Telegram, почту",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -105,7 +104,7 @@ fun DbBackupDialog(
         confirmButton = {
             TextButton(
                 enabled = valid,
-                onClick = { onExport(trimmed, saveInternal) }
+                onClick = { onExport(trimmed, shareAfter) }
             ) {
                 Icon(Icons.Filled.Save, contentDescription = null)
                 Spacer(Modifier.width(4.dp))

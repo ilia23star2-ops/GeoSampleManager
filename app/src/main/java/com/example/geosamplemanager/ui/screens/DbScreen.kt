@@ -1,5 +1,7 @@
 package com.example.geosamplemanager.ui.screens
 
+import android.content.Intent
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -19,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -34,14 +37,17 @@ import java.util.Locale
  * FIX 5.9-db-style: Snackbar, >= 600.dp, без !!.
  * FIX 5.9-db-info: кнопка «Инфо» → DbInfoDialog.
  *
- * FIX 5.9-db-backup-v2:
- *  - кнопка «Бэкап» → «Экспорт»;
- *  - DbBackupDialog — имя файла + чекбокс «внутренняя папка / наружу»;
- *  - внутренняя папка → viewModel.exportToInternal(name);
- *  - наружу → CreateDocument → viewModel.exportToUri(uri).
+ * FIX 5.9-db-backup-v2: диалог экспорта.
+ *
+ * FIX 5.9-db-backup-fix:
+ *  - API 29+ → сохранение в публичные Загрузки (MediaStore);
+ *  - API < 29 → fallback через CreateDocument (системный диалог);
+ *  - если в диалоге включён «Поделиться после сохранения» —
+ *    после успешной записи открывается Share-интент.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
+    val context = LocalContext.current
     val areas by viewModel.areas.collectAsState()
     val selectedArea by viewModel.selectedArea.collectAsState()
     val orders by viewModel.orders.collectAsState()
@@ -51,6 +57,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val dbInfo by viewModel.dbInfo.collectAsState()
     val dbInfoLoading by viewModel.dbInfoLoading.collectAsState()
     val exporting by viewModel.exporting.collectAsState()
+    val lastExportUri by viewModel.lastExportUri.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -67,16 +74,38 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var areaToDelete by remember { mutableStateOf<AreaEntity?>(null) }
     var orderToDelete by remember { mutableStateOf<OrderEntity?>(null) }
     var showDbInfoDialog by remember { mutableStateOf(false) }
-
-    // FIX 5.9-db-backup-v2:
     var showBackupDialog by remember { mutableStateOf(false) }
+
+    // FIX 5.9-db-backup-fix: состояние fallback-экспорта (SAF).
     var pendingExternalName by remember { mutableStateOf<String?>(null) }
+    var shareAfterNextExport by remember { mutableStateOf(false) }
 
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
 
-    // FIX 5.9-db-backup-v2: системный диалог «Куда сохранить».
+    // FIX 5.9-db-backup-fix: открытие Share-интента после сохранения.
+    LaunchedEffect(lastExportUri) {
+        val uri = lastExportUri ?: return@LaunchedEffect
+        if (shareAfterNextExport) {
+            shareAfterNextExport = false
+            try {
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/octet-stream"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(intent, "Отправить бэкап")
+                )
+            } catch (_: Exception) {
+                // Нет приложений для шаринга — молча продолжаем.
+            }
+        }
+        viewModel.consumeLastExportUri()
+    }
+
+    // FIX 5.9-db-backup-fix: fallback для API < 29.
     val externalExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
@@ -84,6 +113,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         pendingExternalName = null
         if (uri != null) {
             viewModel.exportToUri(uri)
+        } else {
+            shareAfterNextExport = false
         }
     }
 
@@ -94,7 +125,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Верхняя панель действий.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -204,7 +234,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === Диалог добавления участка ===
     if (showAddAreaDialog) {
         TextInputDialog(
             title = "Новый участок",
@@ -217,7 +246,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === Диалог добавления наряда ===
     if (showAddOrderDialog) {
         TextInputDialog(
             title = "Новый наряд в «${selectedArea?.areaName ?: ""}»",
@@ -230,7 +258,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === Подтверждение удаления участка ===
     areaToDelete?.let { area ->
         ConfirmDialog(
             title = "Удалить участок?",
@@ -244,7 +271,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === Подтверждение удаления наряда ===
     orderToDelete?.let { order ->
         ConfirmDialog(
             title = "Удалить наряд?",
@@ -258,7 +284,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === Инфо о БД ===
     if (showDbInfoDialog) {
         DbInfoDialog(
             info = dbInfo,
@@ -268,7 +293,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === FIX 5.9-db-backup-v2: диалог экспорта ===
+    // FIX 5.9-db-backup-fix: экспорт.
     if (showBackupDialog) {
         val defaultName = remember {
             val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
@@ -276,13 +301,18 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
         DbBackupDialog(
             defaultName = defaultName,
-            onExport = { name, saveInternal ->
+            onExport = { name, shareAfter ->
                 showBackupDialog = false
-                if (saveInternal) {
-                    viewModel.exportToInternal(name)
+                shareAfterNextExport = shareAfter
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // Публичные Загрузки через MediaStore.
+                    viewModel.exportToDownloads(name)
                 } else {
+                    // Fallback: системный диалог.
                     pendingExternalName = name
-                    externalExportLauncher.launch("$name.${GsmBackupWriter.EXTENSION}")
+                    externalExportLauncher.launch(
+                        "$name.${GsmBackupWriter.EXTENSION}"
+                    )
                 }
             },
             onDismiss = { showBackupDialog = false }

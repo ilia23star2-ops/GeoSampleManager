@@ -1,7 +1,11 @@
 package com.example.geosamplemanager.ui.screens
 
 import android.app.Application
+import android.content.ContentValues
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
@@ -23,16 +27,18 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
- * FIX 5.9-db-info:
- *  - state dbInfo + loadDbInfo() — инфо-панель о текущей БД.
+ * FIX 5.9-db-info: dbInfo + loadDbInfo().
  *
- * FIX 5.9-db-backup-v2:
- *  - exportToInternal(name) — сохранить .gsmbackup во внутреннюю папку;
- *  - exportToUri(uri, name) — сохранить .gsmbackup по внешнему URI;
- *  - перед записью — PRAGMA wal_checkpoint(TRUNCATE).
+ * FIX 5.9-db-backup-v2: экспорт .gsmbackup.
+ *
+ * FIX 5.9-db-backup-fix:
+ *  - экспорт в ПУБЛИЧНУЮ папку Загрузки через MediaStore (API 29+),
+ *    файл виден в любом проводнике;
+ *  - на API < 29 — fallback через exportToUri (системный диалог);
+ *  - убран exportToInternal (внутренняя папка бесполезна);
+ *  - после сохранения — lastExportUri, UI может открыть Share.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DbViewModel(application: Application) : AndroidViewModel(application) {
@@ -102,26 +108,75 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     val exporting: StateFlow<Boolean> = _exporting.asStateFlow()
 
     /**
-     * Сохранить бэкап во внутреннюю папку filesDir/db_backups/.
-     * Имя — без расширения.
+     * FIX 5.9-db-backup-fix:
+     * URI последнего успешного экспорта. UI читает и сбрасывает через
+     * consumeLastExportUri(). Нужно, чтобы предложить Share.
      */
-    fun exportToInternal(name: String) {
+    private val _lastExportUri = MutableStateFlow<Uri?>(null)
+    val lastExportUri: StateFlow<Uri?> = _lastExportUri.asStateFlow()
+
+    fun consumeLastExportUri() {
+        _lastExportUri.value = null
+    }
+
+    /**
+     * FIX 5.9-db-backup-fix:
+     * Сохранить .gsmbackup в ПУБЛИЧНУЮ папку Загрузки
+     * (Download / Downloads / Загрузки — имя задаёт система).
+     * Подпапка — GeoSampleManager, чтобы бэкапы не смешивались.
+     *
+     * Работает без разрешений на API 29+.
+     * На API < 29 — бросает исключение; UI должен использовать
+     * exportToUri через системный диалог.
+     */
+    fun exportToDownloads(name: String) {
         if (_exporting.value) return
         viewModelScope.launch {
             _exporting.value = true
             try {
-                val file = withContext(Dispatchers.IO) {
-                    val dir = File(
-                        getApplication<Application>().filesDir,
-                        "db_backups"
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                    throw IllegalStateException(
+                        "Для сохранения нужен Android 10+. " +
+                                "Выберите «Сохранить наружу»."
                     )
-                    if (!dir.exists()) dir.mkdirs()
-                    val f = File(dir, "$name.${GsmBackupWriter.EXTENSION}")
-                    f.outputStream().use { out -> writeBackup(out) }
-                    f
                 }
-                _message.value = "Бэкап сохранён: ${file.name} " +
-                        "(${formatSize(file.length())})"
+
+                val uri = withContext(Dispatchers.IO) {
+                    val ctx = getApplication<Application>()
+                    val resolver = ctx.contentResolver
+                    val fileName = "$name.${GsmBackupWriter.EXTENSION}"
+
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                        put(
+                            MediaStore.MediaColumns.MIME_TYPE,
+                            "application/octet-stream"
+                        )
+                        put(
+                            MediaStore.MediaColumns.RELATIVE_PATH,
+                            "${Environment.DIRECTORY_DOWNLOADS}/GeoSampleManager"
+                        )
+                    }
+
+                    val uri = resolver.insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        values
+                    ) ?: throw IllegalStateException("Не удалось создать файл")
+
+                    try {
+                        resolver.openOutputStream(uri)?.use { out ->
+                            writeBackup(out)
+                        } ?: throw IllegalStateException("Не удалось открыть поток")
+                    } catch (e: Exception) {
+                        // Если запись упала — убираем пустой файл.
+                        try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+                        throw e
+                    }
+                    uri
+                }
+
+                _lastExportUri.value = uri
+                _message.value = "Сохранено в Загрузки/GeoSampleManager: $name"
             } catch (e: Exception) {
                 _message.value = "Ошибка бэкапа: ${e.message}"
             } finally {
@@ -131,7 +186,9 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Сохранить бэкап по внешнему URI (через системный диалог).
+     * FIX 5.9-db-backup-fix:
+     * Сохранить по внешнему URI (системный диалог "Сохранить как").
+     * Используется на API < 29 как fallback.
      */
     fun exportToUri(uri: Uri) {
         if (_exporting.value) return
@@ -153,9 +210,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Общая логика: checkpoint WAL → собрать инфо → zip.
-     */
     private suspend fun writeBackup(out: java.io.OutputStream) {
         withContext(Dispatchers.IO) {
             repo.checkpointWal()
@@ -182,22 +236,16 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun appVersion(): String = try {
-        getApplication<Application>().packageManager
-            .getPackageInfo(getApplication<Application>().packageName, 0)
+        val ctx = getApplication<Application>()
+        ctx.packageManager
+            .getPackageInfo(ctx.packageName, 0)
             .versionName ?: "?"
     } catch (_: Exception) {
         "?"
     }
 
-    private fun formatSize(bytes: Long): String = when {
-        bytes < 1024 -> "$bytes Б"
-        bytes < 1024 * 1024 -> "%.1f КБ".format(bytes / 1024.0)
-        bytes < 1024L * 1024 * 1024 -> "%.1f МБ".format(bytes / (1024.0 * 1024))
-        else -> "%.2f ГБ".format(bytes / (1024.0 * 1024 * 1024))
-    }
-
     // ================================================================
-    // Выбор / действия (было)
+    // Выбор / действия
     // ================================================================
 
     fun selectArea(area: AreaEntity?) {
