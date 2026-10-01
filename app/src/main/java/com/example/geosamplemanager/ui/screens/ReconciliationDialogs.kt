@@ -324,6 +324,14 @@ private fun PhotoThumbnail(
 // Редактор пробы
 // ====================================================================
 
+/**
+ * FIX 5.9-edit-status-blank:
+ *  - при статусе «Холостая» поля интервала скрыты;
+ *  - при возврате на «Обычная» — интервал восстанавливается
+ *    (значения в state не теряются);
+ *  - при сохранении холостой интервал уходит как null;
+ *  - для не-холостой интервал обязателен (валидация).
+ */
 @Composable
 fun EditSampleDialog(
     row: SampleRow,
@@ -340,13 +348,39 @@ fun EditSampleDialog(
     var type by remember { mutableStateOf(row.type) }
     var status by remember { mutableStateOf(row.status) }
 
+    val isBlank = status == SampleStatus.BLANK
+
+    var validationAttempted by remember { mutableStateOf(false) }
+
+    val fromParsed = intervalFrom.replace(',', '.').toDoubleOrNull()
+    val toParsed = intervalTo.replace(',', '.').toDoubleOrNull()
+
+    val fromError = !isBlank && fromParsed == null
+    val toError = !isBlank && toParsed == null
+    val orderError = !isBlank && !fromError && !toError &&
+            (fromParsed ?: 0.0) >= (toParsed ?: 0.0)
+
+    val formValid = isBlank || (!fromError && !toError && !orderError)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Редактирование пробы") },
+        title = {
+            Column {
+                Text("Редактирование пробы")
+                Text(
+                    "Проба ${row.sampleNumber}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 OutlinedTextField(
                     value = wellNumber, onValueChange = { wellNumber = it },
@@ -358,27 +392,86 @@ fun EditSampleDialog(
                     label = { Text("№ пробы") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = intervalFrom, onValueChange = { intervalFrom = it },
-                        label = { Text("От, м") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = intervalTo, onValueChange = { intervalTo = it },
-                        label = { Text("До, м") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
+
+                // FIX 5.9-edit-status-blank:
+                // Интервал скрыт для холостой. Значения полей сохраняются
+                // в state, при возврате — восстановятся.
+                if (!isBlank) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = intervalFrom,
+                            onValueChange = { intervalFrom = it },
+                            label = { Text("От, м") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal
+                            ),
+                            isError = validationAttempted && fromError,
+                            supportingText = {
+                                if (validationAttempted && fromError) {
+                                    Text(
+                                        "Заполните",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else null
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = intervalTo,
+                            onValueChange = { intervalTo = it },
+                            label = { Text("До, м") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal
+                            ),
+                            isError = validationAttempted && (toError || orderError),
+                            supportingText = {
+                                if (validationAttempted && toError) {
+                                    Text(
+                                        "Заполните",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else if (validationAttempted && orderError) {
+                                    Text(
+                                        "«До» должно быть больше «От»",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else null
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Text(
+                            "У холостой пробы нет интервала",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = weight, onValueChange = { weight = it },
                         label = { Text("Вес, кг") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
                         value = controlWeight, onValueChange = { controlWeight = it },
                         label = { Text("ВК, кг") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -424,21 +517,35 @@ fun EditSampleDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                onSave(
-                    row.copy(
-                        sampleNumber = sampleNumber,
-                        wellNumber = wellNumber,
-                        intervalFrom = intervalFrom,
-                        intervalTo = intervalTo,
-                        weight = weight.replace(',', '.').toDoubleOrNull(),
-                        controlWeight = controlWeight.replace(',', '.').toDoubleOrNull(),
-                        characteristic = characteristic,
-                        type = type,
-                        status = status
+            TextButton(
+                enabled = formValid,
+                onClick = {
+                    validationAttempted = true
+                    if (!formValid) return@TextButton
+
+                    // FIX 5.9-edit-status-blank:
+                    // Для холостой интервал = null, сохраняется только
+                    // если статус не BLANK.
+                    val newIntervalFrom = if (isBlank) null else fromParsed
+                    val newIntervalTo = if (isBlank) null else toParsed
+
+                    onSave(
+                        row.copy(
+                            sampleNumber = sampleNumber,
+                            wellNumber = wellNumber,
+                            intervalFrom = if (newIntervalFrom == null) "—"
+                            else newIntervalFrom.toString(),
+                            intervalTo = if (newIntervalTo == null) "—"
+                            else newIntervalTo.toString(),
+                            weight = weight.replace(',', '.').toDoubleOrNull(),
+                            controlWeight = controlWeight.replace(',', '.').toDoubleOrNull(),
+                            characteristic = characteristic,
+                            type = type,
+                            status = status
+                        )
                     )
-                )
-            }) { Text("Сохранить") }
+                }
+            ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
@@ -793,15 +900,6 @@ fun ConfirmResetWeightControlDialog(
 // Массовая отметка
 // ====================================================================
 
-/**
- * FIX 5.9-bulk-confirm-2:
- * Три секции:
- *   1. ВК без веса — ввод controlWeight.
- *   2. Холостые без веса — ввод weight (раньше их не было).
- *   3. Отложенные — галка «отметить как найденную».
- *
- * onApply получает три мапы.
- */
 @Composable
 fun BulkActionsDialog(
     decisions: List<ReconciliationState.BulkDecision>,
