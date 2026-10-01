@@ -5,9 +5,11 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.DbInfo
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -17,21 +19,26 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
+/**
+ * FIX 5.9-db-info:
+ *  - state dbInfo + loadDbInfo() — инфо-панель о текущей БД.
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
 
-    // Список всех участков
+    // Список всех участков.
     val areas: StateFlow<List<AreaEntity>> = repo.getAreasFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Выбранный участок
+    // Выбранный участок.
     private val _selectedArea = MutableStateFlow<AreaEntity?>(null)
     val selectedArea: StateFlow<AreaEntity?> = _selectedArea.asStateFlow()
 
-    // Наряды выбранного участка
+    // Наряды выбранного участка.
     val orders: StateFlow<List<OrderEntity>> = _selectedArea
         .flatMapLatest { area ->
             if (area == null) flowOf(emptyList())
@@ -39,11 +46,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Выбранный наряд
+    // Выбранный наряд.
     private val _selectedOrder = MutableStateFlow<OrderEntity?>(null)
     val selectedOrder: StateFlow<OrderEntity?> = _selectedOrder.asStateFlow()
 
-    // Пробы выбранного наряда
+    // Пробы выбранного наряда.
     val samples: StateFlow<List<SampleEntity>> = _selectedOrder
         .flatMapLatest { order ->
             if (order == null) flowOf(emptyList())
@@ -51,13 +58,45 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Сообщения для пользователя (Toast)
+    // Сообщения для пользователя (Snackbar).
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
     fun clearMessage() {
         _message.value = null
     }
+
+    // ================================================================
+    // FIX 5.9-db-info
+    // ================================================================
+
+    private val _dbInfo = MutableStateFlow<DbInfo?>(null)
+    val dbInfo: StateFlow<DbInfo?> = _dbInfo.asStateFlow()
+
+    private val _dbInfoLoading = MutableStateFlow(false)
+    val dbInfoLoading: StateFlow<Boolean> = _dbInfoLoading.asStateFlow()
+
+    /**
+     * Собрать инфо о БД. При ошибке — snackbar + info = null.
+     */
+    fun loadDbInfo() {
+        if (_dbInfoLoading.value) return
+        _dbInfoLoading.value = true
+        viewModelScope.launch {
+            try {
+                val info = withContext(Dispatchers.IO) { repo.getDbInfo() }
+                _dbInfo.value = info
+            } catch (e: Exception) {
+                _message.value = "Ошибка чтения БД: ${e.message}"
+            } finally {
+                _dbInfoLoading.value = false
+            }
+        }
+    }
+
+    // ================================================================
+    // Выбор / действия (было)
+    // ================================================================
 
     fun selectArea(area: AreaEntity?) {
         _selectedArea.value = area

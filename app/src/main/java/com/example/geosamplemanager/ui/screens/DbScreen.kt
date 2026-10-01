@@ -12,13 +12,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -28,10 +28,13 @@ import com.example.geosamplemanager.data.entity.SampleEntity
 
 /**
  * FIX 5.9-db-style:
- *  - Toast заменён на SnackbarHost (единый стиль с остальными экранами);
- *  - maxWidth > 600.dp → >= 600.dp (единообразно со StatsScreen / EditScreen);
- *  - убран `!!` при работе с selectedOrder;
- *  - комментарии приведены к общему стилю.
+ *  - Toast → Snackbar;
+ *  - maxWidth >= 600.dp;
+ *  - убран `!!`.
+ *
+ * FIX 5.9-db-info:
+ *  - кнопка «Инфо» в шапке → DbInfoDialog;
+ *  - загрузка info при открытии диалога.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -41,10 +44,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val samples by viewModel.samples.collectAsState()
     val message by viewModel.message.collectAsState()
+    val dbInfo by viewModel.dbInfo.collectAsState()
+    val dbInfoLoading by viewModel.dbInfoLoading.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // Показ сообщения через Snackbar.
     LaunchedEffect(message) {
         message?.let {
             snackbarHostState.showSnackbar(it)
@@ -57,8 +61,13 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var showAddOrderDialog by remember { mutableStateOf(false) }
     var areaToDelete by remember { mutableStateOf<AreaEntity?>(null) }
     var orderToDelete by remember { mutableStateOf<OrderEntity?>(null) }
+    var showDbInfoDialog by remember { mutableStateOf(false) }
 
-    // Launcher для бэкапа.
+    // FIX 5.9-db-info: при открытии — загрузить инфо.
+    LaunchedEffect(showDbInfoDialog) {
+        if (showDbInfoDialog) viewModel.loadDbInfo()
+    }
+
     val backupLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
@@ -97,6 +106,14 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Spacer(Modifier.width(4.dp))
                     Text("Бэкап")
                 }
+                OutlinedButton(
+                    onClick = { showDbInfoDialog = true },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Инфо")
+                }
             }
 
             HorizontalDivider()
@@ -106,7 +123,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 val isWide = maxWidth >= 600.dp
 
                 if (isWide) {
-                    // Планшет: две колонки.
                     Row(
                         modifier = Modifier.fillMaxSize(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -129,7 +145,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                         )
                     }
                 } else {
-                    // Телефон: всё в столбик, скролл.
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -156,7 +171,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 }
             }
 
-            // Список проб выбранного наряда.
             val order = selectedOrder
             if (order != null) {
                 HorizontalDivider()
@@ -225,6 +239,16 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 orderToDelete = null
             },
             onDismiss = { orderToDelete = null }
+        )
+    }
+
+    // === FIX 5.9-db-info: диалог информации о БД ===
+    if (showDbInfoDialog) {
+        DbInfoDialog(
+            info = dbInfo,
+            loading = dbInfoLoading,
+            onRefresh = { viewModel.loadDbInfo() },
+            onDismiss = { showDbInfoDialog = false }
         )
     }
 }

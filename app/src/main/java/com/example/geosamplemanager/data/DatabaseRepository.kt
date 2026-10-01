@@ -13,6 +13,24 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
+/**
+ * FIX 5.9-db-info:
+ * Добавлен метод getDbInfo() — счётчики по всем таблицам + размеры
+ * файлов БД и папки фото. Используется в инфо-панели вкладки БД.
+ */
+data class DbInfo(
+    val dbPath: String,
+    val dbSizeBytes: Long,
+    val photosSizeBytes: Long,
+    val lastModified: Long,
+    val areasCount: Int,
+    val ordersCount: Int,
+    val samplesCount: Int,
+    val notesCount: Int,
+    val photosCount: Int,
+    val wellsCount: Int
+)
+
 class DatabaseRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -216,6 +234,32 @@ class DatabaseRepository(context: Context) {
     // ============ ФАЙЛ БД ============
 
     fun getDatabaseFile(): File = appContext.getDatabasePath("geosamples.db")
+
+    /**
+     * FIX 5.9-db-info:
+     * Собрать инфо о текущей БД: путь, размеры, дату, счётчики.
+     */
+    suspend fun getDbInfo(): DbInfo {
+        val dbFile = getDatabaseFile()
+        val photosDir = File(appContext.filesDir, "sample_photos")
+
+        val photosSize = if (photosDir.exists() && photosDir.isDirectory) {
+            photosDir.listFiles()?.sumOf { it.length() } ?: 0L
+        } else 0L
+
+        return DbInfo(
+            dbPath = dbFile.absolutePath,
+            dbSizeBytes = if (dbFile.exists()) dbFile.length() else 0L,
+            photosSizeBytes = photosSize,
+            lastModified = if (dbFile.exists()) dbFile.lastModified() else 0L,
+            areasCount = getAreas().size,
+            ordersCount = getAllOrders().size,
+            samplesCount = getTotalCount(),
+            notesCount = sampleNoteDao.countAll(),
+            photosCount = sampleImageDao.countAll(),
+            wellsCount = orderWellDao.countAll()
+        )
+    }
 
     // ============ ОЧИСТКА НАРЯДА ============
 
