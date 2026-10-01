@@ -4,7 +4,11 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import com.example.geosamplemanager.ui.screens.SampleStatus
 
 /**
- * FIX 5.9-xlsx-clean (четырнадцатый заход): без эмодзи.
+ * FIX 5.9-multi-report-ui/1 (01.10.2026):
+ *  - previewSheetName(areaName, orderNumber) — публичная функция,
+ *    единый формат имени листа для мульти-отчёта. Используется
+ *    ViewModel'ом для предварительной проверки дублей и в самом
+ *    build() при генерации имён.
  */
 
 object XlsxMultiReportBuilder {
@@ -32,6 +36,24 @@ object XlsxMultiReportBuilder {
         XlsxLegendItem("Холостая", XlsxStyles.BLANK),
         XlsxLegendItem("Весовой контроль", XlsxStyles.CONTROL)
     )
+
+    /**
+     * Публичная функция: имя листа для наряда в формате мульти-отчёта.
+     * Единый источник истины — использует ViewModel для проверки
+     * дублей ДО генерации.
+     *
+     * Формат: «<Участок> — Наряд <номер>» или «Наряд <номер>» (если
+     * участок пустой). Применяется sanitizeSheetName — заменяет
+     * запрещённые символы и обрезает до 31 символа.
+     */
+    fun previewSheetName(areaName: String, orderNumber: String): String {
+        val base = if (areaName.isBlank()) {
+            "Наряд $orderNumber"
+        } else {
+            "$areaName — Наряд $orderNumber"
+        }
+        return XlsxWriter.sanitizeSheetName(base, 1)
+    }
 
     private fun headerRow(text: String, style: Int): XlsxRow {
         val cells = ArrayList<XlsxCell>(COLUMNS)
@@ -318,11 +340,7 @@ object XlsxMultiReportBuilder {
     private fun uniqueSheetNames(orders: List<ReportData>): List<String> {
         val used = mutableSetOf<String>()
         return orders.mapIndexed { idx, data ->
-            val base = if (data.areaName.isBlank()) {
-                "Наряд ${data.orderNumber}"
-            } else {
-                "${data.areaName} — Наряд ${data.orderNumber}"
-            }
+            val base = previewSheetName(data.areaName, data.orderNumber)
             val sanitized = XlsxWriter.sanitizeSheetName(base, idx + 1)
 
             if (used.add(sanitized)) {
