@@ -16,26 +16,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.9-edit-viewmodel (заход 1/6):
- * ViewModel вкладки «Редактирование».
+ * FIX 5.9-edit-screen-search (заход 2/6):
+ * ViewModel вкладки «Редактирование» с поиском и фильтрами.
  *
- * Функции захода:
- *  - реактивная загрузка дерева участок → наряд → проба (Flow из Room);
- *  - выбор одной пробы для редактирования;
- *  - сохранение правки одной пробы;
- *  - удаление пробы (с/без пересчёта номеров в скважине);
- *  - развёрнутость дерева (участки/наряды).
- *
- * Массовые операции, добавление пробы — в следующих заходах.
+ * Функции:
+ *  - реактивное дерево участок → наряд → проба;
+ *  - выбор одной пробы;
+ *  - сохранение правки;
+ *  - удаление (с/без пересчёта);
+ *  - поиск по номеру пробы, номеру скважины, характеристике;
+ *  - фильтры-чипы: найдены / не найдены / отложены / ВК / холостые / ошибки;
+ *  - авто-разворот дерева при непустом поиске.
  */
 
 data class EditTreeData(
     val areas: List<EditAreaUi>
 ) {
-    /**
-     * Найти пробу по id во всём дереве. Возвращает null, если нет.
-     * Чистая функция — тестируется в EditViewModelTest.
-     */
     fun findSample(sampleId: String): SampleRow? {
         areas.forEach { area ->
             area.orders.forEach { order ->
@@ -60,19 +56,21 @@ data class EditOrderUi(
 )
 
 /**
- * Построение дерева для редактора.
- *
- * Чистая функция (использует только mapper buildSampleGroup).
- * Тестируется отдельно в EditViewModelTest.
- *
- * Сортировка:
- *  - участки — по названию;
- *  - наряды — по номеру (лексикографически);
- *  - пробы — по serialNumber.
- *
- * Наряды без участка и пробы без наряда игнорируются (обычно такого
- * нет — FK, но на всякий).
+ * Фильтры-чипы вкладки «Редактирование».
  */
+enum class EditFilter(val title: String) {
+    FOUND("Найденные"),
+    NOT_FOUND("Не найденные"),
+    POSTPONED("Отложенные"),
+    WEIGHT_CONTROL("Весовой контроль"),
+    BLANK("Холостые"),
+    ERRORS("Ошибки")
+}
+
+// ====================================================================
+// Чистые функции — тестируются отдельно.
+// ====================================================================
+
 internal fun buildEditTree(
     areas: List<AreaEntity>,
     orders: List<OrderEntity>,
@@ -105,12 +103,88 @@ internal fun buildEditTree(
     return EditTreeData(areas = areaUis)
 }
 
+/**
+ * Применить поиск и фильтры к дереву.
+ *
+ * Поиск: подстрока (содержит) по нормализованному номеру пробы,
+ * номеру скважины ИЛИ по характеристике (без регистра).
+ *
+ * Фильтры: ALL-логика — проба должна удовлетворять ВСЕМ выбранным.
+ *
+ * Пустые наряды и участки вычищаются.
+ */
+internal fun applyEditFilters(
+    tree: EditTreeData,
+    query: String,
+    filters: Set<EditFilter>
+): EditTreeData {
+    val q = query.trim().lowercase()
+    val hasQuery = q.isNotEmpty()
+
+    if (!hasQuery && filters.isEmpty()) return tree
+
+    val filteredAreas = tree.areas.mapNotNull { area ->
+        val filteredOrders = area.orders.mapNotNull { order ->
+            val filteredSamples = order.samples.filter { row ->
+                matchesEditQuery(row, q, hasQuery) &&
+                        matchesEditFilters(row, filters)
+            }
+            if (filteredSamples.isEmpty()) null
+            else order.copy(samples = filteredSamples)
+        }
+        if (filteredOrders.isEmpty()) null
+        else area.copy(orders = filteredOrders)
+    }
+    return EditTreeData(areas = filteredAreas)
+}
+
+private fun matchesEditQuery(row: SampleRow, q: String, hasQuery: Boolean): Boolean {
+    if (!hasQuery) return true
+    val norm = normalizeNumber(q)
+    if (norm.isNotEmpty()) {
+        val sampleDigits = normalizeNumber(row.sampleNumber)
+        val wellDigits = normalizeNumber(row.wellNumber)
+        if (sampleDigits.contains(norm)) return true
+        if (wellDigits.contains(norm)) return true
+    }
+    // Текстовый поиск по характеристике (без регистра).
+    return row.characteristic.lowercase().contains(q)
+}
+
+private fun matchesEditFilters(row: SampleRow, filters: Set<EditFilter>): Boolean {
+    if (filters.isEmpty()) return true
+    return filters.all { f ->
+        when (f) {
+            EditFilter.FOUND -> row.found
+            EditFilter.NOT_FOUND -> !row.found
+            EditFilter.POSTPONED -> row.postponed
+            EditFilter.WEIGHT_CONTROL -> row.weightControl
+            EditFilter.BLANK -> row.isBlank
+            EditFilter.ERRORS -> row.hasImportError
+        }
+    }
+}
+
+// ====================================================================
+// ViewModel
+// ====================================================================
+
 class EditViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).repository
 
+    /** Сырое дерево — прямо из БД, без фильтров. */
+    private val _rawTree = MutableStateFlow<EditTreeData?>(null)
+
+    /** Отфильтрованное дерево — то, что видит UI. */
     private val _tree = MutableStateFlow<EditTreeData?>(null)
     val tree: StateFlow<EditTreeData?> = _tree.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _activeFilters = MutableStateFlow<Set<EditFilter>>(emptySet())
+    val activeFilters: StateFlow<Set<EditFilter>> = _activeFilters.asStateFlow()
 
     private val _selectedSampleId = MutableStateFlow<String?>(null)
     val selectedSampleId: StateFlow<String?> = _selectedSampleId.asStateFlow()
@@ -145,31 +219,49 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Default) {
                     buildEditTree(areas, orders, samples)
                 }
-            }.collect { newTree ->
-                _tree.value = newTree
-                refreshSelectedSample(newTree)
-                pruneExpanded(newTree)
+            }.collect { newRawTree ->
+                _rawTree.value = newRawTree
+                rebuildFilteredTree()
+                pruneExpanded(newRawTree)
             }
         }
     }
 
-    /**
-     * Если выбранная проба изменилась в БД (правка/удаление) —
-     * пересобрать selectedSample. Если проба пропала — снять выбор.
-     */
-    private fun refreshSelectedSample(tree: EditTreeData) {
-        val selId = _selectedSampleId.value ?: return
-        val updated = tree.findSample(selId)
-        _selectedSample.value = updated
-        if (updated == null) {
-            _selectedSampleId.value = null
+    private fun rebuildFilteredTree() {
+        val raw = _rawTree.value ?: return
+        val q = _searchQuery.value
+        val filters = _activeFilters.value
+
+        val filtered = if (q.isBlank() && filters.isEmpty()) {
+            raw
+        } else {
+            applyEditFilters(raw, q, filters)
+        }
+        _tree.value = filtered
+
+        // Авто-разворот при непустом поиске.
+        if (q.isNotBlank()) {
+            val areaIds = filtered.areas.map { it.areaId }.toSet()
+            val orderIds = filtered.areas
+                .flatMap { area -> area.orders.map { it.orderId } }
+                .toSet()
+            _expandedAreaIds.value = areaIds
+            _expandedOrderIds.value = orderIds
+        }
+
+        // Обновить/снять выбор, если проба пропала из отфильтрованного дерева.
+        val selId = _selectedSampleId.value
+        if (selId != null) {
+            val updated = filtered.findSample(selId)
+            if (updated == null) {
+                _selectedSampleId.value = null
+                _selectedSample.value = null
+            } else {
+                _selectedSample.value = updated
+            }
         }
     }
 
-    /**
-     * После изменения БД убрать из развёрнутости id участков и нарядов,
-     * которых больше нет.
-     */
     private fun pruneExpanded(tree: EditTreeData) {
         val areaIds = tree.areas.map { it.areaId }.toSet()
         val orderIds = tree.areas
@@ -177,6 +269,28 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
             .toSet()
         _expandedAreaIds.value = _expandedAreaIds.value intersect areaIds
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
+    }
+
+    // ================================================================
+    // Поиск и фильтры
+    // ================================================================
+
+    fun setSearchQuery(text: String) {
+        _searchQuery.value = text
+        rebuildFilteredTree()
+    }
+
+    fun toggleFilter(filter: EditFilter) {
+        _activeFilters.value = if (filter in _activeFilters.value)
+            _activeFilters.value - filter
+        else
+            _activeFilters.value + filter
+        rebuildFilteredTree()
+    }
+
+    fun clearFilters() {
+        _activeFilters.value = emptySet()
+        rebuildFilteredTree()
     }
 
     // ================================================================
@@ -220,18 +334,9 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Сохранение правки одной пробы
+    // Сохранение / удаление
     // ================================================================
 
-    /**
-     * Сохранить правку одной пробы.
-     *
-     * Использует repo.saveRows(listOf(row)) — там внутри транзакция,
-     * copy полей поверх существующей сущности, updateAll.
-     *
-     * После записи Room сам эмиттит новый Flow — дерево и выбранная
-     * проба обновятся через subscribeToDb без ручного вмешательства.
-     */
     fun saveSample(row: SampleRow) {
         viewModelScope.launch {
             try {
@@ -245,16 +350,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ================================================================
-    // Удаление
-    // ================================================================
-
-    /**
-     * Удалить пробу.
-     *
-     * @param renumber true — пересчитать номера оставшихся проб в
-     *                 скважине удалённой; false — оставить как есть.
-     */
     fun deleteSample(sampleId: String, renumber: Boolean) {
         val id = sampleId.toLongOrNull() ?: return
         viewModelScope.launch {
@@ -262,9 +357,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     repo.deleteSampleWithRenumber(id, renumber)
                 }
-                // Проба исчезнет из Flow, refreshSelectedSample снимет
-                // выбор. Но подстрахуемся — сразу снимем выделение, если
-                // удалили выбранную.
                 if (_selectedSampleId.value == sampleId) {
                     _selectedSampleId.value = null
                     _selectedSample.value = null
