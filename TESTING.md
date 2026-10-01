@@ -19,9 +19,12 @@
 - Чистые функции вкладки Редактирование.
 - Миграции БД.
 
-UI не тестируем — проверяем руками.
+UI не тестируем — проверяем руками. I/O, zip, БД — тоже
+device-check.
 
 **Правило (§23 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
+Для вкладки БД — пока исключений нет (там io + Compose + состояние
+Activity — покрываются device-check).
 
 ---
 
@@ -40,15 +43,15 @@ UI не тестируем — проверяем руками.
 | `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy | 18 |
 | `AnswerStateTest.kt` | `AnswerState` из `AnswerReason` | 22 |
 | `VoiceCommandParserFindTest.kt` | «найди X» → `Find(X)`, «найди» → `Find(null)` | 8 |
-| `VoiceCommandParserPausedTest.kt` | Состояние PAUSED: «продолжить», «стоп», «хватит» | 6 |
+| `VoiceCommandParserPausedTest.kt` | Состояние PAUSED | 6 |
 | `VoiceCommandParserPin3Test.kt` | pin: «дальше», «следующая X», вес «X сотни» | 10 |
 | `VoiceCommandParserPin4Test.kt` | pin: склейка числительных, fallback 14↔4 | 7 |
-| `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED`: голое число → `MarkOrdinal` | 8 |
+| `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED` | 8 |
 | `VoiceCommandParserQueueTest.kt` | Очередь: «дальше» → `NextInQueue` | 6 |
-| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть», «два семьсот», мусор → Unknown | 17 |
+| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть» и т.п. | 17 |
 | `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4, 400→4; 1..3 → null | 27 |
-| `VoiceMarkersTest.kt` | Маркеры, отложение одной фразой, SORT+pin | 17 |
-| `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman`, префиксы по буквам | 19 |
+| `VoiceMarkersTest.kt` | Маркеры, отложение, SORT+pin | 17 |
+| `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman` | 19 |
 
 ### `data/reconciliation/`
 
@@ -60,25 +63,25 @@ UI не тестируем — проверяем руками.
 
 | Файл | Что проверяет | Тестов |
 |---|---|---|
-| `MultiHtmlReportGeneratorTest.kt` | Мультинарядный HTML: TOC, секции, приложения, ссылки, экранирование | 17 |
-| `ReportHtmlGeneratorTest.kt` | Одиночный HTML: шапка, сводка, таблица, приложения, escaping | 26 |
-| `XlsxMultiReportBuilderTest.kt` | Мульти XLSX: N листов + «Приложения», дубли имён, ссылки | 20 |
-| `XlsxReportBuilderTest.kt` | Одиночный XLSX: шапка, merge, легенда, hyperlinks, стили | 27 |
-| `XlsxWriterTest.kt` | Низкоуровневый: zip, styles.xml, cell refs, escape, sanitize | 32 |
+| `MultiHtmlReportGeneratorTest.kt` | Мультинарядный HTML | 17 |
+| `ReportHtmlGeneratorTest.kt` | Одиночный HTML | 26 |
+| `XlsxMultiReportBuilderTest.kt` | Мульти XLSX | 20 |
+| `XlsxReportBuilderTest.kt` | Одиночный XLSX | 27 |
+| `XlsxWriterTest.kt` | Низкоуровневый zip/XML | 32 |
 
 ### `ui/screens/`
 
 | Файл | Что проверяет | Тестов |
 |---|---|---|
-| `AnalyzeMatchTest.kt` | Функция `analyzeMatch` | 18 |
-| `ReconciliationWeightQueueTest.kt` | `buildWeightQueue`: холостые, ВК, порядок | 11 |
-| `SearchScrollTopTest.kt` | `shouldShowScrollTop`: порог >10 | 5 |
-| `EditViewModelTest.kt` | `buildEditTree`: сортировка, сироты, findSample/findOrder | 17 |
-| `EditScreenTreeItemsTest.kt` | `buildTreeItems`: развёрнутость, ключи, порядок | 8 |
-| `EditSearchFilterTest.kt` | `applyEditFilters`: поиск, фильтры, комбинации | 18 |
-| `EditAddSampleTest.kt` | `planInsertPosition`, `parseSuffixNumber`, `detectSuffixLength`, `findCommonWellPrefix`, `suggestIntervalFrom`, `suggestNextSampleNumberInWell`, `findConflict` | 21 |
+| `AnalyzeMatchTest.kt` | `analyzeMatch` | 18 |
+| `ReconciliationWeightQueueTest.kt` | `buildWeightQueue` | 11 |
+| `SearchScrollTopTest.kt` | `shouldShowScrollTop` | 5 |
+| `EditViewModelTest.kt` | `buildEditTree` | 17 |
+| `EditScreenTreeItemsTest.kt` | `buildTreeItems` | 8 |
+| `EditSearchFilterTest.kt` | `applyEditFilters` | 18 |
+| `EditAddSampleTest.kt` | `planInsertPosition`, `parseSuffixNumber` и др. | 21 |
 | `EditMultiselectTest.kt` | `applyMultiselectToggle`, `computeSelectionLabel` | 13 |
-| `EditMassOpsTest.kt` | `applyMassEditToRow`: синхронизация status ↔ weightControl, hasAny | 14 |
+| `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
 
 **Всего: ~370 тестов.** Все зелёные.
 
@@ -90,24 +93,30 @@ UI не тестируем — проверяем руками.
 
 | Файл | Что проверять |
 |---|---|
-| `QueryTokenizerTest.kt` | `KPD1090031` → `[Prefix, Number]`; «1524» → `Number` |
-| `QueryNormalizerTest.kt` | Lowercase, ё→е, дефисы, пунктуация |
-| `DigitGrouperTest.kt` | «109 00 31» → три группы; нули → `LEADING_ZERO` |
-| `GroupToCandidatesTest.kt` | Порядок кандидатов: слитно / по группам / по парам |
-| `SearchServiceTest.kt` | `SearchService.search` — мок `VoiceSampleSource` |
+| `QueryTokenizerTest.kt` | `KPD1090031` → `[Prefix, Number]` |
+| `QueryNormalizerTest.kt` | Lowercase, ё→е, дефисы |
+| `DigitGrouperTest.kt` | «109 00 31» → три группы |
+| `GroupToCandidatesTest.kt` | Порядок кандидатов |
+| `SearchServiceTest.kt` | Мок `VoiceSampleSource` |
 | `VoiceSessionStateTest.kt` | `VoiceSession.state` — все переходы |
 
-### Приоритет 2 (после `e4-dicts`)
+### Приоритет 2
 
 | Файл | Что проверять |
 |---|---|
-| `VoiceGrammarStateTest.kt` | Размер словаря в разных состояниях ГП |
+| `VoiceGrammarStateTest.kt` | Размер словаря в состояниях ГП |
 
-### Приоритет 3 (старые)
+### Приоритет 3
 
 | Файл | Что проверять |
 |---|---|
-| `AppDatabaseTest.kt` | Миграции БД (version 1 → 2). Только на устройстве (instrumented). |
+| `AppDatabaseTest.kt` | Миграции БД (version 1 → 2). Только на устройстве. |
+| `GsmBackupWriterTest.kt` | Запись `.gsmbackup` — манифест, структура zip. |
+| `GsmBackupReaderTest.kt` | Чтение манифеста из архива. |
+
+**Заметка:** для БД-пачек (backup, restore) тесты не писались —
+всё покрыто device-check. При желании — можно добавить юнит-тесты
+на парсинг манифеста и сборку zip.
 
 ---
 
@@ -118,8 +127,9 @@ UI не тестируем — проверяем руками.
 - **Compose UI** — отдельная тема, не сейчас.
 - **Реальная БД** — только миграции.
 - **`ReconciliationViewModel`** целиком — связан с Application, Vosk, БД.
-- **`EditViewModel`** целиком — связан с Application и Room. Покрыты
-  только чистые функции.
+- **`EditViewModel`** целиком — связан с Application и Room.
+- **`DbViewModel`** — io, состояние Activity. Device-check.
+- **Backup/restore** — io + zip + замена файлов. Device-check.
 
 ---
 
@@ -140,7 +150,7 @@ UI не тестируем — проверяем руками.
 CI (`.github/workflows/build.yml`):
 - Job **`unit-tests`** — на каждый PR в `main` и `feature/*`.
 - Пропускается, если в PR только документация.
-- Блокирует merge при красном (branch protection).
+- Блокирует merge при красном.
 
 ### Вручную (Actions)
 
@@ -148,18 +158,18 @@ CI (`.github/workflows/build.yml`):
 2. **Run workflow**.
 3. Ветка.
 4. ✅ `Run unit tests`.
-5. ⬜ `Build Debug APK` (если нужен APK).
+5. ⬜ `Build Debug APK`.
 6. **Run workflow**.
 
 Артефакты:
-- `test-report` — HTML-отчёт.
+- `test-report` — HTML.
 - `app-debug` — APK (если `build_apk`).
 
 ---
 
 ## Правила написания тестов
 
-1. **Имя теста — латиница.** `parseThousand`, не `парситТысячу`.
+1. **Имя теста — латиница.**
 2. **Ассерты — простые.** `assertEquals(expected, actual)`.
 3. **Один тест — одна проверка.**
 4. **Не тестировать UI.**
@@ -172,9 +182,9 @@ CI (`.github/workflows/build.yml`):
 ## Что делать при падении теста
 
 1. **Не удалять тест.** Найти причину.
-2. Тест — контракт. Если он упал — сломалось поведение.
-3. Если тест прав, а код неправ — откатить правку (§19 `AI_RULES.md`).
-4. Если тест устарел — обновить тест с пояснением в комментарии.
+2. Тест — контракт.
+3. Если тест прав, а код неправ — откатить правку.
+4. Если тест устарел — обновить с пояснением.
 
 ---
 
@@ -182,38 +192,19 @@ CI (`.github/workflows/build.yml`):
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыто: серия `edit-*` (вкладка Редактирование) |
-| 🟡 После `e4-dicts` | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
-| 🟢 Потом | `AppDatabaseTest` (миграции), `ReconciliationStateTest` (undo/redo) |
+| 🔴 Сейчас | Закрыто: Редактирование. В работе: БД (без тестов, device-check) |
+| 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
+| 🟢 Потом | `AppDatabaseTest`, `ReconciliationStateTest`, `GsmBackup*Test` |
 
 ---
 
 ## Долг — сводка
 
-**Сделано (серия `e4`):**
-- `e4-tests` — 3 файла, 31 тест.
-- `e4-pin-3/4` — `VoiceCommandParserPin3Test`, `VoiceCommandParserPin4Test`.
-- `e4-pin-7` — `VoiceMarkOrdinalFallbackTest` (27 тестов).
-- `e4-markers` — `VoiceMarkersTest` (17 тестов).
-- `e4-markers-2` — расширение `VoiceMarkersTest`.
-- `e4-speak-1` — `VoiceSpeakerTest` (19 тестов).
-- `e4-prefix-1` — обновление `VoiceSpeakerTest`.
-- `e4-weight-queue` — `ReconciliationWeightQueueTest` (11 тестов).
-- `e4-ui-1` — `SearchScrollTopTest` (5 тестов).
-
-**Сделано (серия 5.9, вкладка Статистика):**
-- `xlsx-*` — 5 файлов, ~106 тестов.
-- `html-multi` — `MultiHtmlReportGeneratorTest` (17 тестов).
-
-**Сделано (серия 5.9, вкладка Редактирование):**
-- `EditViewModelTest` (17 тестов).
-- `EditScreenTreeItemsTest` (8 тестов).
-- `EditSearchFilterTest` (18 тестов).
-- `EditAddSampleTest` (21 тест).
-- `EditMultiselectTest` (13 тестов).
-- `EditMassOpsTest` (14 тестов).
-- **Всего: 91 тест.**
+**Сделано (серия `e4`):** 3 файла, 31 тест + 8 отдельных файлов.
+**Сделано (5.9 Статистика):** 5 файлов XLSX, ~106 тестов + HTML, 43.
+**Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
 
 **Осталось:**
-- Закладки `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — приоритет после `e4-dicts`.
+- `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
 - `AppDatabaseTest` — миграции.
+- `GsmBackupWriterTest`, `GsmBackupReaderTest` — если решим покрывать.

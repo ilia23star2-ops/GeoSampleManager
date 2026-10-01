@@ -1,12 +1,109 @@
 # PROGRESS.md — история заходов
 
-## 5.9 серия — допиливание вкладок (Статистика → Редактирование → БД → Настройки → Главная)
+## 5.9 серия — допиливание вкладок
 
 **Дата:** 2026-09-29 … 2026-10-01
 **Ветка:** `feature/5.9-full-project`
 **Контекст:** после релизной серии 5.8.11 — планомерное закрытие
 всех вкладок, кроме сверки. Закрыты: Статистика, Редактирование.
-Следующая — БД.
+В работе — БД.
+
+### Вкладка «БД» — в работе
+
+**Дата:** 2026-10-01
+**Пачки:** `db-style`, `db-info`, `db-backup-v2`, `db-backup-fix`,
+`db-restore-v2` (с 2 hotfix).
+
+**Что было:** вкладка БД — просмотр участков/нарядов/проб,
+добавление участков и нарядов, удаление, простой бэкап файла `.db`
+без фото. `Toast` вместо Snackbar. Копирование `.db` без
+`wal_checkpoint` — потенциально неконсистентная копия.
+
+**Что стало:** полноценный менеджер БД с экспортом/импортом,
+инфо-панелью, авто-бэкапами.
+
+#### `db-style` — стилевые правки
+
+- `Toast` → `SnackbarHost`.
+- `maxWidth > 600.dp` → `>= 600.dp`.
+- Убран `!!` при работе с `selectedOrder`.
+- Комментарии приведены к общему стилю.
+
+#### `db-info` — инфо-панель
+
+- Кнопка «Инфо» в шапке → `DbInfoDialog`.
+- `DatabaseRepository.getDbInfo()` — счётчики всех таблиц + размеры
+  файла БД и папки фото.
+- `SampleNoteDao.countAll()`, `SampleImageDao.countAll()`,
+  `OrderWellDao.countAll()` — новые запросы.
+- Отображение: путь, размер БД, размер фото, дата изменения,
+  участков/нарядов/скважин/проб/фото/заметок.
+- Кнопка «Обновить» + авто-загрузка при открытии.
+
+#### `db-backup-v2` — экспорт `.gsmbackup`
+
+- `GsmBackupWriter` — zip-архив с `manifest.json`, `geosamples.db`,
+  `sample_photos/`.
+- `BackupCounts` — счётчики для манифеста.
+- `manifest.json`: `format_version`, `created_at`, `app_version`,
+  `db_schema_version`, `counts`.
+- `DatabaseRepository.checkpointWal()` — `PRAGMA
+  wal_checkpoint(TRUNCATE)` перед чтением `.db`.
+- `DatabaseRepository.getPhotosDir()` — путь к фото.
+- `DB_SCHEMA_VERSION = 2` — константа.
+- `DbBackupDialog` — имя файла (редактируемое) + чекбокс «Сохранить
+  во внутреннюю папку / наружу».
+- `DbViewModel.exportToInternal`, `exportToUri`.
+
+#### `db-backup-fix` — сохранение в публичные Загрузки
+
+**Проблема:** внутренняя папка `filesDir/db_backups/` невидима
+рабочему в проводнике. Файл «не находится».
+
+**Решение:**
+- `db-backup-v2` переделан: сохранение в **публичные Загрузки**
+  через `MediaStore` (API 29+).
+- Путь: `Downloads/GeoSampleManager/geosamples_YYYYMMDD_HHMM.gsmbackup`.
+- Имя папки «Downloads» на каждом устройстве своё (Android переводит
+  сам) — например, на MIUI «Donwload».
+- На API < 29 — fallback через `CreateDocument` (системный диалог).
+- Чекбокс «Поделиться после сохранения» в диалоге — открывает
+  Share-интент после записи.
+- `_lastExportUri` в ViewModel; `LaunchedEffect` в UI читает и
+  запускает Share.
+
+#### `db-restore-v2` — импорт `.gsmbackup`
+
+- `GsmBackupReader` — чтение архива, парсинг `manifest.json`,
+  извлечение `.db` + фото.
+- `BackupManifest` — data-класс.
+- `DbRestoreDialog` — превью: имя файла, дата, версия схемы, счётчики.
+  Проверки: `format_version = 1` (блокирует), `db_schema_version = 2`
+  (предупреждает).
+- `DbViewModel.restoreFromUri`:
+  1. Авто-бэкап текущей БД (публично + приватно).
+  2. `AppDatabase.closeAndReset()`.
+  3. Удаление `.db`, `.db-wal`, `.db-shm`.
+  4. Очистка `sample_photos/`.
+  5. Распаковка нового `.db` + фото.
+  6. `GeoSampleApp.resetRepository()`.
+- `AppDatabase.closeAndReset()` — новый метод.
+- `GeoSampleApp.resetRepository()` — новый метод.
+- `RestoreState` — sealed class (Idle / InProgress / Done / Error).
+- Overlay с прогрессом на время импорта.
+- Кнопка «Импорт» в шапке БД.
+
+**Hotfix 1:** `activity.recreate()` не сбрасывает ViewModel
+(переживает реконфигурацию). Заменено на `killProcess` + `AlarmManager`.
+
+**Hotfix 2:** `killProcess` + `AlarmManager` не работают на новых
+Android. Финальное решение — `startActivity(MainActivity,
+NEW_TASK|CLEAR_TASK)` + `finish()`. Полный сброс Compose-стека:
+NavController, ViewModelStore, все экраны — без закрытия процесса.
+
+**Device-check ✅** (01.10.2026): экспорт + импорт + пересоздание
+стека работают, данные восстанавливаются, авто-бэкап появляется в
+Загрузках.
 
 ### Вкладка «Редактирование» — закрыта
 
@@ -29,115 +126,90 @@
   → проба через `combine(areasFlow, ordersFlow, samplesFlow)`.
 - `EditTreeData`, `EditAreaUi`, `EditOrderUi`.
 - Чистая функция `buildEditTree` — сортировка `(wellNumber, numberInWell)`,
-  фильтрация сирот (наряд без участка, проба без наряда).
-- `findSample`, `findOrder` — поиск по дереву.
+  фильтрация сирот.
+- `findSample`, `findOrder`.
 - Тесты: `EditViewModelTest` — 14 тестов.
 
 #### `edit-screen-search` — экран с поиском и фильтрами
 
 - Адаптивный экран: широкий (≥600 dp) — дерево 35% + карточка;
-  узкий — дерево во весь экран, при выборе пробы — карточка.
-- Строка поиска: подстрока по № пробы, № скважины, характеристике.
-- Фильтры-чипы: найдены / не найдены / отложены / ВК / холостые /
-  ошибки.
-- Авто-разворот дерева при непустом поиске.
+  узкий — дерево во весь экран.
+- Строка поиска: подстрока по № пробы / № скважины / характеристике.
+- Фильтры-чипы.
+- Авто-разворот при поиске.
 - Тесты: `EditScreenTreeItemsTest` (8), `EditSearchFilterTest` (18).
 
 #### `edit-add-sample` — умная вставка
 
-Подзаходы `/1`, `/2`, `/3`.
+Подзаходы /1, /2, /3.
 
-**Функции:**
-
-- Префикс наряда — общий буквенный префикс скважин — показывается
-  как подсказка в диалоге.
+- Префикс наряда — общий буквенный префикс скважин.
 - Скважина: dropdown с фильтром или ручной ввод.
-- № пробы: автоподстановка `wellNumber + (max+1)`, редактируемая.
-- Интервал `from`: = `to` предыдущей не-холостой пробы.
-- Валидация в реальном времени: пустые обязательные поля →
-  красные подписи, кнопка не сохраняет.
-- Конфликт № пробы: значок ⚠ + текст «Уже есть: №N, интервал X–Y»,
-  второй диалог «Со сдвигом / Отмена».
-- При вставке со сдвигом: номера +1 с позиции, интервалы +шаг
-  (шаг = длина новой пробы).
-- HOTFIX UNIQUE: сдвиги применяются в **обратном порядке** — от
-  старшего к младшему. Иначе SQLite падал на UNIQUE при сдвиге
-  102→103, пока старая 103 существует.
-- Холостая: интервал не сохраняется (null), сдвиг интервалов
-  не выполняется.
+- № пробы: автоподстановка `wellNumber + (max+1)`.
+- Интервал `from` = `to` предыдущей не-холостой.
+- Валидация в реальном времени.
+- Конфликт № пробы: ⚠ + второй диалог «Со сдвигом / Отмена».
+- Сдвиг номеров и интервалов при вставке.
+- HOTFIX UNIQUE: сдвиги применяются в **обратном порядке**.
+- Холостая: интервал null, сдвиг интервалов не выполняется.
 - Тесты: `EditAddSampleTest` — 21 тест.
 
 #### `edit-status-blank` — интервал для холостых
 
-- В `EditSampleDialog` при статусе «Холостая» поля интервала
-  скрыты. При возврате на «Обычная» — восстанавливаются.
-- При сохранении холостой интервал = `—` (null).
-- Для не-холостой интервал обязателен (валидация).
+- В `EditSampleDialog` при статусе «Холостая» интервал скрыт.
+- При возврате — восстанавливается.
+- При сохранении — «—» (null).
+- Для не-холостой интервал обязателен.
 
 #### `edit-save-guard` — проверка № по БД
 
-- `SampleDao.findByOrderAndNumber(orderId, sampleNumber)` — новый
-  запрос.
-- `DatabaseRepository.findSampleByOrderAndNumber` — обёртка.
-- `ReconciliationViewModel.saveEditedRow` и `EditViewModel.saveSample`
-  — перед сохранением проверяют по **БД**, а не по state. Если
-  № занят — показывают понятный текст, не сохраняют.
-- `findConflictForEdit` — синхронная проверка для диалога (подпись
-  появляется ДО клика «Сохранить»).
-- `humanSaveError` — человеческое сообщение вместо
-  `UNIQUE constraint failed`.
-- При ошибке БД — state откатывается к прежнему значению.
-- Тесты: правка существующих (в `EditAddSampleTest`).
+- `SampleDao.findByOrderAndNumber`, `DatabaseRepository.findSampleByOrderAndNumber`.
+- `saveEditedRow` / `saveSample` проверяют по БД, не по state.
+- `findConflictForEdit` — синхронная проверка для диалога.
+- `humanSaveError` — человеческий текст вместо `UNIQUE constraint`.
+- Откат state при ошибке БД.
 
-#### `edit-multiselect` — выделение нескольких проб
+#### `edit-multiselect` — выделение
 
-- Режим `multiselectMode` + `selectedIds` в ViewModel.
-- Вход: длинный тап по пробе (сразу выделяет) или кнопка
-  «Выделять» в шапке дерева.
-- В режиме тап по пробе переключает чекбокс.
+- Режим `multiselectMode` + `selectedIds`.
+- Вход: длинный тап или кнопка «Выделять».
 - BottomBar: «N проб · [Изменить] [Удалить] [Снять] [Выход]».
-- Сброс выделения при смене поиска/фильтров/наряда/участка.
+- Сброс при смене поиска/фильтров/наряда.
 - Чистые функции: `applyMultiselectToggle`, `computeSelectionLabel`.
 - Тесты: `EditMultiselectTest` — 13 тестов.
 
-#### `edit-mass-ops` — массовая правка и удаление
+#### `edit-mass-ops` — массовые операции
 
-Подзаходы `/1`, `/2`.
+Подзаходы /1, /2.
 
-- `MassEditFields` — три независимых поля: характеристика, тип,
-  статус.
-- `MassEditDialog` — чекбокс у каждого поля, кнопка «Применить»
-  активна при наличии хотя бы одного включённого поля.
-- `MassDeleteDialog` — чекбокс «Пересчитать № проб в скважинах».
-- `EditViewModel.applyMassEdit` — пакетная запись через `saveRows`.
-- `EditViewModel.deleteSelected` — последовательное удаление,
-  при ошибке одной — продолжаем, в конце сообщаем «удалено N из M».
-- **FIX `/2`:** синхронизация `status` и `weightControl`:
+- `MassEditFields` — характеристика, тип, статус (независимо).
+- `MassEditDialog` — чекбокс на каждое поле.
+- `MassDeleteDialog` — чекбокс «Пересчитать №».
+- `applyMassEdit` — пакетная запись.
+- `deleteSelected` — последовательное удаление.
+- **FIX /2:** синхронизация `status` ↔ `weightControl`:
   CONTROL → `weightControl = true`; NORMAL/BLANK → `false`;
   null → не трогаем.
-- Чистые функции: `applyMassEditToRow`.
 - Тесты: `EditMassOpsTest` — 14 тестов.
 
 **Device-check ✅** (01.10.2026): все сценарии прошли.
 
 #### Известные недоработки Редактирования
 
-- **Общий сервис сдвига** (`SampleShiftPlanner`) — унификация
-  логики INSERT/RENAME/DELETE/EDIT_INTERVAL. Обсуждён, не реализован.
-- **Правка интервала** (from/to) пока не сдвигает последующие пробы
-  и не показывает предупреждение о разрывах/пересечениях. Обсуждено,
-  не реализовано.
-- **RENAME** (правка № пробы на другой свободный) не проверяет
-  интервалы следующих. Согласовано с пользователем: интервалы едут
-  с пробой, дырки допускаются.
+- Общий сервис сдвига (`SampleShiftPlanner`) — обсуждён, не реализован.
+- Правка интервала (from/to) не сдвигает последующие и не
+  предупреждает о разрывах/пересечениях.
+- RENAME не проверяет интервалы — согласовано: интервалы едут с
+  пробой, дырки допускаются.
+- Undo для массовых операций отсутствует.
 
 ### Пачка `report-xlsx` — закрыта
 
-**Формат отчёта (согласован):** 1 лист = 1 наряд. Шапка (участок,
-№, дата) объединена A1:I1..A4:I4. Таблица проб с цветами как в
-сверке. Заметки — колонка + лист «Приложения». Фото — счётчик +
-картинки в блоке приложений. Гиперссылки внутри файла. Легенда
-цветов в колонке J. Для мульти — титульная страница с оглавлением.
+**Формат отчёта:** 1 лист = 1 наряд. Шапка (участок, №, дата)
+объединена A1:I1..A4:I4. Таблица проб с цветами как в сверке.
+Заметки — колонка + лист «Приложения». Фото — счётчик + картинки
+в блоке приложений. Гиперссылки внутри файла. Легенда цветов
+в колонке J.
 
 **Подзаходы:**
 
@@ -153,25 +225,9 @@
 
 ### `xlsx-ui` — детально
 
-**Подключение кнопки Excel** в `ReportFormatDialog`:
-- `StatsViewModel.generateXlsxReport(orderId, uri)`.
-- `buildReportData(orderId)` — общий сборщик для HTML и XLSX.
-- `decodeDataUri` — data-uri → байты для картинок.
-
-**Доработки XLSX-генератора:**
-
-- Цвета строк пробы как в сверке.
-- Порядок колонок: «Найдена» первая, левее «п/п».
-- Объединённая шапка A1:I1..A4:I4 с фоном (TITLE/META).
-- Автоширина колонок (шапка не растягивает).
-- Вставка фото: `xl/drawings/drawingN.xml` + `xl/media/imageN.jpg`.
-- Легенда цветов в колонке J (J1..J6).
-- Гиперссылки Наряд ↔ Приложения.
-
 **Инфраструктурные фиксы XLSX (критичные):**
 
-- **`styles rel` в `workbook.xml.rels` — обязателен.** Без него
-  Excel «восстанавливал» файл и терял стили.
+- `styles rel` в `workbook.xml.rels` — обязателен.
 - `fileVersion`, `workbookPr`, `calcPr` в `workbook.xml`.
 - `sheetViews`, `sheetFormatPr` в `sheet.xml`.
 - Порядок в `<font>` по ECMA-376.
@@ -180,45 +236,23 @@
 - Запись через `ByteArrayOutputStream` (не `zip.finish()`).
 - `theme` в `<fgColor>` — **не использовать**.
 
-**Была попытка эмодзи-статусов** в колонке A (🟢🔴🔵🟡🟣⚪) как
-fallback для вьюеров. **Откатили** — фон заработал после `styles rel`.
-
 ### `multi-report-ui` — детально
 
-**Data-слой** (`StatsViewModel.kt`):
-- `buildReportDataList` (внутренний) — сборка `List<ReportData>`.
-- `detectDuplicateSheetNames(orderIds)` — группы дублей имён листов
-  (`DuplicateSheetGroup`).
-- `prepareOrdersForReport(orderIds, skipDuplicates)` — отсев дублей.
-- `generateMultiXlsxReport(orderIds, uri, skipDuplicates)`.
-- `generateMultiHtmlReport(orderIds, uri, skipDuplicates)`.
+- `MultiReportScreen` — полноэкранный overlay.
+- `detectDuplicateSheetNames`, `prepareOrdersForReport`.
+- Кнопки Excel / HTML.
+- Диалог при совпадении имён листов.
 
-**UI-слой** (`MultiReportScreen.kt` + правка `StatsScreen.kt`):
-- `MultiReportScreen` — полноэкранный overlay (не через NavGraph).
-- Параметры: `data`, `initialAreaId`, `detectDuplicates`, `onExport`,
-  `onClose`.
-- Дерево участок → наряды с `TriStateCheckbox` на участке.
-- Строка фильтра, «Выбрать все / Снять все».
-- Две кнопки снизу: Excel / HTML.
-- Диалог при совпадении имён листов: «Объединить с суффиксом» /
-  «Пропустить дубли» / «Отмена».
-- Вход из `AreaDetailsPanel`: кнопка «Отчёт по участку» открывает
-  `MultiReportScreen` с предустановленным участком.
-
-**Fix в процессе:** не хватало импортов (`kotlinx.coroutines.launch`,
-`androidx.compose.ui.state.ToggleableState`); `buildOrderShortSummary`
-была `private` в `StatsScreen.kt` → сделана `internal`.
-
-**Device-check ✅** (01.10.2026): мультиотчёт Excel и HTML работают,
-диалог дублей срабатывает, файл открывается в Excel/Online/мобильном.
+**Device-check ✅** (01.10.2026): мультиотчёт Excel и HTML работают.
 
 ### Инфраструктурные пачки
 
 - ✅ `docs/5.9-docs-2` — доки после `xlsx-multi` и `html-multi`.
-- ✅ `fix/5.9-cleanup` — убраны дубликаты `GeoSampleApp.kt` (корень),
-  `.github/ISSUES.md`.
+- ✅ `fix/5.9-cleanup` — убраны дубликаты в корне.
 - ✅ `5.9-cleanup-2` — warnings компилятора в `XlsxWriter`.
 - ✅ `docs/5.9-docs-3` — доки после `xlsx-ui`.
+- ✅ `docs/5.9-edit-docs` — доки после Редактирования.
+- ✅ `docs/5.9-db-docs` — доки после пачек БД (этот заход).
 
 ### Пачки Статистики (закрыты ранее)
 
