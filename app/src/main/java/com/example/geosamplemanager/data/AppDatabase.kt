@@ -19,6 +19,12 @@ import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 
+/**
+ * FIX 5.9-db-restore-v2:
+ *  - добавлен closeAndReset() — закрыть текущее соединение и
+ *    сбросить синглтон INSTANCE, чтобы следующий getInstance()
+ *    открыл свежий файл (используется при импорте бэкапа).
+ */
 @Database(
     entities = [
         AreaEntity::class,
@@ -47,20 +53,12 @@ abstract class AppDatabase : RoomDatabase() {
 
         /**
          * Миграция 1 → 2 (этап 5.5.1 — заметки и фото).
-         *
-         * Что делаем:
-         *  1) samples: добавляем has_photo BOOLEAN NOT NULL DEFAULT 0.
-         *  2) sample_notes: пересоздаём без image_path (данных там нет).
-         *  3) создаём sample_images + индекс по sample_id.
          */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                // 1) samples + has_photo
                 db.execSQL(
                     "ALTER TABLE samples ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0"
                 )
-
-                // 2) sample_notes: пересоздаём без image_path
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS sample_notes_new (
@@ -84,8 +82,6 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_sample_notes_sample_id " +
                             "ON sample_notes(sample_id)"
                 )
-
-                // 3) sample_images
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS sample_images (
@@ -115,6 +111,21 @@ abstract class AppDatabase : RoomDatabase() {
                     .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        /**
+         * FIX 5.9-db-restore-v2:
+         * Закрыть текущее соединение и сбросить синглтон.
+         * После вызова следующий getInstance() откроет свежий файл.
+         *
+         * ВАЖНО: после вызова все ссылки на старый AppDatabase
+         * (и на DatabaseRepository, который его держит) — невалидны.
+         */
+        fun closeAndReset() {
+            synchronized(this) {
+                try { INSTANCE?.close() } catch (_: Exception) {}
+                INSTANCE = null
             }
         }
     }

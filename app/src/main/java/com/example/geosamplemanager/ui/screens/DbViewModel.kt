@@ -9,9 +9,12 @@ import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.AppDatabase
 import com.example.geosamplemanager.data.DbInfo
 import com.example.geosamplemanager.data.DatabaseRepository
 import com.example.geosamplemanager.data.backup.BackupCounts
+import com.example.geosamplemanager.data.backup.BackupManifest
+import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
@@ -27,23 +30,23 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-/**
- * FIX 5.9-db-info: dbInfo + loadDbInfo().
- *
- * FIX 5.9-db-backup-v2: экспорт .gsmbackup.
- *
- * FIX 5.9-db-backup-fix:
- *  - экспорт в ПУБЛИЧНУЮ папку Загрузки через MediaStore (API 29+),
- *    файл виден в любом проводнике;
- *  - на API < 29 — fallback через exportToUri (системный диалог);
- *  - убран exportToInternal (внутренняя папка бесполезна);
- *  - после сохранения — lastExportUri, UI может открыть Share.
- */
+sealed class RestoreState {
+    data object Idle : RestoreState()
+    data class InProgress(val message: String) : RestoreState()
+    data object Done : RestoreState()
+    data class Error(val message: String) : RestoreState()
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class DbViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as GeoSampleApp).repository
+    private val app = application as GeoSampleApp
+    private val repo = app.repository
 
     val areas: StateFlow<List<AreaEntity>> = repo.getAreasFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -101,17 +104,12 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Экспорт .gsmbackup
+    // Экспорт
     // ================================================================
 
     private val _exporting = MutableStateFlow(false)
     val exporting: StateFlow<Boolean> = _exporting.asStateFlow()
 
-    /**
-     * FIX 5.9-db-backup-fix:
-     * URI последнего успешного экспорта. UI читает и сбрасывает через
-     * consumeLastExportUri(). Нужно, чтобы предложить Share.
-     */
     private val _lastExportUri = MutableStateFlow<Uri?>(null)
     val lastExportUri: StateFlow<Uri?> = _lastExportUri.asStateFlow()
 
@@ -119,16 +117,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _lastExportUri.value = null
     }
 
-    /**
-     * FIX 5.9-db-backup-fix:
-     * Сохранить .gsmbackup в ПУБЛИЧНУЮ папку Загрузки
-     * (Download / Downloads / Загрузки — имя задаёт система).
-     * Подпапка — GeoSampleManager, чтобы бэкапы не смешивались.
-     *
-     * Работает без разрешений на API 29+.
-     * На API < 29 — бросает исключение; UI должен использовать
-     * exportToUri через системный диалог.
-     */
     fun exportToDownloads(name: String) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -137,44 +125,12 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
                     throw IllegalStateException(
                         "Для сохранения нужен Android 10+. " +
-                                "Выберите «Сохранить наружу»."
+                                "Используйте системный диалог."
                     )
                 }
-
                 val uri = withContext(Dispatchers.IO) {
-                    val ctx = getApplication<Application>()
-                    val resolver = ctx.contentResolver
-                    val fileName = "$name.${GsmBackupWriter.EXTENSION}"
-
-                    val values = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                        put(
-                            MediaStore.MediaColumns.MIME_TYPE,
-                            "application/octet-stream"
-                        )
-                        put(
-                            MediaStore.MediaColumns.RELATIVE_PATH,
-                            "${Environment.DIRECTORY_DOWNLOADS}/GeoSampleManager"
-                        )
-                    }
-
-                    val uri = resolver.insert(
-                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                        values
-                    ) ?: throw IllegalStateException("Не удалось создать файл")
-
-                    try {
-                        resolver.openOutputStream(uri)?.use { out ->
-                            writeBackup(out)
-                        } ?: throw IllegalStateException("Не удалось открыть поток")
-                    } catch (e: Exception) {
-                        // Если запись упала — убираем пустой файл.
-                        try { resolver.delete(uri, null, null) } catch (_: Exception) {}
-                        throw e
-                    }
-                    uri
+                    writeToPublicDownloads("$name.${GsmBackupWriter.EXTENSION}")
                 }
-
                 _lastExportUri.value = uri
                 _message.value = "Сохранено в Загрузки/GeoSampleManager: $name"
             } catch (e: Exception) {
@@ -185,11 +141,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-db-backup-fix:
-     * Сохранить по внешнему URI (системный диалог "Сохранить как").
-     * Используется на API < 29 как fallback.
-     */
     fun exportToUri(uri: Uri) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -210,38 +161,145 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun writeBackup(out: java.io.OutputStream) {
-        withContext(Dispatchers.IO) {
-            repo.checkpointWal()
+    // ================================================================
+    // Импорт
+    // ================================================================
 
-            val dbFile = repo.getDatabaseFile()
-            val photosDir = repo.getPhotosDir()
-            val info = repo.getDbInfo()
+    private val _restoreState = MutableStateFlow<RestoreState>(RestoreState.Idle)
+    val restoreState: StateFlow<RestoreState> = _restoreState.asStateFlow()
 
-            GsmBackupWriter.write(
-                out = out,
-                dbFile = dbFile,
-                photosDir = photosDir,
-                dbSchemaVersion = DatabaseRepository.DB_SCHEMA_VERSION,
-                appVersion = appVersion(),
-                counts = BackupCounts(
-                    areas = info.areasCount,
-                    orders = info.ordersCount,
-                    samples = info.samplesCount,
-                    photos = info.photosCount,
-                    notes = info.notesCount
+    fun resetRestoreState() {
+        _restoreState.value = RestoreState.Idle
+    }
+
+    suspend fun readManifest(uri: Uri): BackupManifest? = withContext(Dispatchers.IO) {
+        GsmBackupReader.readManifest(getApplication(), uri)
+    }
+
+    fun restoreFromUri(uri: Uri) {
+        if (_restoreState.value is RestoreState.InProgress) return
+
+        viewModelScope.launch {
+            try {
+                _restoreState.value = RestoreState.InProgress("Готовим бэкап…")
+                withContext(Dispatchers.IO) { autoBackupBeforeRestore() }
+
+                _restoreState.value = RestoreState.InProgress("Закрываем БД…")
+                val ok = withContext(Dispatchers.IO) {
+                    AppDatabase.closeAndReset()
+
+                    val dbFile = getApplication<Application>()
+                        .getDatabasePath("geosamples.db")
+                    deleteQuietly(File(dbFile.absolutePath + "-wal"))
+                    deleteQuietly(File(dbFile.absolutePath + "-shm"))
+                    deleteQuietly(dbFile)
+
+                    val photosDir = File(
+                        getApplication<Application>().filesDir,
+                        "sample_photos"
+                    )
+                    if (photosDir.exists()) photosDir.deleteRecursively()
+                    photosDir.mkdirs()
+
+                    GsmBackupReader.extract(
+                        context = getApplication(),
+                        uri = uri,
+                        targetDb = dbFile,
+                        targetPhotosDir = photosDir
+                    )
+                }
+
+                if (!ok) {
+                    throw IllegalStateException("В архиве нет geosamples.db")
+                }
+
+                app.resetRepository()
+                _restoreState.value = RestoreState.Done
+            } catch (e: Exception) {
+                _restoreState.value = RestoreState.Error(
+                    e.message ?: "Ошибка импорта"
                 )
+            }
+        }
+    }
+
+    // ================================================================
+    // Внутренние утилиты
+    // ================================================================
+
+    private suspend fun autoBackupBeforeRestore() {
+        val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
+        val name = "pre_restore_${sdf.format(Date())}"
+        val fileName = "$name.${GsmBackupWriter.EXTENSION}"
+
+        try {
+            val dir = File(getApplication<Application>().filesDir, "db_backups")
+            if (!dir.exists()) dir.mkdirs()
+            val f = File(dir, fileName)
+            f.outputStream().use { out -> writeBackup(out) }
+        } catch (_: Exception) {
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                writeToPublicDownloads(fileName)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private suspend fun writeToPublicDownloads(fileName: String): Uri {
+        val ctx = getApplication<Application>()
+        val resolver = ctx.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                "${Environment.DIRECTORY_DOWNLOADS}/GeoSampleManager"
             )
         }
+        val uri = resolver.insert(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            values
+        ) ?: throw IllegalStateException("Не удалось создать файл")
+
+        try {
+            resolver.openOutputStream(uri)?.use { out -> writeBackup(out) }
+                ?: throw IllegalStateException("Не удалось открыть поток")
+        } catch (e: Exception) {
+            try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+            throw e
+        }
+        return uri
+    }
+
+    private suspend fun writeBackup(out: java.io.OutputStream) {
+        repo.checkpointWal()
+        val info = repo.getDbInfo()
+        GsmBackupWriter.write(
+            out = out,
+            dbFile = repo.getDatabaseFile(),
+            photosDir = repo.getPhotosDir(),
+            dbSchemaVersion = DatabaseRepository.DB_SCHEMA_VERSION,
+            appVersion = appVersion(),
+            counts = BackupCounts(
+                areas = info.areasCount,
+                orders = info.ordersCount,
+                samples = info.samplesCount,
+                photos = info.photosCount,
+                notes = info.notesCount
+            )
+        )
     }
 
     private fun appVersion(): String = try {
         val ctx = getApplication<Application>()
-        ctx.packageManager
-            .getPackageInfo(ctx.packageName, 0)
-            .versionName ?: "?"
-    } catch (_: Exception) {
-        "?"
+        ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?"
+    } catch (_: Exception) { "?" }
+
+    private fun deleteQuietly(f: File) {
+        try { if (f.exists()) f.delete() } catch (_: Exception) {}
     }
 
     // ================================================================
