@@ -12,8 +12,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,19 +22,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
- * FIX 5.9-db-style:
- *  - Toast → Snackbar;
- *  - maxWidth >= 600.dp;
- *  - убран `!!`.
+ * FIX 5.9-db-style: Snackbar, >= 600.dp, без !!.
+ * FIX 5.9-db-info: кнопка «Инфо» → DbInfoDialog.
  *
- * FIX 5.9-db-info:
- *  - кнопка «Инфо» в шапке → DbInfoDialog;
- *  - загрузка info при открытии диалога.
+ * FIX 5.9-db-backup-v2:
+ *  - кнопка «Бэкап» → «Экспорт»;
+ *  - DbBackupDialog — имя файла + чекбокс «внутренняя папка / наружу»;
+ *  - внутренняя папка → viewModel.exportToInternal(name);
+ *  - наружу → CreateDocument → viewModel.exportToUri(uri).
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -46,6 +50,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val message by viewModel.message.collectAsState()
     val dbInfo by viewModel.dbInfo.collectAsState()
     val dbInfoLoading by viewModel.dbInfoLoading.collectAsState()
+    val exporting by viewModel.exporting.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -63,15 +68,23 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var orderToDelete by remember { mutableStateOf<OrderEntity?>(null) }
     var showDbInfoDialog by remember { mutableStateOf(false) }
 
-    // FIX 5.9-db-info: при открытии — загрузить инфо.
+    // FIX 5.9-db-backup-v2:
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var pendingExternalName by remember { mutableStateOf<String?>(null) }
+
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
 
-    val backupLauncher = rememberLauncherForActivityResult(
+    // FIX 5.9-db-backup-v2: системный диалог «Куда сохранить».
+    val externalExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        uri?.let { viewModel.backupDatabase(it) }
+        val name = pendingExternalName
+        pendingExternalName = null
+        if (uri != null) {
+            viewModel.exportToUri(uri)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -95,16 +108,20 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Участок")
                 }
                 OutlinedButton(
-                    onClick = {
-                        backupLauncher.launch(
-                            "geosamples_backup_${System.currentTimeMillis()}.db"
-                        )
-                    },
+                    onClick = { showBackupDialog = true },
+                    enabled = !exporting,
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.Save, contentDescription = null)
+                    if (exporting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Icon(Icons.Default.FileUpload, contentDescription = null)
+                    }
                     Spacer(Modifier.width(4.dp))
-                    Text("Бэкап")
+                    Text("Экспорт")
                 }
                 OutlinedButton(
                     onClick = { showDbInfoDialog = true },
@@ -118,7 +135,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
             HorizontalDivider()
 
-            // Основной контент — адаптивный.
             BoxWithConstraints(modifier = Modifier.weight(1f)) {
                 val isWide = maxWidth >= 600.dp
 
@@ -242,13 +258,34 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // === FIX 5.9-db-info: диалог информации о БД ===
+    // === Инфо о БД ===
     if (showDbInfoDialog) {
         DbInfoDialog(
             info = dbInfo,
             loading = dbInfoLoading,
             onRefresh = { viewModel.loadDbInfo() },
             onDismiss = { showDbInfoDialog = false }
+        )
+    }
+
+    // === FIX 5.9-db-backup-v2: диалог экспорта ===
+    if (showBackupDialog) {
+        val defaultName = remember {
+            val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
+            "geosamples_${sdf.format(Date())}"
+        }
+        DbBackupDialog(
+            defaultName = defaultName,
+            onExport = { name, saveInternal ->
+                showBackupDialog = false
+                if (saveInternal) {
+                    viewModel.exportToInternal(name)
+                } else {
+                    pendingExternalName = name
+                    externalExportLauncher.launch("$name.${GsmBackupWriter.EXTENSION}")
+                }
+            },
+            onDismiss = { showBackupDialog = false }
         )
     }
 }

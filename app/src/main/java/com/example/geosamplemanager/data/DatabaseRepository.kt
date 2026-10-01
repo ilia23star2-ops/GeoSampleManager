@@ -16,7 +16,12 @@ import java.io.File
 /**
  * FIX 5.9-db-info:
  * Добавлен метод getDbInfo() — счётчики по всем таблицам + размеры
- * файлов БД и папки фото. Используется в инфо-панели вкладки БД.
+ * файлов БД и папки фото.
+ *
+ * FIX 5.9-db-backup-v2:
+ *  - checkpointWal() — сброс WAL перед чтением файла .db;
+ *  - getPhotosDir() — путь к папке sample_photos;
+ *  - DB_SCHEMA_VERSION — константа для манифеста.
  */
 data class DbInfo(
     val dbPath: String,
@@ -41,6 +46,11 @@ class DatabaseRepository(context: Context) {
     private val orderWellDao = db.orderWellDao()
     private val sampleNoteDao = db.sampleNoteDao()
     private val sampleImageDao = db.sampleImageDao()
+
+    companion object {
+        /** FIX 5.9-db-backup-v2: версия схемы БД для манифеста. */
+        const val DB_SCHEMA_VERSION = 2
+    }
 
     // ============ УЧАСТКИ ============
 
@@ -92,11 +102,6 @@ class DatabaseRepository(context: Context) {
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity> =
         sampleDao.getSamplesByWell(wellNumber)
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Найти пробу по (orderId, sampleNumber). Для проверки конфликтов
-     * перед сохранением — даже если эта проба не загружена в UI.
-     */
     suspend fun findSampleByOrderAndNumber(
         orderId: Long,
         sampleNumber: String
@@ -124,19 +129,6 @@ class DatabaseRepository(context: Context) {
     suspend fun getOrderIdsWithSamples(): List<Long> =
         sampleDao.getOrderIdsWithSamples()
 
-    /**
-     * FIX 5.9-edit-add-sample:
-     * Добавить пробу с одновременным сдвигом номеров существующих.
-     *
-     * FIX 5.9-edit-add-sample/2 (HOTFIX UNIQUE):
-     * Сдвиги применяются в ОБРАТНОМ порядке — от старшего к младшему.
-     * Иначе SQLite падает на UNIQUE (order_id, sample_number):
-     * при сдвиге 102→103 старая 103 ещё существует.
-     * Reverse гарантирует, что при 103→104 ячейка 104 свободна.
-     *
-     * @param newSample новая проба (id = 0).
-     * @param shifts список (sampleId → новый sampleNumber) для сдвигаемых.
-     */
     suspend fun addSampleWithShift(
         newSample: SampleEntity,
         shifts: List<Pair<Long, String>>
@@ -236,12 +228,32 @@ class DatabaseRepository(context: Context) {
     fun getDatabaseFile(): File = appContext.getDatabasePath("geosamples.db")
 
     /**
-     * FIX 5.9-db-info:
-     * Собрать инфо о текущей БД: путь, размеры, дату, счётчики.
+     * FIX 5.9-db-backup-v2:
+     * Папка с фото проб.
      */
+    fun getPhotosDir(): File = File(appContext.filesDir, "sample_photos")
+
+    /**
+     * FIX 5.9-db-backup-v2:
+     * Сбросить WAL в основной файл БД перед чтением.
+     * Без этого файл .db может быть неполным (данные ещё в -wal).
+     *
+     * PRAGMA wal_checkpoint(TRUNCATE) — сливает WAL в .db и обрезает
+     * WAL до нуля.
+     */
+    fun checkpointWal() {
+        try {
+            db.openHelper.writableDatabase
+                .query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .use { it.moveToFirst() }
+        } catch (_: Exception) {
+            // Не критично: если режим журнала не WAL, PRAGMA безвреден.
+        }
+    }
+
     suspend fun getDbInfo(): DbInfo {
         val dbFile = getDatabaseFile()
-        val photosDir = File(appContext.filesDir, "sample_photos")
+        val photosDir = getPhotosDir()
 
         val photosSize = if (photosDir.exists() && photosDir.isDirectory) {
             photosDir.listFiles()?.sumOf { it.length() } ?: 0L
