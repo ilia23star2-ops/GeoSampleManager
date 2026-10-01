@@ -1,6 +1,5 @@
 package com.example.geosamplemanager.ui.screens
 
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -27,9 +26,15 @@ import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 
+/**
+ * FIX 5.9-db-style:
+ *  - Toast заменён на SnackbarHost (единый стиль с остальными экранами);
+ *  - maxWidth > 600.dp → >= 600.dp (единообразно со StatsScreen / EditScreen);
+ *  - убран `!!` при работе с selectedOrder;
+ *  - комментарии приведены к общему стилю.
+ */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
-    val context = LocalContext.current
     val areas by viewModel.areas.collectAsState()
     val selectedArea by viewModel.selectedArea.collectAsState()
     val orders by viewModel.orders.collectAsState()
@@ -37,124 +42,136 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val samples by viewModel.samples.collectAsState()
     val message by viewModel.message.collectAsState()
 
-    // Показ Toast при сообщении
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Показ сообщения через Snackbar.
     LaunchedEffect(message) {
         message?.let {
-            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            snackbarHostState.showSnackbar(it)
             viewModel.clearMessage()
         }
     }
 
-    // Диалоги
+    // Диалоги.
     var showAddAreaDialog by remember { mutableStateOf(false) }
     var showAddOrderDialog by remember { mutableStateOf(false) }
     var areaToDelete by remember { mutableStateOf<AreaEntity?>(null) }
     var orderToDelete by remember { mutableStateOf<OrderEntity?>(null) }
 
-    // Launcher для бэкапа
+    // Launcher для бэкапа.
     val backupLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
         uri?.let { viewModel.backupDatabase(it) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Верхняя панель действий
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(
-                onClick = { showAddAreaDialog = true },
-                modifier = Modifier.weight(1f)
+            // Верхняя панель действий.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Участок")
-            }
-            OutlinedButton(
-                onClick = {
-                    backupLauncher.launch("geosamples_backup_${System.currentTimeMillis()}.db")
-                },
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Save, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Бэкап")
-            }
-        }
-
-        HorizontalDivider()
-
-        // Основной контент — адаптивный
-        BoxWithConstraints(modifier = Modifier.weight(1f)) {
-            val isWide = maxWidth > 600.dp
-
-            if (isWide) {
-                // Планшет: две колонки
-                Row(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                Button(
+                    onClick = { showAddAreaDialog = true },
+                    modifier = Modifier.weight(1f)
                 ) {
-                    AreasList(
-                        areas = areas,
-                        selectedArea = selectedArea,
-                        onSelect = { viewModel.selectArea(it) },
-                        onDelete = { areaToDelete = it },
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
-                    OrdersList(
-                        selectedArea = selectedArea,
-                        orders = orders,
-                        selectedOrder = selectedOrder,
-                        onSelect = { viewModel.selectOrder(it) },
-                        onAdd = { showAddOrderDialog = true },
-                        onDelete = { orderToDelete = it },
-                        modifier = Modifier.weight(1f).fillMaxHeight()
-                    )
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Участок")
                 }
-            } else {
-                // Телефон: всё в столбик, скролл
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                OutlinedButton(
+                    onClick = {
+                        backupLauncher.launch(
+                            "geosamples_backup_${System.currentTimeMillis()}.db"
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
                 ) {
-                    AreasList(
-                        areas = areas,
-                        selectedArea = selectedArea,
-                        onSelect = { viewModel.selectArea(it) },
-                        onDelete = { areaToDelete = it },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OrdersList(
-                        selectedArea = selectedArea,
-                        orders = orders,
-                        selectedOrder = selectedOrder,
-                        onSelect = { viewModel.selectOrder(it) },
-                        onAdd = { showAddOrderDialog = true },
-                        onDelete = { orderToDelete = it },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Icon(Icons.Default.Save, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Бэкап")
                 }
             }
-        }
 
-        // Список проб выбранного наряда
-        if (selectedOrder != null) {
             HorizontalDivider()
-            SamplesList(
-                order = selectedOrder!!,
-                samples = samples,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
-            )
+
+            // Основной контент — адаптивный.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val isWide = maxWidth >= 600.dp
+
+                if (isWide) {
+                    // Планшет: две колонки.
+                    Row(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AreasList(
+                            areas = areas,
+                            selectedArea = selectedArea,
+                            onSelect = { viewModel.selectArea(it) },
+                            onDelete = { areaToDelete = it },
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        )
+                        OrdersList(
+                            selectedArea = selectedArea,
+                            orders = orders,
+                            selectedOrder = selectedOrder,
+                            onSelect = { viewModel.selectOrder(it) },
+                            onAdd = { showAddOrderDialog = true },
+                            onDelete = { orderToDelete = it },
+                            modifier = Modifier.weight(1f).fillMaxHeight()
+                        )
+                    }
+                } else {
+                    // Телефон: всё в столбик, скролл.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        AreasList(
+                            areas = areas,
+                            selectedArea = selectedArea,
+                            onSelect = { viewModel.selectArea(it) },
+                            onDelete = { areaToDelete = it },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OrdersList(
+                            selectedArea = selectedArea,
+                            orders = orders,
+                            selectedOrder = selectedOrder,
+                            onSelect = { viewModel.selectOrder(it) },
+                            onAdd = { showAddOrderDialog = true },
+                            onDelete = { orderToDelete = it },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+
+            // Список проб выбранного наряда.
+            val order = selectedOrder
+            if (order != null) {
+                HorizontalDivider()
+                SamplesList(
+                    order = order,
+                    samples = samples,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                )
+            }
         }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
     }
 
     // === Диалог добавления участка ===
@@ -187,7 +204,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     areaToDelete?.let { area ->
         ConfirmDialog(
             title = "Удалить участок?",
-            text = "Будут удалены все наряды и пробы участка «${area.areaName}». Действие необратимо.",
+            text = "Будут удалены все наряды и пробы участка " +
+                    "«${area.areaName}». Действие необратимо.",
             onConfirm = {
                 viewModel.deleteArea(area)
                 areaToDelete = null
@@ -200,7 +218,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     orderToDelete?.let { order ->
         ConfirmDialog(
             title = "Удалить наряд?",
-            text = "Будут удалены все пробы наряда «${order.orderNumber}». Действие необратимо.",
+            text = "Будут удалены все пробы наряда " +
+                    "«${order.orderNumber}». Действие необратимо.",
             onConfirm = {
                 viewModel.deleteOrder(order)
                 orderToDelete = null
@@ -402,7 +421,8 @@ private fun SampleRow(sample: SampleEntity) {
         Text(
             if (sample.found) "✓" else "—",
             style = MaterialTheme.typography.bodyMedium,
-            color = if (sample.found) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
+            color = if (sample.found) Color(0xFF2E7D32)
+            else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -418,7 +438,8 @@ private fun ListRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                if (selected) MaterialTheme.colorScheme.primaryContainer
+                else Color.Transparent
             )
             .clickable(onClick = onClick)
             .padding(vertical = 6.dp, horizontal = 8.dp),
