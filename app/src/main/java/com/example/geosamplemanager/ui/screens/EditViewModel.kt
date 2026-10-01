@@ -18,12 +18,12 @@ import kotlinx.coroutines.withContext
 /**
  * FIX 5.9-edit-add-sample/2 — findCommonWellPrefix, suggest*, findConflict.
  * FIX 5.9-edit-save-guard — saveSample проверяет № по БД.
+ * FIX 5.9-edit-multiselect — режим выделения, selectedIds.
+ * FIX 5.9-edit-mass-ops — MassEditFields, applyMassEdit, deleteSelected.
  *
- * FIX 5.9-edit-multiselect:
- *  - multiselectMode + selectedIds (Flow);
- *  - enterMultiselect / exitMultiselect / toggleSelection / clearSelection;
- *  - сброс выделения при смене поиска/фильтров/наряда;
- *  - чистые функции applyMultiselectToggle / computeSelectionLabel.
+ * FIX 5.9-edit-mass-ops/2 (hotfix):
+ *  - applyMassEditToRow синхронизирует status и weightControl:
+ *    CONTROL → weightControl = true; NORMAL/BLANK → weightControl = false.
  */
 
 data class EditTreeData(
@@ -86,31 +86,59 @@ data class SampleConflict(
     val existingIntervalTo: String
 )
 
+data class MassEditFields(
+    val characteristic: String? = null,
+    val type: SampleType? = null,
+    val status: SampleStatus? = null
+) {
+    val hasAny: Boolean
+        get() = characteristic != null || type != null || status != null
+}
+
 // ====================================================================
 // Чистые функции — тестируются отдельно.
 // ====================================================================
 
-/**
- * FIX 5.9-edit-multiselect:
- * Переключить выделение одной пробы.
- * Выделена → убрать. Не выделена → добавить.
- */
 internal fun applyMultiselectToggle(
     current: Set<String>,
     sampleId: String
 ): Set<String> =
     if (sampleId in current) current - sampleId else current + sampleId
 
-/**
- * FIX 5.9-edit-multiselect:
- * Человеческое описание количества выбранных проб для BottomBar.
- * 0 → "". 1 → "1 проба". 2-4 → "N пробы". 5+ → "N проб".
- */
 internal fun computeSelectionLabel(count: Int): String = when {
     count <= 0 -> ""
     count % 10 == 1 && count % 100 != 11 -> "$count проба"
     count % 10 in 2..4 && count % 100 !in 12..14 -> "$count пробы"
     else -> "$count проб"
+}
+
+/**
+ * FIX 5.9-edit-mass-ops/2:
+ * Применить mass-edit к одной строке.
+ *
+ * status и weightControl синхронизированы:
+ *  - status = CONTROL → weightControl = true;
+ *  - status = NORMAL или BLANK → weightControl = false;
+ *  - status = null → weightControl не трогаем.
+ *
+ * controlWeight (число кг) не трогаем — пользователь вводит вручную
+ * в сверке через WeightDialog.
+ */
+internal fun applyMassEditToRow(
+    row: SampleRow,
+    fields: MassEditFields
+): SampleRow {
+    val newWeightControl = when (fields.status) {
+        SampleStatus.CONTROL -> true
+        SampleStatus.NORMAL, SampleStatus.BLANK -> false
+        null -> row.weightControl
+    }
+    return row.copy(
+        characteristic = fields.characteristic ?: row.characteristic,
+        type = fields.type ?: row.type,
+        status = fields.status ?: row.status,
+        weightControl = newWeightControl
+    )
 }
 
 internal fun buildEditTree(
@@ -364,7 +392,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
-    // FIX 5.9-edit-multiselect.
     private val _multiselectMode = MutableStateFlow(false)
     val multiselectMode: StateFlow<Boolean> = _multiselectMode.asStateFlow()
 
@@ -439,13 +466,8 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
     }
 
-    // ================================================================
-    // Поиск и фильтры
-    // ================================================================
-
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
-        // FIX 5.9-edit-multiselect: сброс выделения при смене поиска.
         _selectedIds.value = emptySet()
         rebuildFilteredTree()
     }
@@ -455,7 +477,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
             _activeFilters.value - filter
         else
             _activeFilters.value + filter
-        // FIX 5.9-edit-multiselect: сброс выделения при смене фильтров.
         _selectedIds.value = emptySet()
         rebuildFilteredTree()
     }
@@ -466,60 +487,83 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         rebuildFilteredTree()
     }
 
-    // ================================================================
-    // Мультивыбор
-    // ================================================================
-
-    /**
-     * Войти в режим выделения.
-     * @param initialId опционально — сразу выделить эту пробу
-     *        (используется при долгом тапе).
-     */
     fun enterMultiselect(initialId: String? = null) {
         _multiselectMode.value = true
-        // Одиночный выбор сбрасываем, чтобы не конфликтовало в UI.
         _selectedSampleId.value = null
         _selectedSample.value = null
         _selectedIds.value = if (initialId != null) setOf(initialId) else emptySet()
     }
 
-    /**
-     * Выйти из режима выделения — снять всё и выключить режим.
-     */
     fun exitMultiselect() {
         _multiselectMode.value = false
         _selectedIds.value = emptySet()
     }
 
-    /**
-     * Переключить выделение пробы.
-     */
     fun toggleSelection(sampleId: String) {
         _selectedIds.value = applyMultiselectToggle(_selectedIds.value, sampleId)
     }
 
-    /**
-     * Снять все выделения, но остаться в режиме.
-     */
     fun clearSelection() {
         _selectedIds.value = emptySet()
     }
 
-    // ================================================================
-    // Выбор пробы
-    // ================================================================
+    fun applyMassEdit(fields: MassEditFields) {
+        val ids = _selectedIds.value
+        if (ids.isEmpty() || !fields.hasAny) return
+
+        viewModelScope.launch {
+            try {
+                val rows = ids.mapNotNull { id -> _rawTree.value?.findSample(id) }
+                if (rows.isEmpty()) return@launch
+
+                val updated = rows.map { applyMassEditToRow(it, fields) }
+
+                withContext(Dispatchers.IO) { repo.saveRows(updated) }
+                _message.value = "Изменено проб: ${updated.size}"
+                exitMultiselect()
+            } catch (e: Exception) {
+                _message.value = "Ошибка изменения: ${e.message}"
+            }
+        }
+    }
+
+    fun deleteSelected(renumber: Boolean) {
+        val ids = _selectedIds.value
+        if (ids.isEmpty()) return
+
+        viewModelScope.launch {
+            var deleted = 0
+            var failed = 0
+            try {
+                for (idStr in ids) {
+                    val id = idStr.toLongOrNull() ?: continue
+                    try {
+                        withContext(Dispatchers.IO) {
+                            repo.deleteSampleWithRenumber(id, renumber)
+                        }
+                        deleted++
+                    } catch (_: Exception) {
+                        failed++
+                    }
+                }
+                exitMultiselect()
+                _message.value = if (failed == 0) {
+                    "Удалено проб: $deleted"
+                } else {
+                    "Удалено: $deleted, ошибок: $failed"
+                }
+            } catch (e: Exception) {
+                _message.value = "Ошибка удаления: ${e.message}"
+            }
+        }
+    }
 
     fun selectSample(sampleId: String?) {
         _selectedSampleId.value = sampleId
         _selectedSample.value = sampleId?.let { _tree.value?.findSample(it) }
     }
 
-    // ================================================================
-    // Развёрнутость
-    // ================================================================
-
     fun toggleArea(areaId: Long) {
-        // FIX 5.9-edit-multiselect: смена участка — полный выход.
         exitMultiselect()
         _expandedAreaIds.value = if (areaId in _expandedAreaIds.value)
             _expandedAreaIds.value - areaId
@@ -528,7 +572,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleOrder(orderId: Long) {
-        // FIX 5.9-edit-multiselect: смена наряда — полный выход.
         exitMultiselect()
         _expandedOrderIds.value = if (orderId in _expandedOrderIds.value)
             _expandedOrderIds.value - orderId
@@ -548,10 +591,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedAreaIds.value = emptySet()
         _expandedOrderIds.value = emptySet()
     }
-
-    // ================================================================
-    // Сохранение / удаление
-    // ================================================================
 
     fun saveSample(row: SampleRow) {
         val old = _rawTree.value?.findSample(row.id)
@@ -626,10 +665,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
-    // ================================================================
-    // Добавление пробы
-    // ================================================================
 
     fun wellsInOrder(orderId: Long): List<String> {
         val order = _rawTree.value?.findOrder(orderId) ?: return emptyList()

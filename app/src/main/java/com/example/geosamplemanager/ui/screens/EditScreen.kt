@@ -29,13 +29,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 /**
  * FIX 5.9-edit-add-sample/3 — цвет статуса виден всегда.
  * FIX 5.9-edit-save-guard — EditSampleDialog с findConflict.
+ * FIX 5.9-edit-multiselect — режим выделения, BottomBar.
  *
- * FIX 5.9-edit-multiselect:
- *  - длинный тап по пробе входит в режим выделения;
- *  - кнопка «Выделять» в шапке дерева — вход без выделения;
- *  - в режиме тап по пробе переключает чекбокс;
- *  - снизу BottomBar «N проб» + Снять + Выход;
- *  - при смене поиска/фильтров/наряда/участка выделение сбрасывается.
+ * FIX 5.9-edit-mass-ops:
+ *  - в BottomBar добавлены кнопки «Изменить» и «Удалить»;
+ *  - кнопки активны, если count > 0;
+ *  - открывают MassEditDialog / MassDeleteDialog.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -56,6 +55,10 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
     var editDialogRow by remember { mutableStateOf<SampleRow?>(null) }
     var deleteDialogRow by remember { mutableStateOf<SampleRow?>(null) }
     var addForOrderId by remember { mutableStateOf<Long?>(null) }
+
+    // FIX 5.9-edit-mass-ops.
+    var showMassEditDialog by remember { mutableStateOf(false) }
+    var showMassDeleteDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(message) {
         message?.let {
@@ -153,10 +156,11 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                 .padding(bottom = if (multiselectMode) 72.dp else 0.dp)
         )
 
-        // FIX 5.9-edit-multiselect: BottomBar.
         if (multiselectMode) {
             MultiselectBottomBar(
                 count = selectedIds.size,
+                onEdit = { showMassEditDialog = true },
+                onDelete = { showMassDeleteDialog = true },
                 onClear = { viewModel.clearSelection() },
                 onExit = { viewModel.exitMultiselect() },
                 modifier = Modifier.align(Alignment.BottomCenter)
@@ -184,6 +188,28 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                 deleteDialogRow = null
             },
             onDismiss = { deleteDialogRow = null }
+        )
+    }
+
+    if (showMassEditDialog) {
+        MassEditDialog(
+            count = selectedIds.size,
+            onApply = { fields ->
+                viewModel.applyMassEdit(fields)
+                showMassEditDialog = false
+            },
+            onDismiss = { showMassEditDialog = false }
+        )
+    }
+
+    if (showMassDeleteDialog) {
+        MassDeleteDialog(
+            count = selectedIds.size,
+            onConfirm = { renumber ->
+                viewModel.deleteSelected(renumber)
+                showMassDeleteDialog = false
+            },
+            onDismiss = { showMassDeleteDialog = false }
         )
     }
 
@@ -217,6 +243,8 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
 @Composable
 private fun MultiselectBottomBar(
     count: Int,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
     onClear: () -> Unit,
     onExit: () -> Unit,
     modifier: Modifier = Modifier
@@ -229,7 +257,7 @@ private fun MultiselectBottomBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -237,20 +265,33 @@ private fun MultiselectBottomBar(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).padding(start = 4.dp)
             )
-            TextButton(
+            IconButton(
+                onClick = onEdit,
+                enabled = count > 0
+            ) {
+                Icon(Icons.Filled.Edit, contentDescription = "Изменить")
+            }
+            IconButton(
+                onClick = onDelete,
+                enabled = count > 0
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Удалить",
+                    tint = if (count > 0) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                )
+            }
+            IconButton(
                 onClick = onClear,
                 enabled = count > 0
             ) {
-                Icon(Icons.Filled.Deselect, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Снять")
+                Icon(Icons.Filled.Deselect, contentDescription = "Снять")
             }
-            TextButton(onClick = onExit) {
-                Icon(Icons.Filled.Close, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Выход")
+            IconButton(onClick = onExit) {
+                Icon(Icons.Filled.Close, contentDescription = "Выход")
             }
         }
     }
@@ -395,7 +436,6 @@ private fun EditTreePanel(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f).padding(start = 8.dp)
                 )
-                // FIX 5.9-edit-multiselect: кнопка «Выделять» / «Выход».
                 IconButton(
                     onClick = {
                         if (multiselectMode) onExitMultiselect()
@@ -687,7 +727,6 @@ private fun SampleItemRow(
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // FIX 5.9-edit-multiselect: галочка в режиме выделения.
         if (multiselectMode) {
             Checkbox(
                 checked = isChecked,
