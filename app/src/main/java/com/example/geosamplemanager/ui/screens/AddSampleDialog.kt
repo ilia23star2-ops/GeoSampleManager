@@ -22,13 +22,17 @@ import androidx.compose.ui.unit.dp
  * FIX 5.9-edit-add-sample/3:
  *  - фикс: при переключении статуса BLANK ↔ NORMAL интервал
  *    перевосстанавливается;
- *  - убран вариант «Заменить» при конфликте — только
- *    «Со сдвигом / Отмена»;
- *  - при конфликте текст предупреждает, что интервалы следующих
- *    проб тоже сдвинутся.
+ *  - убран вариант «Заменить» при конфликте.
  *
- * HOTFIX: @OptIn(ExperimentalMaterial3Api::class) — ExposedDropdownMenuBox
- * и связанные с ним API помечены как экспериментальные.
+ * FIX 5.9-validation-fix:
+ *  - кнопка «Добавить» всегда активна;
+ *  - при клике выставляется validationAttempted = true — подписи
+ *    ошибок появляются;
+ *  - добавление не проходит, пока форма невалидна.
+ *
+ * HOTFIX 5.9-validation-fix:
+ *  - возвращена аннотация @OptIn(ExperimentalMaterial3Api::class)
+ *    для ExposedDropdownMenuBox / ExposedDropdownMenu / menuAnchor.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -76,16 +80,12 @@ fun AddSampleDialog(
 
     val isBlank = status == SampleStatus.BLANK
 
-    // Обновляем № пробы при смене скважины.
     LaunchedEffect(actualWell) {
         if (!sampleNumberUserTouched) {
             sampleNumber = suggestSampleNumber(actualWell)
         }
     }
 
-    // FIX 5.9-edit-add-sample/3:
-    // При смене скважины ИЛИ возврате с холостой на обычную —
-    // если интервал пуст, подсказать.
     LaunchedEffect(actualWell, isBlank) {
         if (!isBlank && intervalFrom.isBlank()) {
             intervalFrom = suggestIntervalFrom(actualWell)
@@ -137,7 +137,6 @@ fun AddSampleDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
 
-                // СКВАЖИНА
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "Скважина",
@@ -242,7 +241,6 @@ fun AddSampleDialog(
                     }
                 }
 
-                // № ПРОБЫ
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (conflict != null) {
                         Icon(
@@ -285,7 +283,6 @@ fun AddSampleDialog(
 
                 HorizontalDivider()
 
-                // ИНТЕРВАЛ
                 if (!isBlank) {
                     Text(
                         "Интервал, м",
@@ -356,7 +353,6 @@ fun AddSampleDialog(
                     }
                 }
 
-                // ВЕС
                 OutlinedTextField(
                     value = weight,
                     onValueChange = { weight = it },
@@ -366,7 +362,6 @@ fun AddSampleDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // ХАРАКТЕРИСТИКА
                 OutlinedTextField(
                     value = characteristic,
                     onValueChange = { characteristic = it },
@@ -375,7 +370,6 @@ fun AddSampleDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // ТИП
                 Text(
                     "Тип пробы",
                     style = MaterialTheme.typography.labelLarge,
@@ -395,7 +389,6 @@ fun AddSampleDialog(
                     }
                 }
 
-                // СТАТУС
                 Text(
                     "Статус",
                     style = MaterialTheme.typography.labelLarge,
@@ -417,6 +410,7 @@ fun AddSampleDialog(
             }
         },
         confirmButton = {
+            // FIX 5.9-validation-fix: кнопка всегда активна.
             TextButton(onClick = {
                 validationAttempted = true
                 if (!formValid) return@TextButton
@@ -445,9 +439,6 @@ fun AddSampleDialog(
         }
     )
 
-    // FIX 5.9-edit-add-sample/3:
-    // Второй диалог — только «Со сдвигом / Отмена».
-    // Убран вариант «Заменить» (доступен через редактирование).
     if (showConflictConfirm && conflict != null) {
         AlertDialog(
             onDismissRequest = { showConflictConfirm = false },

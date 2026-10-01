@@ -29,6 +29,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  *  - цвет статуса строки виден ВСЕГДА (и при выделении тоже);
  *  - выделение — рамка primary 2dp + лёгкий overlay 0.18 поверх
  *    цветного фона (не затирает цвет статуса).
+ *
+ * FIX 5.9-edit-save-guard:
+ *  - EditSampleDialog получает findConflict по БД.
  */
 @Composable
 fun EditScreen(viewModel: EditViewModel = viewModel()) {
@@ -132,9 +135,11 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
         )
     }
 
+    // FIX 5.9-edit-save-guard: findConflict → из ViewModel по БД.
     editDialogRow?.let { row ->
         EditSampleDialog(
             row = row,
+            findConflict = { sn -> viewModel.findConflictForEdit(row.id, sn) },
             onSave = { updated ->
                 viewModel.saveSample(updated)
                 editDialogRow = null

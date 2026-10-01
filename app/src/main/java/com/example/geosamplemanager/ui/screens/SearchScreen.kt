@@ -54,14 +54,15 @@ import java.io.File
 /**
  * FIX 5.9-table-responsive: горизонтальный скролл таблицы на телефоне.
  *
- * FIX 5.9-row-highlight:
- *  - Тап по строке пробы — выделяет её (рамка 2 dp primary).
- *  - Повторный тап по той же — снимает выделение.
- *  - Выделение сохраняется при горизонтальном скролле — не теряется
- *    нужная проба при просмотре на телефоне.
- *  - Выделение хранится в `selectedRowId` (rememberSaveable).
- *  - Дочерние клики (чек-бокс, вес, характеристика, меню) — не сбрасывают
- *    выделение, идут по своему назначению.
+ * FIX 5.9-row-highlight: тап по строке — выделяет, повторный — снимает.
+ *
+ * FIX 5.9-edit-search-save-fix:
+ *  - «Редактировать» в меню пробы → EditSampleDialog;
+ *  - onSave → viewModel.saveEditedRow(updated), изменения сохраняются.
+ *
+ * FIX 5.9-edit-save-guard:
+ *  - EditSampleDialog получает findConflict по БД — занятость №
+ *    другой пробой в этом же наряде.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -136,7 +137,6 @@ fun SearchScreen(
     var markAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
     var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
 
-    // FIX 5.9-row-highlight: выделенная строка (тап по строке).
     var selectedRowId by rememberSaveable { mutableStateOf<String?>(null) }
 
     var voiceDialogOpen by remember { mutableStateOf(false) }
@@ -628,12 +628,14 @@ fun SearchScreen(
         )
     }
 
+    // FIX 5.9-edit-save-guard: findConflict → из ViewModel по БД.
     editDialogRowId?.let { id ->
         val row = state.rowById(id)
         if (row != null) EditSampleDialog(
             row = row,
-            onSave = {
-                scope.launch { snackbarHostState.showSnackbar("Редактор — в разработке") }
+            findConflict = { sn -> viewModel.findConflictForEdit(id, sn) },
+            onSave = { updated ->
+                viewModel.saveEditedRow(updated)
                 editDialogRowId = null
             },
             onDismiss = { editDialogRowId = null }
@@ -1706,12 +1708,6 @@ private fun RowScope.WeightedHeaderCell(text: String) {
     )
 }
 
-/**
- * FIX 5.9-row-highlight:
- * Тап по строке — выделяет её (рамка primary 2 dp + лёгкий фон primary).
- * Повторный тап — снимает.
- * Рамка идёт поверх цветного фона состояния (found/blank/etc), не ломая его.
- */
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,

@@ -327,14 +327,26 @@ private fun PhotoThumbnail(
 /**
  * FIX 5.9-edit-status-blank:
  *  - при статусе «Холостая» поля интервала скрыты;
- *  - при возврате на «Обычная» — интервал восстанавливается
- *    (значения в state не теряются);
+ *  - при возврате на «Обычная» — интервал восстанавливается;
  *  - при сохранении холостой интервал уходит как null;
- *  - для не-холостой интервал обязателен (валидация).
+ *  - для не-холостой интервал обязателен.
+ *
+ * FIX 5.9-validation-fix:
+ *  - кнопка «Сохранить» всегда активна;
+ *  - при клике выставляется validationAttempted = true — тогда
+ *    под невалидными полями появляются подписи;
+ *  - сохранение не проходит, пока форма невалидна.
+ *
+ * FIX 5.9-edit-save-guard:
+ *  - новый параметр findConflict: (String) -> Boolean — проверяет,
+ *    занят ли № пробы другой пробой в этом же наряде;
+ *  - если № изменён И занят → красная подпись «№ уже занят»,
+ *    сохранение блокируется.
  */
 @Composable
 fun EditSampleDialog(
     row: SampleRow,
+    findConflict: (String) -> Boolean,
     onSave: (SampleRow) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -360,7 +372,18 @@ fun EditSampleDialog(
     val orderError = !isBlank && !fromError && !toError &&
             (fromParsed ?: 0.0) >= (toParsed ?: 0.0)
 
-    val formValid = isBlank || (!fromError && !toError && !orderError)
+    // FIX 5.9-edit-save-guard: если № изменился И занят другой пробой —
+    // блокируем сохранение. Пустой № — тоже ошибка.
+    val sampleNumberChanged = sampleNumber.trim() != row.sampleNumber
+    val sampleNumberEmpty = sampleNumber.isBlank()
+    val sampleNumberConflict = sampleNumberChanged &&
+            !sampleNumberEmpty &&
+            findConflict(sampleNumber.trim())
+
+    val sampleError = sampleNumberEmpty || sampleNumberConflict
+
+    val formValid = !sampleError &&
+            (isBlank || (!fromError && !toError && !orderError))
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -390,12 +413,20 @@ fun EditSampleDialog(
                 OutlinedTextField(
                     value = sampleNumber, onValueChange = { sampleNumber = it },
                     label = { Text("№ пробы") }, singleLine = true,
+                    isError = validationAttempted && sampleError,
+                    supportingText = {
+                        if (validationAttempted && sampleNumberEmpty) {
+                            Text("Заполните", color = MaterialTheme.colorScheme.error)
+                        } else if (sampleNumberConflict) {
+                            Text(
+                                "№ уже занят другой пробой",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else null
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // FIX 5.9-edit-status-blank:
-                // Интервал скрыт для холостой. Значения полей сохраняются
-                // в state, при возврате — восстановятся.
                 if (!isBlank) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -517,21 +548,20 @@ fun EditSampleDialog(
             }
         },
         confirmButton = {
+            // FIX 5.9-validation-fix: кнопка всегда активна.
+            // При клике показываем подписи, если форма невалидна.
+            // FIX 5.9-edit-save-guard: не сохраняем при конфликте №.
             TextButton(
-                enabled = formValid,
                 onClick = {
                     validationAttempted = true
                     if (!formValid) return@TextButton
 
-                    // FIX 5.9-edit-status-blank:
-                    // Для холостой интервал = null, сохраняется только
-                    // если статус не BLANK.
                     val newIntervalFrom = if (isBlank) null else fromParsed
                     val newIntervalTo = if (isBlank) null else toParsed
 
                     onSave(
                         row.copy(
-                            sampleNumber = sampleNumber,
+                            sampleNumber = sampleNumber.trim(),
                             wellNumber = wellNumber,
                             intervalFrom = if (newIntervalFrom == null) "—"
                             else newIntervalFrom.toString(),

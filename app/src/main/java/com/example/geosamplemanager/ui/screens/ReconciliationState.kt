@@ -171,10 +171,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             return sortGroupsByRelevance(byStatus, selectedArea, selectedOrder)
         }
 
-    /**
-     * FIX 5.9-search-bulk:
-     * Найти строки группы, которые СЕЙЧАС видны на экране.
-     */
     fun visibleRowsForGroup(groupId: String): List<SampleRow> {
         visibleGroups.firstOrNull { it.id == groupId }?.let { return it.rows }
         for (qg in _queryGroups) {
@@ -604,12 +600,30 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     }
 
     /**
-     * FIX 5.9-bulk-confirm-2:
-     * Три вида решений в массовых операциях:
-     *   - ВК без веса — ввод controlWeight.
-     *   - Холостая без веса — ввод weight.
-     *   - Отложенная — галка «отметить как найденную».
+     * FIX 5.9-edit-search-save-fix:
+     * Заменить всю пробу целиком (правка через EditSampleDialog).
+     * Все поля новой строки применяются сразу. Undo-действие — одна
+     * запись BulkRowsChange (до/после для группы).
      */
+    fun replaceRowFully(rowId: String, newRow: SampleRow) {
+        val (gi, ri) = findRow(rowId) ?: return
+        val oldRow = _groups[gi].rows[ri]
+        if (oldRow == newRow) return
+
+        val group = _groups[gi]
+        val before = group.rows.toList()
+        val newRows = group.rows.toMutableList().also { it[ri] = newRow }
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(
+            UndoAction.BulkRowsChange(
+                groupId = group.id,
+                before = before,
+                after = newRows,
+                label = "Правка: ${newRow.sampleNumber}"
+            )
+        )
+    }
+
     sealed class BulkDecision {
         data class WeightControlNeedsWeight(val row: SampleRow) : BulkDecision()
         data class BlankNeedsWeight(val row: SampleRow) : BulkDecision()
@@ -684,7 +698,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 if (row.weight != null) {
                     marked++; row.copy(found = true)
                 } else {
-                    // FIX 5.9-bulk-confirm-2: сначала вес из диалога, потом настройки.
                     val fromDialog = blankWeights[row.id]
                     val w = fromDialog ?: when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue
@@ -738,7 +751,6 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 if (row.weight != null) {
                     marked++; row.copy(found = true)
                 } else {
-                    // FIX 5.9-bulk-confirm-2.
                     val fromDialog = blankWeights[row.id]
                     val w = fromDialog ?: when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue

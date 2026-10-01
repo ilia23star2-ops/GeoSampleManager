@@ -21,7 +21,6 @@ interface SampleDao {
     /**
      * FIX 5.9-stats-reactive:
      * Flow всех проб — для реактивной статистики.
-     * Room уведомляет при любом изменении samples.
      */
     @Query("SELECT * FROM samples ORDER BY order_id, serial_number")
     fun getAllSamplesFlow(): Flow<List<SampleEntity>>
@@ -52,6 +51,23 @@ interface SampleDao {
 
     @Query("SELECT DISTINCT order_id FROM samples")
     suspend fun getOrderIdsWithSamples(): List<Long>
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Поиск пробы по (order_id, sample_number) — для проверки
+     * конфликтов перед сохранением. Возвращает первую найденную.
+     */
+    @Query(
+        """
+        SELECT * FROM samples 
+        WHERE order_id = :orderId AND sample_number = :sampleNumber 
+        LIMIT 1
+        """
+    )
+    suspend fun findByOrderAndNumber(
+        orderId: Long,
+        sampleNumber: String
+    ): SampleEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(sample: SampleEntity): Long

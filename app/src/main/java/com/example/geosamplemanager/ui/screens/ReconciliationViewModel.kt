@@ -722,7 +722,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
             VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
 
-            // FIX 5.8.11-sort-fix-5: одна команда Next.
             VoiceCommand.Next -> voiceNext()
 
             VoiceCommand.Undo -> {
@@ -1724,12 +1723,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         voiceSession.lastMarkedSampleNumber = null
     }
 
-    /**
-     * FIX 5.8.11-sort-fix-5:
-     * Единая команда Next. Если есть очередь — идём по ней
-     * (voiceNextInQueue). Если нет — полный сброс контекста.
-     * mode SORT — команда неприменима.
-     */
     private suspend fun voiceNext(): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
             return VoiceExecResult.Message("В режиме сортировки не используется.")
@@ -1878,20 +1871,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.11-sort-ui:
-     * Раньше метод возвращал только Message для TTS, не трогая state.query.
-     *
-     * FIX 5.8.11-sort-fix-4:
-     * Возвращаем Message с display — каноническим номером для UI-поля
-     * «Распознано».
-     *
-     * FIX 5.8.11-sort-fix-5:
-     * Формируем text (канонический, для UI-поля «Результат») и spoken
-     * (фонетический, для TTS) параллельно. UI теперь видит
-     * «Скважина NV1366, Наряд №1.», а ухо слышит «Скважина эн вэ
-     * тринадцать шестьдесят шесть, Наряд №1.».
-     */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -2181,6 +2160,72 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return ok
     }
 
+    /**
+     * FIX 5.9-edit-search-save-fix:
+     * Сохранить правку пробы, сделанную в EditSampleDialog.
+     * Обновляет state и пишет в БД.
+     *
+     * FIX 5.9-edit-save-guard:
+     * Перед сохранением проверяем № по БД — если такой уже есть в
+     * этом наряде (другая проба) — не сохраняем, показываем понятный
+     * текст. При ошибке БД — откатываем state.
+     */
+    fun saveEditedRow(updated: SampleRow) {
+        val old = state.rowById(updated.id) ?: return
+        viewModelScope.launch {
+            try {
+                // 1. Проверка конфликта № по БД (если номер изменился).
+                val orderId = old.groupId.toLongOrNull()
+                if (orderId != null && updated.sampleNumber != old.sampleNumber) {
+                    val conflict = withContext(Dispatchers.IO) {
+                        repo.findSampleByOrderAndNumber(orderId, updated.sampleNumber)
+                    }
+                    if (conflict != null && conflict.id.toString() != updated.id) {
+                        _message.value = "№ ${updated.sampleNumber} уже " +
+                                "занят другой пробой в этом наряде"
+                        return@launch
+                    }
+                }
+
+                // 2. Применяем state и сохраняем.
+                state.replaceRowFully(updated.id, updated)
+                withContext(Dispatchers.IO) { repo.saveRows(listOf(updated)) }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                // Откатываем state — правка не прошла в БД.
+                state.replaceRowFully(updated.id, old)
+                _message.value = humanSaveError(e)
+            }
+        }
+    }
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Проверить, занят ли № пробы другой пробой в том же наряде.
+     * Используется в EditSampleDialog для показа подписи до сохранения.
+     */
+    fun findConflictForEdit(rowId: String, sampleNumber: String): Boolean {
+        state.groups.forEach { g ->
+            g.rows.forEach { r ->
+                if (r.id != rowId && r.sampleNumber == sampleNumber) return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Понятный текст ошибки вместо сырого SQL.
+     */
+    private fun humanSaveError(e: Exception): String {
+        val m = e.message ?: return "Ошибка сохранения"
+        return if (m.contains("UNIQUE constraint failed", ignoreCase = true)) {
+            "Такой № пробы уже есть в этом наряде"
+        } else {
+            "Ошибка сохранения: $m"
+        }
+    }
+
     fun applyBulkMarkFound(
         groupId: String,
         controlWeights: Map<String, Double>,
@@ -2208,10 +2253,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return marked
     }
 
-    /**
-     * FIX 5.9-search-bulk:
-     * Снять отметки только с видимых строк группы.
-     */
     fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
         state.clearAllFoundForRows(groupId, rowIds)
         persistGroup(groupId)

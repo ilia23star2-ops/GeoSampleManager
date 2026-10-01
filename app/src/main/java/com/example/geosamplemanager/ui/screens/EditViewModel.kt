@@ -4,7 +4,6 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
-import com.example.geosamplemanager.data.SampleShiftPlan
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -17,13 +16,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.9-edit-add-sample/3:
- *  - buildShiftPlans — сдвигает номер И интервал (не только номер);
- *  - интервал сдвигается на step = (new.to - new.from);
- *  - если новая холостая или интервал не задан — шаг null, интервалы
- *    не сдвигаются;
- *  - данные (вес, характеристика, флаги, заметки, фото) остаются
- *    на своих сущностях.
+ * FIX 5.9-edit-add-sample/2 (второй подзаход):
+ *  - findCommonWellPrefix — общий буквенный префикс скважин наряда;
+ *  - suggestIntervalFrom — from новой = to предыдущей не-холостой;
+ *  - suggestNextSampleNumberInWell — порядковый суффикс новой пробы;
+ *  - findConflict — проверка дубля sampleNumber в наряде;
+ *  - addSample принимает интервал/вес/характеристику;
+ *  - холостые: интервал сохраняется как null.
+ *
+ * FIX 5.9-edit-save-guard:
+ *  - saveSample проверяет конфликт № по БД, а не по state;
+ *  - findConflictForEdit — синхронная проверка для диалога;
+ *  - при ошибке БД показывается человеческое сообщение.
  */
 
 data class EditTreeData(
@@ -79,23 +83,16 @@ data class InsertPlan(
     val shifted: List<ShiftedSample>
 )
 
+/**
+ * FIX 5.9-edit-add-sample/2:
+ * Информация о конфликте номера пробы. Используется в диалоге
+ * для показа значка и текста.
+ */
 data class SampleConflict(
     val existingSampleNumber: String,
     val existingNumberInWell: Int,
     val existingIntervalFrom: String,
     val existingIntervalTo: String
-)
-
-/**
- * FIX 5.9-edit-add-sample/3:
- * План сдвига одной пробы — номер + интервал.
- * sampleId — String (id из SampleRow), конвертируется в Long при записи.
- */
-data class ShiftPlan(
-    val sampleId: String,
-    val newSampleNumber: String,
-    val newIntervalFrom: Double?,
-    val newIntervalTo: Double?
 )
 
 // ====================================================================
@@ -190,6 +187,12 @@ private fun matchesEditFilters(row: SampleRow, filters: Set<EditFilter>): Boolea
     }
 }
 
+/**
+ * FIX 5.9-edit-add-sample/2:
+ * Общий буквенный префикс всех скважин наряда.
+ * ["ACD2100021", "ACD2100022"] → "ACD".
+ * Если скважин нет или префикс пуст — "".
+ */
 internal fun findCommonWellPrefix(samples: List<SampleRow>): String {
     val wells = samples.map { it.wellNumber }
         .filter { it.isNotBlank() }
@@ -209,6 +212,11 @@ internal fun findCommonWellPrefix(samples: List<SampleRow>): String {
     return first.substring(0, letterEnd)
 }
 
+/**
+ * FIX 5.9-edit-add-sample/2:
+ * from новой = to предыдущей НЕ-холостой пробы в скважине с меньшим
+ * numberInWell. Если ничего нет — "".
+ */
 internal fun suggestIntervalFrom(
     wellRows: List<SampleRow>,
     newNumberInWell: Int
@@ -220,11 +228,20 @@ internal fun suggestIntervalFrom(
     return if (to == "—" || to.isBlank()) "" else to
 }
 
+/**
+ * FIX 5.9-edit-add-sample/2:
+ * Порядковый суффикс новой пробы = max(numberInWell) + 1.
+ * Пустая скважина → 1.
+ */
 internal fun suggestNextSampleNumberInWell(wellRows: List<SampleRow>): Int {
     if (wellRows.isEmpty()) return 1
     return (wellRows.maxOf { it.numberInWell }) + 1
 }
 
+/**
+ * FIX 5.9-edit-add-sample/2:
+ * Найти пробу с таким же sampleNumber в наряде. null — конфликта нет.
+ */
 internal fun findConflict(
     orderSamples: List<SampleRow>,
     candidateSampleNumber: String
@@ -240,6 +257,10 @@ internal fun findConflict(
     )
 }
 
+/**
+ * FIX 5.9-edit-add-sample:
+ * Определить позицию вставки новой пробы в скважину.
+ */
 internal fun planInsertPosition(
     wellNumber: String,
     newSampleNumber: String,
@@ -293,49 +314,6 @@ internal fun planInsertPosition(
     val insertIndex = sorted.indexOfFirst { it.numberInWell > newNum }
         .let { if (it < 0) sorted.size else it }
     return InsertPlan(insertIndex, newNum, emptyList())
-}
-
-/**
- * FIX 5.9-edit-add-sample/3:
- * Построить список сдвигов — sampleNumber + интервалы.
- *
- * @param plan результат planInsertPosition (какие пробы двигаются и куда).
- * @param wellRows пробы в скважине (исходные).
- * @param intervalStep шаг сдвига интервала = (new.to - new.from).
- *                     null → интервалы не двигаем (новая холостая или
- *                     интервал не задан).
- *
- * Логика:
- *  - если step != null И проба не холостая → сдвигаем from и to на step;
- *  - иначе → интервал не трогаем (сохраняем как было);
- *  - "—" парсится в null, сдвиг не применяется.
- */
-internal fun buildShiftPlans(
-    plan: InsertPlan,
-    wellRows: List<SampleRow>,
-    intervalStep: Double?
-): List<ShiftPlan> {
-    val rowsById = wellRows.associateBy { it.id }
-    return plan.shifted.mapNotNull { s ->
-        val old = rowsById[s.sampleId] ?: return@mapNotNull null
-
-        val newFrom: Double?
-        val newTo: Double?
-        if (intervalStep != null && !old.isBlank) {
-            newFrom = old.intervalFrom.toDoubleOrNull()?.plus(intervalStep)
-            newTo = old.intervalTo.toDoubleOrNull()?.plus(intervalStep)
-        } else {
-            newFrom = old.intervalFrom.toDoubleOrNull()
-            newTo = old.intervalTo.toDoubleOrNull()
-        }
-
-        ShiftPlan(
-            sampleId = s.sampleId,
-            newSampleNumber = s.newSampleNumber,
-            newIntervalFrom = newFrom,
-            newIntervalTo = newTo
-        )
-    }
 }
 
 internal fun parseSuffixNumber(wellNumber: String, sampleNumber: String): Int? {
@@ -464,6 +442,10 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = _expandedOrderIds.value intersect orderIds
     }
 
+    // ================================================================
+    // Поиск и фильтры
+    // ================================================================
+
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
         rebuildFilteredTree()
@@ -482,10 +464,18 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         rebuildFilteredTree()
     }
 
+    // ================================================================
+    // Выбор пробы
+    // ================================================================
+
     fun selectSample(sampleId: String?) {
         _selectedSampleId.value = sampleId
         _selectedSample.value = sampleId?.let { _tree.value?.findSample(it) }
     }
+
+    // ================================================================
+    // Развёрнутость
+    // ================================================================
 
     fun toggleArea(areaId: Long) {
         _expandedAreaIds.value = if (areaId in _expandedAreaIds.value)
@@ -514,16 +504,79 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedOrderIds.value = emptySet()
     }
 
+    // ================================================================
+    // Сохранение / удаление
+    // ================================================================
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Перед сохранением — проверяем № в БД. Если такой уже есть в
+     * наряде (другая проба) — не сохраняем.
+     * При ошибке БД — показываем понятный текст.
+     */
     fun saveSample(row: SampleRow) {
+        val old = _rawTree.value?.findSample(row.id)
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    repo.saveRows(listOf(row))
+                // 1. Определяем orderId: сначала из state, если не нашли —
+                //    ищем в дереве по всем нарядам.
+                val orderId = old?.groupId?.toLongOrNull()
+                    ?: _rawTree.value?.areas
+                        ?.flatMap { it.orders }
+                        ?.firstOrNull { o -> o.samples.any { it.id == row.id } }
+                        ?.orderId
+
+                // 2. Проверка конфликта № по БД.
+                if (orderId != null &&
+                    (old == null || row.sampleNumber != old.sampleNumber)
+                ) {
+                    val conflict = withContext(Dispatchers.IO) {
+                        repo.findSampleByOrderAndNumber(orderId, row.sampleNumber)
+                    }
+                    if (conflict != null && conflict.id.toString() != row.id) {
+                        _message.value = "№ ${row.sampleNumber} уже " +
+                                "занят другой пробой в этом наряде"
+                        return@launch
+                    }
                 }
+
+                // 3. Сохранение.
+                withContext(Dispatchers.IO) { repo.saveRows(listOf(row)) }
                 _message.value = "Проба сохранена"
             } catch (e: Exception) {
-                _message.value = "Ошибка сохранения: ${e.message}"
+                _message.value = humanSaveError(e)
             }
+        }
+    }
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Синхронная проверка — занят ли № пробы другой пробой в том же
+     * наряде. Используется в EditSampleDialog для показа подписи
+     * ДО нажатия «Сохранить» (валидация в реальном времени).
+     */
+    fun findConflictForEdit(rowId: String, sampleNumber: String): Boolean {
+        val tree = _rawTree.value ?: return false
+        tree.areas.forEach { area ->
+            area.orders.forEach { order ->
+                order.samples.forEach { s ->
+                    if (s.id != rowId && s.sampleNumber == sampleNumber) return true
+                }
+            }
+        }
+        return false
+    }
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Понятный текст ошибки вместо сырого SQL.
+     */
+    private fun humanSaveError(e: Exception): String {
+        val m = e.message ?: return "Ошибка сохранения"
+        return if (m.contains("UNIQUE constraint failed", ignoreCase = true)) {
+            "Такой № пробы уже есть в этом наряде"
+        } else {
+            "Ошибка сохранения: $m"
         }
     }
 
@@ -634,9 +687,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                         existingSamples = wellRows
                     )
 
-                    // FIX 5.9-edit-add-sample/3:
-                    // Шаг сдвига интервалов = длина интервала новой пробы.
-                    // Если новая холостая или интервал не задан — шага нет.
                     val isBlankStatus = status == SampleStatus.BLANK
                     val intervalStep: Double? =
                         if (!isBlankStatus &&
@@ -666,12 +716,7 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                     val sampleShiftPlans = shiftPlans.mapNotNull { sp ->
                         val id = sp.sampleId.toLongOrNull()
                             ?: return@mapNotNull null
-                        SampleShiftPlan(
-                            sampleId = id,
-                            newSampleNumber = sp.newSampleNumber,
-                            newIntervalFrom = sp.newIntervalFrom,
-                            newIntervalTo = sp.newIntervalTo
-                        )
+                        id to sp.newSampleNumber
                     }
 
                     repo.addSampleWithShift(newSample, sampleShiftPlans)
@@ -681,7 +726,7 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                 val shiftWord = if (hadShift) " (номера и интервалы сдвинуты)" else ""
                 _message.value = "Проба $sampleNumber добавлена$shiftWord"
             } catch (e: Exception) {
-                _message.value = "Ошибка добавления: ${e.message}"
+                _message.value = humanSaveError(e)
             }
         }
     }
@@ -698,3 +743,42 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         return wellSamples.any { it.numberInWell == newNum }
     }
 }
+
+/**
+ * FIX 5.9-edit-add-sample/3:
+ * Построить список сдвигов — sampleNumber + интервалы.
+ */
+internal fun buildShiftPlans(
+    plan: InsertPlan,
+    wellRows: List<SampleRow>,
+    intervalStep: Double?
+): List<ShiftPlan> {
+    val rowsById = wellRows.associateBy { it.id }
+    return plan.shifted.mapNotNull { s ->
+        val old = rowsById[s.sampleId] ?: return@mapNotNull null
+
+        val newFrom: Double?
+        val newTo: Double?
+        if (intervalStep != null && !old.isBlank) {
+            newFrom = old.intervalFrom.toDoubleOrNull()?.plus(intervalStep)
+            newTo = old.intervalTo.toDoubleOrNull()?.plus(intervalStep)
+        } else {
+            newFrom = old.intervalFrom.toDoubleOrNull()
+            newTo = old.intervalTo.toDoubleOrNull()
+        }
+
+        ShiftPlan(
+            sampleId = s.sampleId,
+            newSampleNumber = s.newSampleNumber,
+            newIntervalFrom = newFrom,
+            newIntervalTo = newTo
+        )
+    }
+}
+
+data class ShiftPlan(
+    val sampleId: String,
+    val newSampleNumber: String,
+    val newIntervalFrom: Double?,
+    val newIntervalTo: Double?
+)

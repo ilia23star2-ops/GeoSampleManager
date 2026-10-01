@@ -13,18 +13,6 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
-/**
- * FIX 5.9-edit-add-sample/3:
- * План сдвига одной существующей пробы.
- * Сдвигается номер пробы и интервал. Остальные поля — не трогаются.
- */
-data class SampleShiftPlan(
-    val sampleId: Long,
-    val newSampleNumber: String,
-    val newIntervalFrom: Double?,
-    val newIntervalTo: Double?
-)
-
 class DatabaseRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -86,6 +74,16 @@ class DatabaseRepository(context: Context) {
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity> =
         sampleDao.getSamplesByWell(wellNumber)
 
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Найти пробу по (orderId, sampleNumber). Для проверки конфликтов
+     * перед сохранением — даже если эта проба не загружена в UI.
+     */
+    suspend fun findSampleByOrderAndNumber(
+        orderId: Long,
+        sampleNumber: String
+    ): SampleEntity? = sampleDao.findByOrderAndNumber(orderId, sampleNumber)
+
     suspend fun addSample(sample: SampleEntity): Long = sampleDao.insert(sample)
     suspend fun updateSample(sample: SampleEntity) = sampleDao.update(sample)
     suspend fun deleteSample(sampleId: Long) = sampleDao.deleteById(sampleId)
@@ -102,11 +100,6 @@ class DatabaseRepository(context: Context) {
     suspend fun searchSamples(query: String?): List<SampleEntity> =
         sampleDao.searchSamples(query)
 
-    /**
-     * HOTFIX 5.9-edit-add-sample/3:
-     * Возвращаем List<Long> — исходный тип. Регресс из подзахода 3
-     * (была ошибочно List<String>) ломал ReconciliationViewModel.
-     */
     suspend fun findOrderIdsByQuery(query: String): List<Long> =
         sampleDao.findOrderIdsByQuery(query)
 
@@ -114,35 +107,27 @@ class DatabaseRepository(context: Context) {
         sampleDao.getOrderIdsWithSamples()
 
     /**
-     * FIX 5.9-edit-add-sample/3:
-     * Добавить пробу со сдвигом существующих.
+     * FIX 5.9-edit-add-sample:
+     * Добавить пробу с одновременным сдвигом номеров существующих.
      *
-     * Сдвиг = список SampleShiftPlan. У каждой сдвигаемой пробы
-     * меняется sampleNumber и (опционально) интервал.
-     *
-     * HOTFIX UNIQUE (из подзахода 2):
+     * FIX 5.9-edit-add-sample/2 (HOTFIX UNIQUE):
      * Сдвиги применяются в ОБРАТНОМ порядке — от старшего к младшему.
-     * Иначе SQLite падает на UNIQUE (order_id, sample_number).
+     * Иначе SQLite падает на UNIQUE (order_id, sample_number):
+     * при сдвиге 102→103 старая 103 ещё существует.
+     * Reverse гарантирует, что при 103→104 ячейка 104 свободна.
+     *
+     * @param newSample новая проба (id = 0).
+     * @param shifts список (sampleId → новый sampleNumber) для сдвигаемых.
      */
     suspend fun addSampleWithShift(
         newSample: SampleEntity,
-        shifts: List<SampleShiftPlan>
+        shifts: List<Pair<Long, String>>
     ): Long {
         return db.withTransaction {
-            shifts.reversed().forEach { shift ->
-                val existing = sampleDao.getSampleById(shift.sampleId)
-                    ?: return@forEach
-                if (existing.sampleNumber != shift.newSampleNumber ||
-                    existing.intervalFrom != shift.newIntervalFrom ||
-                    existing.intervalTo != shift.newIntervalTo
-                ) {
-                    sampleDao.update(
-                        existing.copy(
-                            sampleNumber = shift.newSampleNumber,
-                            intervalFrom = shift.newIntervalFrom,
-                            intervalTo = shift.newIntervalTo
-                        )
-                    )
+            shifts.reversed().forEach { (id, newNum) ->
+                val existing = sampleDao.getSampleById(id) ?: return@forEach
+                if (existing.sampleNumber != newNum) {
+                    sampleDao.update(existing.copy(sampleNumber = newNum))
                 }
             }
             sampleDao.insert(newSample)
