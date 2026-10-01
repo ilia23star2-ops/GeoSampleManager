@@ -11,11 +11,13 @@ import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.report.DecodedImage
+import com.example.geosamplemanager.data.report.MultiHtmlReportGenerator
 import com.example.geosamplemanager.data.report.ReportData
 import com.example.geosamplemanager.data.report.ReportHtmlGenerator
 import com.example.geosamplemanager.data.report.ReportNote
 import com.example.geosamplemanager.data.report.ReportPhoto
 import com.example.geosamplemanager.data.report.ReportSample
+import com.example.geosamplemanager.data.report.XlsxMultiReportBuilder
 import com.example.geosamplemanager.data.report.XlsxReportBuilder
 import com.example.geosamplemanager.data.report.XlsxWriter
 import kotlinx.coroutines.Dispatchers
@@ -33,15 +35,20 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-xlsx-ui (30.09.2026):
- *  - buildReportData(orderId) — общий сборщик ReportData.
- *  - generateXlsxReport(orderId, uri) — запись .xlsx.
- *  - decodeDataUri — data:image/jpeg;base64,... → DecodedImage.
- *  - mode "w" (не "wt").
+ * FIX 5.9-xlsx-ui: buildReportData, generateXlsxReport, decodeDataUri.
  *
- * FIX 5.9-xlsx-photos:
- *  - декодер картинок передаётся в XlsxReportBuilder.build(...).
+ * FIX 5.9-multi-report-ui/1 (01.10.2026):
+ *  - Мульти-отчёт: buildReportDataList, detectDuplicateSheetNames,
+ *    generateMultiXlsxReport, generateMultiHtmlReport.
+ *  - Вспомогательные: prepareOrdersForReport, DuplicateSheetGroup.
  */
+
+/** Группа нарядов с одинаковым именем листа (для диалога дублей). */
+data class DuplicateSheetGroup(
+    val sheetName: String,
+    val orderIds: List<Long>,
+    val orderTitles: List<String>
+)
 
 class StatsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -280,7 +287,7 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Отчёты: HTML и XLSX
+    // Отчёты: одиночные (HTML и XLSX)
     // ================================================================
 
     suspend fun generateHtmlReport(orderId: Long, uri: Uri): Boolean {
@@ -313,10 +320,6 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-xlsx-photos: декодер data-uri передаётся в билдер,
-     * чтобы картинки попали в xlsx.
-     */
     suspend fun generateXlsxReport(orderId: Long, uri: Uri): Boolean {
         return try {
             val data = buildReportData(orderId) ?: return false
@@ -349,6 +352,159 @@ class StatsViewModel(application: Application) : AndroidViewModel(application) {
             _message.value = "Ошибка отчёта: ${e.message}"
             false
         }
+    }
+
+    // ================================================================
+    // Отчёты: мульти (N нарядов)
+    // ================================================================
+
+    /**
+     * Проверить, есть ли среди выбранных нарядов совпадающие имена
+     * листов. Возвращает только группы с count >= 2.
+     */
+    fun detectDuplicateSheetNames(orderIds: List<Long>): List<DuplicateSheetGroup> {
+        val raw = rawData ?: return emptyList()
+        val bySheet = mutableMapOf<String, MutableList<Pair<Long, String>>>()
+        orderIds.forEach { orderId ->
+            val area = raw.areas.firstOrNull { area ->
+                area.orders.any { it.orderId == orderId }
+            } ?: return@forEach
+            val order = area.orders.firstOrNull { it.orderId == orderId }
+                ?: return@forEach
+            val name = XlsxMultiReportBuilder.previewSheetName(
+                area.areaName, order.orderNumber
+            )
+            bySheet.getOrPut(name) { mutableListOf() }
+                .add(orderId to "Наряд №${order.orderNumber}")
+        }
+        return bySheet
+            .filter { it.value.size >= 2 }
+            .map { (name, list) ->
+                DuplicateSheetGroup(
+                    sheetName = name,
+                    orderIds = list.map { it.first },
+                    orderTitles = list.map { it.second }
+                )
+            }
+    }
+
+    /**
+     * Мульти-XLSX. Если [skipDuplicateNames] true — наряды с
+     * дублирующимся именем листа исключаются (остаётся первый).
+     */
+    suspend fun generateMultiXlsxReport(
+        orderIds: List<Long>,
+        uri: Uri,
+        skipDuplicateNames: Boolean
+    ): Boolean {
+        return try {
+            val prepared = prepareOrdersForReport(orderIds, skipDuplicateNames)
+            if (prepared.isEmpty()) {
+                _message.value = "Нет нарядов для отчёта"
+                return false
+            }
+            withContext(Dispatchers.IO) {
+                val dataList = prepared.mapNotNull { buildReportData(it) }
+                val sheets = XlsxMultiReportBuilder.build(
+                    orders = dataList,
+                    imageDecoder = ::decodeDataUri
+                )
+                val bytes = XlsxWriter.toBytes(sheets)
+                Log.i(
+                    TAG,
+                    "XLSX multi: ${bytes.size} байт, листов: ${sheets.size}, " +
+                            "картинок: ${sheets.sumOf { it.images.size }}"
+                )
+
+                getApplication<Application>().contentResolver
+                    .openOutputStream(uri, "w")
+                    ?.use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
+                    ?: run {
+                        _message.value = "Не удалось открыть файл для записи"
+                        return@withContext false
+                    }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "generateMultiXlsxReport failed", e)
+            _message.value = "Ошибка отчёта: ${e.message}"
+            false
+        }
+    }
+
+    /**
+     * Мульти-HTML. Логика дублей — как в XLSX.
+     */
+    suspend fun generateMultiHtmlReport(
+        orderIds: List<Long>,
+        uri: Uri,
+        skipDuplicateNames: Boolean
+    ): Boolean {
+        return try {
+            val prepared = prepareOrdersForReport(orderIds, skipDuplicateNames)
+            if (prepared.isEmpty()) {
+                _message.value = "Нет нарядов для отчёта"
+                return false
+            }
+            withContext(Dispatchers.IO) {
+                val dataList = prepared.mapNotNull { buildReportData(it) }
+                val dateFormat = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale("ru", "RU"))
+                val html = MultiHtmlReportGenerator.generate(
+                    orders = dataList,
+                    generatedAt = dateFormat.format(Date())
+                )
+                val bytes = html.toByteArray(Charsets.UTF_8)
+                Log.i(TAG, "HTML multi: ${bytes.size} байт")
+
+                getApplication<Application>().contentResolver
+                    .openOutputStream(uri, "w")
+                    ?.use { out ->
+                        out.write(bytes)
+                        out.flush()
+                    }
+                    ?: run {
+                        _message.value = "Не удалось открыть файл для записи"
+                        return@withContext false
+                    }
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "generateMultiHtmlReport failed", e)
+            _message.value = "Ошибка отчёта: ${e.message}"
+            false
+        }
+    }
+
+    /**
+     * Если skipDuplicates — оставляет из каждой группы дублей только
+     * первый orderId (по порядку в переданном списке).
+     */
+    private fun prepareOrdersForReport(
+        orderIds: List<Long>,
+        skipDuplicates: Boolean
+    ): List<Long> {
+        if (!skipDuplicates) return orderIds
+        val raw = rawData ?: return orderIds
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<Long>()
+        orderIds.forEach { orderId ->
+            val area = raw.areas.firstOrNull { area ->
+                area.orders.any { it.orderId == orderId }
+            } ?: return@forEach
+            val order = area.orders.firstOrNull { it.orderId == orderId }
+                ?: return@forEach
+            val name = XlsxMultiReportBuilder.previewSheetName(
+                area.areaName, order.orderNumber
+            )
+            if (name !in seen) {
+                seen.add(name)
+                result.add(orderId)
+            }
+        }
+        return result
     }
 
     /**
