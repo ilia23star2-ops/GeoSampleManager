@@ -1,7 +1,9 @@
 package com.example.geosamplemanager.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -25,14 +27,17 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
- * FIX 5.9-edit-add-sample/3:
- *  - цвет статуса строки виден ВСЕГДА (и при выделении тоже);
- *  - выделение — рамка primary 2dp + лёгкий overlay 0.18 поверх
- *    цветного фона (не затирает цвет статуса).
+ * FIX 5.9-edit-add-sample/3 — цвет статуса виден всегда.
+ * FIX 5.9-edit-save-guard — EditSampleDialog с findConflict.
  *
- * FIX 5.9-edit-save-guard:
- *  - EditSampleDialog получает findConflict по БД.
+ * FIX 5.9-edit-multiselect:
+ *  - длинный тап по пробе входит в режим выделения;
+ *  - кнопка «Выделять» в шапке дерева — вход без выделения;
+ *  - в режиме тап по пробе переключает чекбокс;
+ *  - снизу BottomBar «N проб» + Снять + Выход;
+ *  - при смене поиска/фильтров/наряда/участка выделение сбрасывается.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EditScreen(viewModel: EditViewModel = viewModel()) {
     val tree by viewModel.tree.collectAsState()
@@ -43,6 +48,8 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
     val searchQuery by viewModel.searchQuery.collectAsState()
     val activeFilters by viewModel.activeFilters.collectAsState()
     val message by viewModel.message.collectAsState()
+    val multiselectMode by viewModel.multiselectMode.collectAsState()
+    val selectedIds by viewModel.selectedIds.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -78,6 +85,8 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     expandedOrderIds = expandedOrders,
                     searchQuery = searchQuery,
                     activeFilters = activeFilters,
+                    multiselectMode = multiselectMode,
+                    selectedIds = selectedIds,
                     onSelectSample = { viewModel.selectSample(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
@@ -87,6 +96,9 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onFilterToggle = { viewModel.toggleFilter(it) },
                     onClearFilters = { viewModel.clearFilters() },
                     onAddToOrder = { addForOrderId = it },
+                    onEnterMultiselect = { viewModel.enterMultiselect(it) },
+                    onExitMultiselect = { viewModel.exitMultiselect() },
+                    onToggleSelection = { viewModel.toggleSelection(it) },
                     modifier = Modifier.fillMaxHeight().width(treeWidth)
                 )
                 VerticalDivider()
@@ -107,6 +119,8 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     expandedOrderIds = expandedOrders,
                     searchQuery = searchQuery,
                     activeFilters = activeFilters,
+                    multiselectMode = multiselectMode,
+                    selectedIds = selectedIds,
                     onSelectSample = { viewModel.selectSample(it) },
                     onToggleArea = { viewModel.toggleArea(it) },
                     onToggleOrder = { viewModel.toggleOrder(it) },
@@ -116,6 +130,9 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onFilterToggle = { viewModel.toggleFilter(it) },
                     onClearFilters = { viewModel.clearFilters() },
                     onAddToOrder = { addForOrderId = it },
+                    onEnterMultiselect = { viewModel.enterMultiselect(it) },
+                    onExitMultiselect = { viewModel.exitMultiselect() },
+                    onToggleSelection = { viewModel.toggleSelection(it) },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -131,11 +148,22 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
 
         SnackbarHost(
             hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = if (multiselectMode) 72.dp else 0.dp)
         )
+
+        // FIX 5.9-edit-multiselect: BottomBar.
+        if (multiselectMode) {
+            MultiselectBottomBar(
+                count = selectedIds.size,
+                onClear = { viewModel.clearSelection() },
+                onExit = { viewModel.exitMultiselect() },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
     }
 
-    // FIX 5.9-edit-save-guard: findConflict → из ViewModel по БД.
     editDialogRow?.let { row ->
         EditSampleDialog(
             row = row,
@@ -178,6 +206,52 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
             )
         } else {
             addForOrderId = null
+        }
+    }
+}
+
+// ====================================================================
+// МУЛЬТИВЫБОР — BottomBar
+// ====================================================================
+
+@Composable
+private fun MultiselectBottomBar(
+    count: Int,
+    onClear: () -> Unit,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                computeSelectionLabel(count),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = onClear,
+                enabled = count > 0
+            ) {
+                Icon(Icons.Filled.Deselect, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Снять")
+            }
+            TextButton(onClick = onExit) {
+                Icon(Icons.Filled.Close, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Выход")
+            }
         }
     }
 }
@@ -236,6 +310,8 @@ private fun EditTreePanel(
     expandedOrderIds: Set<Long>,
     searchQuery: String,
     activeFilters: Set<EditFilter>,
+    multiselectMode: Boolean,
+    selectedIds: Set<String>,
     onSelectSample: (String) -> Unit,
     onToggleArea: (Long) -> Unit,
     onToggleOrder: (Long) -> Unit,
@@ -245,6 +321,9 @@ private fun EditTreePanel(
     onFilterToggle: (EditFilter) -> Unit,
     onClearFilters: () -> Unit,
     onAddToOrder: (Long) -> Unit,
+    onEnterMultiselect: (String?) -> Unit,
+    onExitMultiselect: () -> Unit,
+    onToggleSelection: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -311,11 +390,26 @@ private fun EditTreePanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "Пробы",
+                    if (multiselectMode) "Выделение" else "Пробы",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f).padding(start = 8.dp)
                 )
+                // FIX 5.9-edit-multiselect: кнопка «Выделять» / «Выход».
+                IconButton(
+                    onClick = {
+                        if (multiselectMode) onExitMultiselect()
+                        else onEnterMultiselect(null)
+                    },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        if (multiselectMode) Icons.Filled.Close
+                        else Icons.Filled.Checklist,
+                        contentDescription = if (multiselectMode)
+                            "Выйти из выделения" else "Выделять"
+                    )
+                }
                 TextButton(
                     onClick = { if (anyExpanded) onCollapseAll() else onExpandAll() },
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
@@ -350,8 +444,13 @@ private fun EditTreePanel(
             } else {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
-                    contentPadding = PaddingValues(vertical = 8.dp)
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    contentPadding = PaddingValues(
+                        top = 8.dp,
+                        bottom = if (multiselectMode) 80.dp else 8.dp
+                    )
                 ) {
                     items(items, key = { it.key }) { item ->
                         when (item) {
@@ -369,7 +468,20 @@ private fun EditTreePanel(
                             is EditTreeItem.SampleItem -> SampleItemRow(
                                 row = item.row,
                                 selected = item.row.id == selectedId,
-                                onClick = { onSelectSample(item.row.id) }
+                                multiselectMode = multiselectMode,
+                                isChecked = item.row.id in selectedIds,
+                                onClick = {
+                                    if (multiselectMode) {
+                                        onToggleSelection(item.row.id)
+                                    } else {
+                                        onSelectSample(item.row.id)
+                                    }
+                                },
+                                onLongClick = {
+                                    if (!multiselectMode) {
+                                        onEnterMultiselect(item.row.id)
+                                    }
+                                }
                             )
                         }
                     }
@@ -538,19 +650,19 @@ private fun sampleRowBackground(row: SampleRow): Color {
     }
 }
 
-/**
- * FIX 5.9-edit-add-sample/3:
- * Цвет статуса виден ВСЕГДА. При выделении — оверлей + рамка,
- * базовый цвет не затирается.
- */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SampleItemRow(
     row: SampleRow,
     selected: Boolean,
-    onClick: () -> Unit
+    multiselectMode: Boolean,
+    isChecked: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     val baseBg = sampleRowBackground(row)
-    val selectedOverlay = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+    val highlight = if (multiselectMode) isChecked else selected
+    val overlay = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
 
     Row(
         modifier = Modifier
@@ -559,24 +671,37 @@ private fun SampleItemRow(
             .clip(RoundedCornerShape(4.dp))
             .background(baseBg)
             .then(
-                if (selected) Modifier.background(selectedOverlay) else Modifier
+                if (highlight) Modifier.background(overlay) else Modifier
             )
             .then(
-                if (selected) Modifier.border(
+                if (highlight) Modifier.border(
                     width = 2.dp,
                     color = MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(4.dp)
                 ) else Modifier
             )
-            .clickable { onClick() }
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // FIX 5.9-edit-multiselect: галочка в режиме выделения.
+        if (multiselectMode) {
+            Checkbox(
+                checked = isChecked,
+                onCheckedChange = { onClick() },
+                modifier = Modifier.size(28.dp)
+            )
+            Spacer(Modifier.width(4.dp))
+        }
+
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 row.sampleNumber,
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

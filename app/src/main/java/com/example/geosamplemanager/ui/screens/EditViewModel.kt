@@ -16,18 +16,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.9-edit-add-sample/2 (второй подзаход):
- *  - findCommonWellPrefix — общий буквенный префикс скважин наряда;
- *  - suggestIntervalFrom — from новой = to предыдущей не-холостой;
- *  - suggestNextSampleNumberInWell — порядковый суффикс новой пробы;
- *  - findConflict — проверка дубля sampleNumber в наряде;
- *  - addSample принимает интервал/вес/характеристику;
- *  - холостые: интервал сохраняется как null.
+ * FIX 5.9-edit-add-sample/2 — findCommonWellPrefix, suggest*, findConflict.
+ * FIX 5.9-edit-save-guard — saveSample проверяет № по БД.
  *
- * FIX 5.9-edit-save-guard:
- *  - saveSample проверяет конфликт № по БД, а не по state;
- *  - findConflictForEdit — синхронная проверка для диалога;
- *  - при ошибке БД показывается человеческое сообщение.
+ * FIX 5.9-edit-multiselect:
+ *  - multiselectMode + selectedIds (Flow);
+ *  - enterMultiselect / exitMultiselect / toggleSelection / clearSelection;
+ *  - сброс выделения при смене поиска/фильтров/наряда;
+ *  - чистые функции applyMultiselectToggle / computeSelectionLabel.
  */
 
 data class EditTreeData(
@@ -83,11 +79,6 @@ data class InsertPlan(
     val shifted: List<ShiftedSample>
 )
 
-/**
- * FIX 5.9-edit-add-sample/2:
- * Информация о конфликте номера пробы. Используется в диалоге
- * для показа значка и текста.
- */
 data class SampleConflict(
     val existingSampleNumber: String,
     val existingNumberInWell: Int,
@@ -98,6 +89,29 @@ data class SampleConflict(
 // ====================================================================
 // Чистые функции — тестируются отдельно.
 // ====================================================================
+
+/**
+ * FIX 5.9-edit-multiselect:
+ * Переключить выделение одной пробы.
+ * Выделена → убрать. Не выделена → добавить.
+ */
+internal fun applyMultiselectToggle(
+    current: Set<String>,
+    sampleId: String
+): Set<String> =
+    if (sampleId in current) current - sampleId else current + sampleId
+
+/**
+ * FIX 5.9-edit-multiselect:
+ * Человеческое описание количества выбранных проб для BottomBar.
+ * 0 → "". 1 → "1 проба". 2-4 → "N пробы". 5+ → "N проб".
+ */
+internal fun computeSelectionLabel(count: Int): String = when {
+    count <= 0 -> ""
+    count % 10 == 1 && count % 100 != 11 -> "$count проба"
+    count % 10 in 2..4 && count % 100 !in 12..14 -> "$count пробы"
+    else -> "$count проб"
+}
 
 internal fun buildEditTree(
     areas: List<AreaEntity>,
@@ -187,12 +201,6 @@ private fun matchesEditFilters(row: SampleRow, filters: Set<EditFilter>): Boolea
     }
 }
 
-/**
- * FIX 5.9-edit-add-sample/2:
- * Общий буквенный префикс всех скважин наряда.
- * ["ACD2100021", "ACD2100022"] → "ACD".
- * Если скважин нет или префикс пуст — "".
- */
 internal fun findCommonWellPrefix(samples: List<SampleRow>): String {
     val wells = samples.map { it.wellNumber }
         .filter { it.isNotBlank() }
@@ -212,11 +220,6 @@ internal fun findCommonWellPrefix(samples: List<SampleRow>): String {
     return first.substring(0, letterEnd)
 }
 
-/**
- * FIX 5.9-edit-add-sample/2:
- * from новой = to предыдущей НЕ-холостой пробы в скважине с меньшим
- * numberInWell. Если ничего нет — "".
- */
 internal fun suggestIntervalFrom(
     wellRows: List<SampleRow>,
     newNumberInWell: Int
@@ -228,20 +231,11 @@ internal fun suggestIntervalFrom(
     return if (to == "—" || to.isBlank()) "" else to
 }
 
-/**
- * FIX 5.9-edit-add-sample/2:
- * Порядковый суффикс новой пробы = max(numberInWell) + 1.
- * Пустая скважина → 1.
- */
 internal fun suggestNextSampleNumberInWell(wellRows: List<SampleRow>): Int {
     if (wellRows.isEmpty()) return 1
     return (wellRows.maxOf { it.numberInWell }) + 1
 }
 
-/**
- * FIX 5.9-edit-add-sample/2:
- * Найти пробу с таким же sampleNumber в наряде. null — конфликта нет.
- */
 internal fun findConflict(
     orderSamples: List<SampleRow>,
     candidateSampleNumber: String
@@ -257,10 +251,6 @@ internal fun findConflict(
     )
 }
 
-/**
- * FIX 5.9-edit-add-sample:
- * Определить позицию вставки новой пробы в скважину.
- */
 internal fun planInsertPosition(
     wellNumber: String,
     newSampleNumber: String,
@@ -374,6 +364,13 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    // FIX 5.9-edit-multiselect.
+    private val _multiselectMode = MutableStateFlow(false)
+    val multiselectMode: StateFlow<Boolean> = _multiselectMode.asStateFlow()
+
+    private val _selectedIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedIds: StateFlow<Set<String>> = _selectedIds.asStateFlow()
+
     init {
         subscribeToDb()
     }
@@ -448,6 +445,8 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSearchQuery(text: String) {
         _searchQuery.value = text
+        // FIX 5.9-edit-multiselect: сброс выделения при смене поиска.
+        _selectedIds.value = emptySet()
         rebuildFilteredTree()
     }
 
@@ -456,12 +455,54 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
             _activeFilters.value - filter
         else
             _activeFilters.value + filter
+        // FIX 5.9-edit-multiselect: сброс выделения при смене фильтров.
+        _selectedIds.value = emptySet()
         rebuildFilteredTree()
     }
 
     fun clearFilters() {
         _activeFilters.value = emptySet()
+        _selectedIds.value = emptySet()
         rebuildFilteredTree()
+    }
+
+    // ================================================================
+    // Мультивыбор
+    // ================================================================
+
+    /**
+     * Войти в режим выделения.
+     * @param initialId опционально — сразу выделить эту пробу
+     *        (используется при долгом тапе).
+     */
+    fun enterMultiselect(initialId: String? = null) {
+        _multiselectMode.value = true
+        // Одиночный выбор сбрасываем, чтобы не конфликтовало в UI.
+        _selectedSampleId.value = null
+        _selectedSample.value = null
+        _selectedIds.value = if (initialId != null) setOf(initialId) else emptySet()
+    }
+
+    /**
+     * Выйти из режима выделения — снять всё и выключить режим.
+     */
+    fun exitMultiselect() {
+        _multiselectMode.value = false
+        _selectedIds.value = emptySet()
+    }
+
+    /**
+     * Переключить выделение пробы.
+     */
+    fun toggleSelection(sampleId: String) {
+        _selectedIds.value = applyMultiselectToggle(_selectedIds.value, sampleId)
+    }
+
+    /**
+     * Снять все выделения, но остаться в режиме.
+     */
+    fun clearSelection() {
+        _selectedIds.value = emptySet()
     }
 
     // ================================================================
@@ -478,6 +519,8 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     // ================================================================
 
     fun toggleArea(areaId: Long) {
+        // FIX 5.9-edit-multiselect: смена участка — полный выход.
+        exitMultiselect()
         _expandedAreaIds.value = if (areaId in _expandedAreaIds.value)
             _expandedAreaIds.value - areaId
         else
@@ -485,6 +528,8 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleOrder(orderId: Long) {
+        // FIX 5.9-edit-multiselect: смена наряда — полный выход.
+        exitMultiselect()
         _expandedOrderIds.value = if (orderId in _expandedOrderIds.value)
             _expandedOrderIds.value - orderId
         else
@@ -508,25 +553,16 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     // Сохранение / удаление
     // ================================================================
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Перед сохранением — проверяем № в БД. Если такой уже есть в
-     * наряде (другая проба) — не сохраняем.
-     * При ошибке БД — показываем понятный текст.
-     */
     fun saveSample(row: SampleRow) {
         val old = _rawTree.value?.findSample(row.id)
         viewModelScope.launch {
             try {
-                // 1. Определяем orderId: сначала из state, если не нашли —
-                //    ищем в дереве по всем нарядам.
                 val orderId = old?.groupId?.toLongOrNull()
                     ?: _rawTree.value?.areas
                         ?.flatMap { it.orders }
                         ?.firstOrNull { o -> o.samples.any { it.id == row.id } }
                         ?.orderId
 
-                // 2. Проверка конфликта № по БД.
                 if (orderId != null &&
                     (old == null || row.sampleNumber != old.sampleNumber)
                 ) {
@@ -540,7 +576,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                // 3. Сохранение.
                 withContext(Dispatchers.IO) { repo.saveRows(listOf(row)) }
                 _message.value = "Проба сохранена"
             } catch (e: Exception) {
@@ -549,12 +584,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Синхронная проверка — занят ли № пробы другой пробой в том же
-     * наряде. Используется в EditSampleDialog для показа подписи
-     * ДО нажатия «Сохранить» (валидация в реальном времени).
-     */
     fun findConflictForEdit(rowId: String, sampleNumber: String): Boolean {
         val tree = _rawTree.value ?: return false
         tree.areas.forEach { area ->
@@ -567,10 +596,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Понятный текст ошибки вместо сырого SQL.
-     */
     private fun humanSaveError(e: Exception): String {
         val m = e.message ?: return "Ошибка сохранения"
         return if (m.contains("UNIQUE constraint failed", ignoreCase = true)) {
@@ -744,10 +769,6 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
-/**
- * FIX 5.9-edit-add-sample/3:
- * Построить список сдвигов — sampleNumber + интервалы.
- */
 internal fun buildShiftPlans(
     plan: InsertPlan,
     wellRows: List<SampleRow>,
