@@ -36,16 +36,16 @@ import java.util.Locale
 /**
  * FIX 5.9-stats-fixes: скролл левой панели + сводка участка.
  *
- * FIX 5.9-stats-compare:
- *  - Кнопка «Сравнить» в правой панели наряда открывает CompareDialog.
+ * FIX 5.9-stats-compare: кнопка «Сравнить» в правой панели наряда.
  *
- * FIX 5.9-stats-compare-2:
- *  - CompareTarget.Order требует поле status — передаём computeOrderStatus.
+ * FIX 5.9-xlsx-ui: подключена кнопка «Excel» в ReportFormatDialog.
  *
- * FIX 5.9-xlsx-ui:
- *  - Подключена кнопка «Excel» в ReportFormatDialog.
- *  - onReportHtml → onReport(orderId, format): HTML и Excel идут одним
- *    путём, различаются только MIME/launcher.
+ * FIX 5.9-multi-report-ui/2 (01.10.2026):
+ *  - overlay MultiReportScreen поверх StatsScreen;
+ *  - кнопка «Отчёт по участку» открывает MultiReportScreen с
+ *    предустановленным участком;
+ *  - два launcher'а для мульти-отчёта (Excel, HTML);
+ *  - состояние pendingMultiReport.
  */
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
@@ -65,6 +65,14 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
 
     var pendingReport by remember { mutableStateOf<Pair<Long, ReportFormat>?>(null) }
     var compareLeft by remember { mutableStateOf<CompareTarget?>(null) }
+
+    // Мульти-отчёт.
+    var showMultiReport by remember { mutableStateOf(false) }
+    var multiReportInitialAreaId by remember { mutableStateOf<Long?>(null) }
+    // orderIds, format, skipDuplicates
+    var pendingMultiReport by remember {
+        mutableStateOf<Triple<List<Long>, MultiReportFormat, Boolean>?>(null)
+    }
 
     val htmlLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/html")
@@ -102,6 +110,48 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
         }
     }
 
+    val multiXlsxLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    ) { uri ->
+        val pending = pendingMultiReport
+        pendingMultiReport = null
+        if (uri != null && pending != null) {
+            scope.launch {
+                val ok = viewModel.generateMultiXlsxReport(
+                    orderIds = pending.first,
+                    uri = uri,
+                    skipDuplicateNames = pending.third
+                )
+                snackbarHostState.showSnackbar(
+                    if (ok) "Мультиотчёт сохранён"
+                    else "Не удалось сохранить мультиотчёт"
+                )
+            }
+        }
+    }
+
+    val multiHtmlLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/html")
+    ) { uri ->
+        val pending = pendingMultiReport
+        pendingMultiReport = null
+        if (uri != null && pending != null) {
+            scope.launch {
+                val ok = viewModel.generateMultiHtmlReport(
+                    orderIds = pending.first,
+                    uri = uri,
+                    skipDuplicateNames = pending.third
+                )
+                snackbarHostState.showSnackbar(
+                    if (ok) "Мультиотчёт сохранён"
+                    else "Не удалось сохранить мультиотчёт"
+                )
+            }
+        }
+    }
+
     LaunchedEffect(message) {
         message?.let {
             snackbarHostState.showSnackbar(it)
@@ -121,7 +171,6 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
         val isWide = this.maxWidth >= 600.dp
         val treeWidth = this.maxWidth * 0.35f
 
-        // Единый запуск отчёта: сохраняем (orderId, format) и открываем нужный launcher.
         val startReport: (Long, ReportFormat) -> Unit = { orderId, format ->
             pendingReport = orderId to format
             val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
@@ -131,6 +180,19 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                     htmlLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.html")
                 ReportFormat.EXCEL ->
                     xlsxLauncher.launch("Отчёт_Наряд_${orderId}_$dateStr.xlsx")
+            }
+        }
+
+        // Запуск мультиотчёта (вызывается из MultiReportScreen).
+        val startMultiExport:
+                    (List<Long>, MultiReportFormat, Boolean) -> Unit = { orderIds, format, skip ->
+            pendingMultiReport = Triple(orderIds, format, skip)
+            val dateStr = SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US)
+                .format(Date())
+            val name = "Мультиотчёт_${orderIds.size}_$dateStr"
+            when (format) {
+                MultiReportFormat.EXCEL -> multiXlsxLauncher.launch("$name.xlsx")
+                MultiReportFormat.HTML -> multiHtmlLauncher.launch("$name.html")
             }
         }
 
@@ -182,6 +244,10 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                         )
                     },
                     onReport = startReport,
+                    onMultiReport = { areaId ->
+                        multiReportInitialAreaId = areaId
+                        showMultiReport = true
+                    },
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
@@ -236,6 +302,10 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                         )
                     },
                     onReport = startReport,
+                    onMultiReport = { areaId ->
+                        multiReportInitialAreaId = areaId
+                        showMultiReport = true
+                    },
                     snackbarHostState = snackbarHostState,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -246,6 +316,27 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
+
+        // Overlay мультиотчёта.
+        if (showMultiReport) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                MultiReportScreen(
+                    data = current,
+                    initialAreaId = multiReportInitialAreaId,
+                    detectDuplicates = { ids ->
+                        viewModel.detectDuplicateSheetNames(ids)
+                    },
+                    onExport = startMultiExport,
+                    onClose = {
+                        showMultiReport = false
+                        multiReportInitialAreaId = null
+                    }
+                )
+            }
+        }
     }
 
     val left = compareLeft
@@ -662,7 +753,7 @@ private fun StatusDot(status: OrderStatus) {
     )
 }
 
-private fun buildOrderShortSummary(s: GroupStats): String {
+internal fun buildOrderShortSummary(s: GroupStats): String {
     val active = s.total - s.errors
     val parts = mutableListOf<String>()
     parts.add("${s.found}/${active}")
@@ -709,6 +800,7 @@ private fun RightDetailsPanel(
     onWellFilterChange: (String) -> Unit,
     onCompareClick: (StatsOrderUi) -> Unit,
     onReport: (Long, ReportFormat) -> Unit,
+    onMultiReport: (Long) -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
 ) {
@@ -734,6 +826,7 @@ private fun RightDetailsPanel(
             area = area,
             showBackButton = showBackButton,
             onBack = onBack,
+            onMultiReport = { onMultiReport(area.areaId) },
             snackbarHostState = snackbarHostState,
             modifier = modifier
         )
@@ -765,11 +858,10 @@ private fun AreaDetailsPanel(
     area: StatsAreaUi,
     showBackButton: Boolean,
     onBack: () -> Unit,
+    onMultiReport: () -> Unit,
     snackbarHostState: SnackbarHostState,
     modifier: Modifier = Modifier
 ) {
-    val scope = rememberCoroutineScope()
-
     LazyColumn(modifier = modifier.fillMaxSize()) {
         item(key = "area_header_${area.areaId}") {
             Row(
@@ -837,11 +929,7 @@ private fun AreaDetailsPanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            snackbarHostState.showSnackbar("Отчёт по участку — в разработке")
-                        }
-                    },
+                    onClick = onMultiReport,
                     modifier = Modifier.weight(1f)
                 ) {
                     Icon(
