@@ -15,6 +15,8 @@
 - Доменные решения (`MarkDecision`, `analyzeMark`, `VoiceMarkOrdinalFallback`).
 - Маппинг результатов (`ResponseMapper`).
 - Логика undo/redo.
+- Отчёты (XLSX, HTML).
+- Чистые функции вкладки Редактирование.
 - Миграции БД.
 
 UI не тестируем — проверяем руками.
@@ -54,6 +56,16 @@ UI не тестируем — проверяем руками.
 |---|---|---|
 | `MarkDecisionTest.kt` | `analyzeMark`: уже отмечена, ошибка, отложена, ВК, холостая | 27 |
 
+### `data/report/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `MultiHtmlReportGeneratorTest.kt` | Мультинарядный HTML: TOC, секции, приложения, ссылки, экранирование | 17 |
+| `ReportHtmlGeneratorTest.kt` | Одиночный HTML: шапка, сводка, таблица, приложения, escaping | 26 |
+| `XlsxMultiReportBuilderTest.kt` | Мульти XLSX: N листов + «Приложения», дубли имён, ссылки | 20 |
+| `XlsxReportBuilderTest.kt` | Одиночный XLSX: шапка, merge, легенда, hyperlinks, стили | 27 |
+| `XlsxWriterTest.kt` | Низкоуровневый: zip, styles.xml, cell refs, escape, sanitize | 32 |
+
 ### `ui/screens/`
 
 | Файл | Что проверяет | Тестов |
@@ -61,8 +73,14 @@ UI не тестируем — проверяем руками.
 | `AnalyzeMatchTest.kt` | Функция `analyzeMatch` | 18 |
 | `ReconciliationWeightQueueTest.kt` | `buildWeightQueue`: холостые, ВК, порядок | 11 |
 | `SearchScrollTopTest.kt` | `shouldShowScrollTop`: порог >10 | 5 |
+| `EditViewModelTest.kt` | `buildEditTree`: сортировка, сироты, findSample/findOrder | 17 |
+| `EditScreenTreeItemsTest.kt` | `buildTreeItems`: развёрнутость, ключи, порядок | 8 |
+| `EditSearchFilterTest.kt` | `applyEditFilters`: поиск, фильтры, комбинации | 18 |
+| `EditAddSampleTest.kt` | `planInsertPosition`, `parseSuffixNumber`, `detectSuffixLength`, `findCommonWellPrefix`, `suggestIntervalFrom`, `suggestNextSampleNumberInWell`, `findConflict` | 21 |
+| `EditMultiselectTest.kt` | `applyMultiselectToggle`, `computeSelectionLabel` | 13 |
+| `EditMassOpsTest.kt` | `applyMassEditToRow`: синхронизация status ↔ weightControl, hasAny | 14 |
 
-**Всего: ~260 тестов.** Все зелёные.
+**Всего: ~370 тестов.** Все зелёные.
 
 ---
 
@@ -100,6 +118,8 @@ UI не тестируем — проверяем руками.
 - **Compose UI** — отдельная тема, не сейчас.
 - **Реальная БД** — только миграции.
 - **`ReconciliationViewModel`** целиком — связан с Application, Vosk, БД.
+- **`EditViewModel`** целиком — связан с Application и Room. Покрыты
+  только чистые функции.
 
 ---
 
@@ -162,7 +182,7 @@ CI (`.github/workflows/build.yml`):
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыто: серия `e4` полностью |
+| 🔴 Сейчас | Закрыто: серия `edit-*` (вкладка Редактирование) |
 | 🟡 После `e4-dicts` | Закладки `5.8.11-b/c` — `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest` (миграции), `ReconciliationStateTest` (undo/redo) |
 
@@ -180,6 +200,19 @@ CI (`.github/workflows/build.yml`):
 - `e4-prefix-1` — обновление `VoiceSpeakerTest`.
 - `e4-weight-queue` — `ReconciliationWeightQueueTest` (11 тестов).
 - `e4-ui-1` — `SearchScrollTopTest` (5 тестов).
+
+**Сделано (серия 5.9, вкладка Статистика):**
+- `xlsx-*` — 5 файлов, ~106 тестов.
+- `html-multi` — `MultiHtmlReportGeneratorTest` (17 тестов).
+
+**Сделано (серия 5.9, вкладка Редактирование):**
+- `EditViewModelTest` (17 тестов).
+- `EditScreenTreeItemsTest` (8 тестов).
+- `EditSearchFilterTest` (18 тестов).
+- `EditAddSampleTest` (21 тест).
+- `EditMultiselectTest` (13 тестов).
+- `EditMassOpsTest` (14 тестов).
+- **Всего: 91 тест.**
 
 **Осталось:**
 - Закладки `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — приоритет после `e4-dicts`.
