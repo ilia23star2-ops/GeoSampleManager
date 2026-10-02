@@ -1,25 +1,17 @@
 package com.example.geosamplemanager.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.geosamplemanager.data.merge.FieldDiff
 import com.example.geosamplemanager.data.merge.FieldOwner
-import com.example.geosamplemanager.data.merge.FieldResolution
+import com.example.geosamplemanager.data.merge.MassStrategy
 import com.example.geosamplemanager.data.merge.MergePreview
 import com.example.geosamplemanager.data.merge.MergeStats
 import com.example.geosamplemanager.data.merge.MergeWizardState
@@ -27,11 +19,8 @@ import com.example.geosamplemanager.data.merge.SampleConflict
 import com.example.geosamplemanager.data.merge.SampleField
 
 /**
- * FIX 5.9-db-merge-v2/5:
- * Wizard слияния БД с умными конфликтами.
- *
- * Конфликты разрешаются по полям. Массовые кнопки + раскрывающиеся
- * карточки. Всё на русском.
+ * FIX 5.9-db-merge-v2/7:
+ *  - добавлен колбэк onGroupMass (массовые действия для групп).
  */
 @Composable
 fun MergeWizard(
@@ -42,6 +31,7 @@ fun MergeWizard(
     onMassAll: (owner: FieldOwner) -> Unit,
     onMassFillEmpty: () -> Unit,
     onMassByField: (field: SampleField, owner: FieldOwner) -> Unit,
+    onGroupMass: (conflicts: List<SampleConflict>, strategy: MassStrategy) -> Unit,
     onConfirmConflicts: () -> Unit,
     onCancel: () -> Unit,
     onCloseDone: () -> Unit
@@ -52,7 +42,7 @@ fun MergeWizard(
         is MergeWizardState.Preview -> PreviewDialog(
             state.preview, onContinue, onCancel
         )
-        is MergeWizardState.ConflictStep -> ConflictsDialog(
+        is MergeWizardState.ConflictStep -> MergeConflictsScreen(
             preview = state.preview,
             resolutions = state.resolutions,
             onSetField = onSetField,
@@ -60,6 +50,7 @@ fun MergeWizard(
             onMassAll = onMassAll,
             onMassFillEmpty = onMassFillEmpty,
             onMassByField = onMassByField,
+            onGroupMass = onGroupMass,
             onConfirm = onConfirmConflicts,
             onCancel = onCancel
         )
@@ -114,6 +105,7 @@ private fun PreviewDialog(
                 StatRow("Наряды", s.ordersAdded, s.ordersMatched)
                 StatRow("Пробы (новые)", s.samplesAdded, 0)
                 StatRow("Пробы (идентичные)", s.samplesIdentical, 0)
+                StatRow("Пробы (конфликты)", s.samplesConflicts, 0)
                 StatRow("Скважины", s.wellsAdded, 0)
                 StatRow("Заметки", s.notesAdded, s.notesConflicts)
                 StatRow("Фото", s.photosAdded, 0)
@@ -155,33 +147,163 @@ private fun PreviewDialog(
 
 @Composable
 private fun DetailsBlock(preview: MergePreview) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (preview.areaPlan.toAdd.isNotEmpty()) {
-            Text(
-                "Новые участки:",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
-            )
-            for (a in preview.areaPlan.toAdd) Text(
-                "· ${a.entity.areaName}",
-                style = MaterialTheme.typography.bodySmall
-            )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        DetailsSection(
+            title = "Участки",
+            newCount = preview.areaPlan.toAdd.size,
+            identicalCount = preview.areaPlan.existing.size,
+            conflictCount = 0
+        ) {
+            if (preview.areaPlan.toAdd.isNotEmpty()) {
+                Text(
+                    "Новые:",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                for (a in preview.areaPlan.toAdd) Text(
+                    "· ${a.entity.areaName}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (preview.areaPlan.existing.isNotEmpty()) {
+                Text(
+                    "Совпали по имени: ${preview.areaPlan.existing.size}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (preview.areaPlan.duplicatesInMine.isNotEmpty()) {
+                Text(
+                    "⚠ У меня дубликаты: " +
+                            preview.areaPlan.duplicatesInMine.joinToString(", "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
-        if (preview.orderPlan.toAdd.isNotEmpty()) {
-            Text(
-                "Новые наряды:",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
-            )
-            for (o in preview.orderPlan.toAdd.take(50)) Text(
-                "· ${o.entity.orderNumber}",
-                style = MaterialTheme.typography.bodySmall
-            )
-            if (preview.orderPlan.toAdd.size > 50) Text(
-                "…и ещё ${preview.orderPlan.toAdd.size - 50}",
-                style = MaterialTheme.typography.bodySmall
-            )
+
+        DetailsSection(
+            title = "Наряды",
+            newCount = preview.orderPlan.toAdd.size,
+            identicalCount = preview.orderPlan.existing.size,
+            conflictCount = 0
+        ) {
+            if (preview.orderPlan.toAdd.isNotEmpty()) {
+                Text(
+                    "Новые:",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                for (o in preview.orderPlan.toAdd.take(50)) Text(
+                    "· ${o.entity.orderNumber}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (preview.orderPlan.toAdd.size > 50) Text(
+                    "…и ещё ${preview.orderPlan.toAdd.size - 50}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            if (preview.orderPlan.existing.isNotEmpty()) {
+                Text(
+                    "Совпали по номеру: ${preview.orderPlan.existing.size}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (preview.orderPlan.skippedOrphans > 0) {
+                Text(
+                    "⚠ Пропущено (участок не найден): " +
+                            preview.orderPlan.skippedOrphans,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
+
+        DetailsSection(
+            title = "Пробы",
+            newCount = preview.samplePlan.toAdd.size,
+            identicalCount = preview.samplePlan.identical.size,
+            conflictCount = preview.samplePlan.conflicts.size
+        ) {
+            if (preview.samplePlan.conflicts.isNotEmpty()) {
+                Text(
+                    "Конфликты:",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                for (c in preview.samplePlan.conflicts.take(50)) {
+                    Text(
+                        "· ${c.sampleNumber} " +
+                                "(${c.fieldDiffs.joinToString { it.field.label }})",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (preview.samplePlan.conflicts.size > 50) Text(
+                    "…и ещё ${preview.samplePlan.conflicts.size - 50}",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        DetailsSection(
+            title = "Скважины",
+            newCount = preview.wellPlan.toAdd.size,
+            identicalCount = 0,
+            conflictCount = 0
+        ) {}
+
+        DetailsSection(
+            title = "Заметки",
+            newCount = preview.notePlan.toAdd.size,
+            identicalCount = 0,
+            conflictCount = preview.notePlan.conflicts.size
+        ) {
+            if (preview.notePlan.conflicts.isNotEmpty()) {
+                Text(
+                    "Различаются: ${preview.notePlan.conflicts.size}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        DetailsSection(
+            title = "Фото",
+            newCount = preview.photoPlan.toAdd.size,
+            identicalCount = 0,
+            conflictCount = 0
+        ) {}
+    }
+}
+
+@Composable
+private fun DetailsSection(
+    title: String,
+    newCount: Int,
+    identicalCount: Int,
+    conflictCount: Int,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val summary = buildString {
+        append("новых: $newCount")
+        if (identicalCount > 0) append(" · совпали: $identicalCount")
+        if (conflictCount > 0) append(" · конфликты: $conflictCount")
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            summary,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        content()
     }
 }
 
@@ -207,247 +329,6 @@ private fun StatRow(label: String, added: Int, matched: Int) {
             )
         }
     }
-}
-
-// ================================================================
-// /5: конфликты
-// ================================================================
-
-@Composable
-private fun ConflictsDialog(
-    preview: MergePreview,
-    resolutions: Map<Long, FieldResolution>,
-    onSetField: (Long, SampleField, FieldOwner) -> Unit,
-    onSetSample: (Long, FieldOwner) -> Unit,
-    onMassAll: (FieldOwner) -> Unit,
-    onMassFillEmpty: () -> Unit,
-    onMassByField: (SampleField, FieldOwner) -> Unit,
-    onConfirm: () -> Unit,
-    onCancel: () -> Unit
-) {
-    val conflicts = preview.samplePlan.conflicts
-    val totalResolved = conflicts.count { c ->
-        resolutions[c.theirId]?.isFullyResolved(c.fieldDiffs) == true
-    }
-    val fieldCounts = remember(conflicts) { countFieldsByType(conflicts) }
-
-    AlertDialog(
-        onDismissRequest = onCancel,
-        title = { Text("Конфликты (${totalResolved} из ${conflicts.size})") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 520.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                // Массовые кнопки.
-                Text(
-                    "Массово применить:",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    TextButton(
-                        onClick = { onMassAll(FieldOwner.MINE) },
-                        contentPadding = PaddingValues(horizontal = 8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Мои везде", maxLines = 1) }
-                    TextButton(
-                        onClick = { onMassAll(FieldOwner.THEIRS) },
-                        contentPadding = PaddingValues(horizontal = 8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Из архива везде", maxLines = 1) }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    TextButton(
-                        onClick = { onMassFillEmpty() },
-                        contentPadding = PaddingValues(horizontal = 8.dp),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Заполнить пустые", maxLines = 1) }
-                }
-
-                // Сводка по типам расхождений.
-                if (fieldCounts.isNotEmpty()) {
-                    Text(
-                        "Различия по полям:",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    for ((field, count) in fieldCounts) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "${field.label}: $count",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(
-                                onClick = { onMassByField(field, FieldOwner.MINE) },
-                                contentPadding = PaddingValues(horizontal = 6.dp)
-                            ) { Text("Мои", style = MaterialTheme.typography.labelSmall) }
-                            TextButton(
-                                onClick = { onMassByField(field, FieldOwner.THEIRS) },
-                                contentPadding = PaddingValues(horizontal = 6.dp)
-                            ) { Text("Архив", style = MaterialTheme.typography.labelSmall) }
-                        }
-                    }
-                }
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 300.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(conflicts, key = { it.theirId }) { c ->
-                        ConflictRow(
-                            conflict = c,
-                            resolution = resolutions[c.theirId] ?: FieldResolution.Empty,
-                            onSetField = onSetField,
-                            onSetSample = onSetSample
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = totalResolved > 0,
-                onClick = onConfirm
-            ) {
-                Text(
-                    if (totalResolved == conflicts.size) "Продолжить"
-                    else "Продолжить (остальные — Моя)"
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onCancel) { Text("Отмена") }
-        }
-    )
-}
-
-@Composable
-private fun ConflictRow(
-    conflict: SampleConflict,
-    resolution: FieldResolution,
-    onSetField: (Long, SampleField, FieldOwner) -> Unit,
-    onSetSample: (Long, FieldOwner) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val resolved = resolution.isFullyResolved(conflict.fieldDiffs)
-
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { expanded = !expanded },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    conflict.sampleNumber,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    if (resolved) "✓" else "—",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (resolved) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                    if (expanded) Icons.Default.ExpandLess
-                    else Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            if (expanded) {
-                Spacer(Modifier.height(6.dp))
-                for (d in conflict.fieldDiffs) {
-                    FieldDiffRow(d, resolution.ownerOf(d.field)) { owner ->
-                        onSetField(conflict.theirId, d.field, owner)
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(
-                        onClick = { onSetSample(conflict.theirId, FieldOwner.MINE) },
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) { Text("Вся — моя", style = MaterialTheme.typography.labelSmall) }
-                    TextButton(
-                        onClick = { onSetSample(conflict.theirId, FieldOwner.THEIRS) },
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) { Text("Вся — из архива", style = MaterialTheme.typography.labelSmall) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FieldDiffRow(
-    diff: FieldDiff,
-    currentOwner: FieldOwner?,
-    onPick: (FieldOwner) -> Unit
-) {
-    Column(modifier = Modifier.padding(vertical = 2.dp)) {
-        Text(
-            diff.field.label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Моя: ${diff.myDisplay}",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                "Архив: ${diff.theirDisplay}",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            FilterChip(
-                selected = currentOwner == FieldOwner.MINE,
-                onClick = { onPick(FieldOwner.MINE) },
-                label = { Text("Моя", style = MaterialTheme.typography.labelSmall) }
-            )
-            FilterChip(
-                selected = currentOwner == FieldOwner.THEIRS,
-                onClick = { onPick(FieldOwner.THEIRS) },
-                label = { Text("Из архива", style = MaterialTheme.typography.labelSmall) }
-            )
-        }
-    }
-}
-
-private fun countFieldsByType(
-    conflicts: List<SampleConflict>
-): Map<SampleField, Int> {
-    val m = mutableMapOf<SampleField, Int>()
-    for (c in conflicts) for (d in c.fieldDiffs) {
-        m[d.field] = (m[d.field] ?: 0) + 1
-    }
-    return m
 }
 
 @Composable

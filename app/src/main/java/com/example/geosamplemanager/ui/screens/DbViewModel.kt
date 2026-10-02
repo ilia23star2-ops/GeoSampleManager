@@ -28,11 +28,13 @@ import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.merge.FieldOwner
 import com.example.geosamplemanager.data.merge.FieldResolution
+import com.example.geosamplemanager.data.merge.MassStrategy
 import com.example.geosamplemanager.data.merge.MergeEngine
 import com.example.geosamplemanager.data.merge.MergePreview
 import com.example.geosamplemanager.data.merge.MergeRunner
 import com.example.geosamplemanager.data.merge.MergeStats
 import com.example.geosamplemanager.data.merge.MergeWizardState
+import com.example.geosamplemanager.data.merge.SampleConflict
 import com.example.geosamplemanager.data.merge.SampleField
 import com.example.geosamplemanager.data.merge.TempDatabaseHandle
 import kotlinx.coroutines.Dispatchers
@@ -329,7 +331,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-merge-v2/5: слияние — умные конфликты
+    // Слияние
     // ================================================================
 
     private val _mergeState = MutableStateFlow<MergeWizardState>(MergeWizardState.Idle)
@@ -378,7 +380,9 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 val samplePlan = MergeEngine.planSamples(
                     mySamples = mySamples,
                     theirSamples = archive.samples,
-                    orderIdMap = pseudoOrderMap
+                    orderIdMap = pseudoOrderMap,
+                    myOrders = myOrders,
+                    myAreas = myAreas
                 )
 
                 val pseudoSampleMap = HashMap<Long, Long>()
@@ -445,10 +449,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-db-merge-v2/5:
-     * Разрешение по конкретному полю одной пробы.
-     */
     fun setFieldResolution(
         theirSampleId: Long,
         field: SampleField,
@@ -461,9 +461,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /**
-     * Разрешение по всем полям одной пробы.
-     */
     fun setSampleResolution(
         theirSampleId: Long,
         owner: FieldOwner
@@ -476,9 +473,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /**
-     * Массовая стратегия «Мои везде» / «Из архива везде» — для всех.
-     */
     fun applyMassStrategy(owner: FieldOwner) {
         val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
         val newMap = HashMap<Long, FieldResolution>()
@@ -488,9 +482,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /**
-     * Массовая стратегия «Заполнить пустые».
-     */
     fun applyFillEmptyStrategy() {
         val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
         val newMap = HashMap<Long, FieldResolution>()
@@ -500,10 +491,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /**
-     * Массовая стратегия по одному полю: всем конфликтам, где
-     * расходится данное поле, поставить чьё-то значение.
-     */
     fun applyStrategyForField(field: SampleField, owner: FieldOwner) {
         val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
         val newMap = HashMap(state.resolutions)
@@ -516,13 +503,35 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /** Проверить, все ли конфликты разрешены. */
+    /**
+     * FIX 5.9-db-merge-v2/7:
+     * Массовая стратегия для конкретной группы (наряд / скважина).
+     */
+    fun applyGroupMass(
+        conflicts: List<SampleConflict>,
+        strategy: MassStrategy
+    ) {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        if (conflicts.isEmpty()) return
+        val newMap = HashMap(state.resolutions)
+        for (c in conflicts) {
+            newMap[c.theirId] = when (strategy) {
+                MassStrategy.ALL_MINE ->
+                    FieldResolution.all(c.fieldDiffs, FieldOwner.MINE)
+                MassStrategy.ALL_THEIRS ->
+                    FieldResolution.all(c.fieldDiffs, FieldOwner.THEIRS)
+                MassStrategy.FILL_EMPTY ->
+                    FieldResolution.fillEmpty(c.fieldDiffs)
+            }
+        }
+        _mergeState.value = state.copy(resolutions = newMap)
+    }
+
     fun allConflictsResolved(): Boolean {
         val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return true
         return state.preview.samplePlan.allResolved(state.resolutions)
     }
 
-    /** Подтвердить конфликты и запустить слияние. */
     fun confirmConflicts() {
         val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
         val finalMap = HashMap<Long, FieldResolution>()
@@ -686,7 +695,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Откат (приватные + публичные)
+    // Откат
     // ================================================================
 
     private val _rollbackBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())

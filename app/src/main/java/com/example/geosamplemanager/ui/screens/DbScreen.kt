@@ -436,7 +436,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         if (cs is RestoreState.InProgress) ProgressOverlay(cs.message)
     }
 
-    // FIX 5.9-db-merge-v2/5: wizard с умными конфликтами.
     MergeWizard(
         state = mergeState,
         onContinue = { viewModel.continueFromPreview() },
@@ -445,6 +444,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         onMassAll = { o -> viewModel.applyMassStrategy(o) },
         onMassFillEmpty = { viewModel.applyFillEmptyStrategy() },
         onMassByField = { f, o -> viewModel.applyStrategyForField(f, o) },
+        onGroupMass = { conflicts, strategy ->
+            viewModel.applyGroupMass(conflicts, strategy)
+        },
         onConfirmConflicts = { viewModel.confirmConflicts() },
         onCancel = { viewModel.cancelMerge() },
         onCloseDone = { viewModel.resetMergeState() }
