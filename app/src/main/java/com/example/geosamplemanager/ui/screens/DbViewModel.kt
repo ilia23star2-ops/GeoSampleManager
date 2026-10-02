@@ -115,13 +115,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     private var publicMigrationStarted = false
 
-    /**
-     * Одноразовая ленивая миграция: переложить старые pre_* из корня
-     * Downloads/GeoSampleManager/ в подпапки pre_restore/ и т.д.
-     *
-     * Вызывается при первом показе вкладки БД. Флаг — в
-     * SharedPreferences, чтобы не гонять после перезапуска процесса.
-     */
     fun migrateOldPublicBackupsIfNeeded() {
         if (publicMigrationStarted) return
         publicMigrationStarted = true
@@ -134,7 +127,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 markPublicBackupsMigrated()
             } catch (_: Exception) {
-                // Не критично: миграция — фон.
             }
         }
     }
@@ -158,7 +150,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-import-picker: список публичных бэкапов
+    // FIX 5.9-db-import-picker: список публичных бэкапов (импорт)
     // ================================================================
 
     private val _publicBackups = MutableStateFlow<List<PublicBackup>>(emptyList())
@@ -168,11 +160,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     val publicBackupsLoading: StateFlow<Boolean> =
         _publicBackupsLoading.asStateFlow()
 
-    /**
-     * FIX 5.9-db-import-picker:
-     * Список .gsmbackup для диалога «Импорт» — только папка exports.
-     * Авто-бэкапы pre_* в импорт не попадают: ими занимается «Откат».
-     */
     fun loadPublicBackups() {
         if (_publicBackupsLoading.value) return
         _publicBackupsLoading.value = true
@@ -283,7 +270,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-rollback: откат к авто-бэкапу
+    // FIX 5.9-db-rollback-public: откат (приватные + публичные)
     // ================================================================
 
     private val _rollbackBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())
@@ -301,19 +288,34 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Загружает список pre_*_* из filesDir/db_backups/.
-     * Manifest читается для каждого файла — нужен для диалога.
+     * FIX 5.9-db-rollback-public:
+     * Загружает приватные + публичные авто-бэкапы.
+     * Перед этим прогоняет ротацию публичных — чтобы почистить
+     * накопления, если авто-ротация давно не срабатывала.
+     * Дедупликация по имени файла (приоритет приватного).
      */
     fun loadRollbackBackups() {
         if (_rollbackLoading.value) return
         _rollbackLoading.value = true
         viewModelScope.launch {
             try {
+                withContext(Dispatchers.IO) {
+                    PublicBackupsLister.rotateAutoBackups(getApplication())
+                }
+
                 val dir = repo.getRollbackBackupsDir()
-                val list = withContext(Dispatchers.IO) {
+                val privateList = withContext(Dispatchers.IO) {
                     RollbackBackups.list(dir) { GsmBackupReader.readManifest(it) }
                 }
-                _rollbackBackups.value = list
+                val publicList = withContext(Dispatchers.IO) {
+                    PublicBackupsLister.listAutoBackups(getApplication())
+                        .map { RollbackBackups.fromPublic(it) }
+                }
+
+                _rollbackBackups.value = RollbackBackups.merge(
+                    privateList = privateList,
+                    publicList = publicList
+                )
             } catch (e: Exception) {
                 _message.value = "Ошибка чтения бэкапов: ${e.message}"
             } finally {
@@ -323,7 +325,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Откат к авто-бэкапу из приватной папки.
+     * Откат к приватному авто-бэкапу (filesDir/db_backups/).
      */
     fun rollbackFromInternal(file: File) {
         performReplacement(
@@ -333,6 +335,26 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
             extract = { targetDb, targetPhotosDir ->
                 GsmBackupReader.extract(
                     file = file,
+                    targetDb = targetDb,
+                    targetPhotosDir = targetPhotosDir
+                )
+            }
+        )
+    }
+
+    /**
+     * FIX 5.9-db-rollback-public:
+     * Откат к публичному авто-бэкапу (Загрузки/GeoSampleManager/pre_*).
+     */
+    fun rollbackFromPublic(uri: Uri) {
+        performReplacement(
+            stateFlow = _rollbackState,
+            autoBackupOperation = AUTO_BACKUP_OP_ROLLBACK,
+            errorMessage = "Ошибка отката",
+            extract = { targetDb, targetPhotosDir ->
+                GsmBackupReader.extract(
+                    context = getApplication(),
+                    uri = uri,
                     targetDb = targetDb,
                     targetPhotosDir = targetPhotosDir
                 )
@@ -351,14 +373,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _cleanState.value = RestoreState.Idle
     }
 
-    /**
-     * Полная очистка БД.
-     *  1) авто-бэкап pre_clean_*;
-     *  2) clearAllTables + удалить фото;
-     *  3) closeAndReset + resetRepository;
-     *  4) ротация pre_*_;
-     *  5) Done (UI пересоберёт поддерево).
-     */
     fun cleanDatabase() {
         if (_cleanState.value is RestoreState.InProgress) return
 
@@ -390,22 +404,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // Общая цепочка замены БД (импорт и откат)
     // ================================================================
 
-    /**
-     * FIX 5.9-db-rollback:
-     * Общая логика для import/rollback:
-     *  1) авто-бэкап текущего состояния с операцией;
-     *  2) закрытие БД, удаление -wal/-shm, очистка папки фото;
-     *  3) extract;
-     *  4) resetRepository;
-     *  5) ротация pre_*_ по каждому префиксу;
-     *  6) Done.
-     *
-     * Импорт и откат отличаются только источником extract и operation.
-     *
-     * FIX 5.9-db-backups-ops:
-     *  - параметр operation ("restore"/"rollback"/"clean");
-     *  - ротация теперь по каждому префиксу.
-     */
     private fun performReplacement(
         stateFlow: MutableStateFlow<RestoreState>,
         autoBackupOperation: String,
@@ -458,12 +456,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // Внутренние утилиты
     // ================================================================
 
-    /**
-     * FIX 5.9-db-backups-ops:
-     * Общий авто-бэкап. operation — restore/rollback/clean/export.
-     * Имя файла — pre_<operation>_YYYYMMDD_HHmm.gsmbackup.
-     * Пишем в приватную папку и (на Android 10+) в публичные Загрузки.
-     */
     private suspend fun autoBackup(operation: String) {
         val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
         val prefix = RollbackBackups.prefixFor(operation)
@@ -487,9 +479,8 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * FIX 5.9-db-backups-ops:
-     * Ротация отдельно по каждому префиксу (5 на операцию).
-     * Вызывается после успешной замены БД.
+     * FIX 5.9-db-rollback-public:
+     * Ротация приватных и публичных pre_* (5 на операцию).
      */
     private suspend fun rotateAllBackups() {
         try {
@@ -499,12 +490,15 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
             )
         } catch (_: Exception) {
         }
+        try {
+            PublicBackupsLister.rotateAutoBackups(
+                getApplication(),
+                RollbackBackups.MAX_KEEP
+            )
+        } catch (_: Exception) {
+        }
     }
 
-    /**
-     * FIX 5.9-db-backups-ops/2:
-     * subDir — подпапка внутри GeoSampleManager/ в Загрузках.
-     */
     private suspend fun writeToPublicDownloads(
         fileName: String,
         subDir: String
@@ -536,10 +530,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         return uri
     }
 
-    /**
-     * FIX 5.9-db-backups-ops:
-     * operation — попадает в манифест.
-     */
     private suspend fun writeBackup(out: java.io.OutputStream, operation: String) {
         repo.checkpointWal()
         val info = repo.getDbInfo()
@@ -656,7 +646,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        /** FIX 5.9-db-backups-ops: операции авто-бэкапа. */
         const val AUTO_BACKUP_OP_RESTORE = "restore"
         const val AUTO_BACKUP_OP_ROLLBACK = "rollback"
         const val AUTO_BACKUP_OP_CLEAN = "clean"

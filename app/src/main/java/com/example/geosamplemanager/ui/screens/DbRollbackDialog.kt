@@ -12,9 +12,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.geosamplemanager.data.backup.BackupManifest
+import com.example.geosamplemanager.data.backup.BackupSource
 import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.RollbackBackup
 import java.text.SimpleDateFormat
@@ -22,14 +25,12 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-db-rollback:
+ * FIX 5.9-db-rollback-public:
  * Диалог выбора авто-бэкапа для отката.
- *  - список pre_*_* из filesDir/db_backups/;
- *  - каждая строка: дата, размер, счётчики из manifest.
- *
- * FIX 5.9-db-backups-ops:
- *  - показываем operation — после какой операции сделан бэкап
- *    (Импорт / Откат / Очистка).
+ *  - список объединяет приватные и публичные pre_*;
+ *  - в строке: имя файла, плашка операции, метка источника,
+ *    дата, размер, счётчики;
+ *  - приватный в приоритете при совпадении имени.
  */
 @Composable
 fun DbRollbackDialog(
@@ -47,7 +48,7 @@ fun DbRollbackDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 480.dp),
+                    .heightIn(max = 500.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (loading) {
@@ -62,7 +63,7 @@ fun DbRollbackDialog(
                 } else if (backups.isEmpty()) {
                     Text(
                         "Авто-бэкапов нет. Они создаются автоматически " +
-                                "перед импортом и откатом БД.",
+                                "перед импортом, откатом и очисткой БД.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -76,7 +77,7 @@ fun DbRollbackDialog(
                         modifier = Modifier.heightIn(max = 420.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(backups, key = { it.file.absolutePath }) { b ->
+                        items(backups, key = { it.fileName }) { b ->
                             RollbackBackupRow(b, dateFormat) { onSelect(b) }
                         }
                     }
@@ -101,6 +102,16 @@ private fun RollbackBackupRow(
             .clickable(onClick = onClick)
     ) {
         Column(modifier = Modifier.padding(8.dp)) {
+            // Имя файла — первой строкой.
+            Text(
+                backup.fileName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     color = operationColor(backup.operation),
@@ -113,10 +124,22 @@ private fun RollbackBackupRow(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
+                Spacer(Modifier.width(4.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        sourceLabel(backup.source),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
                 Spacer(Modifier.width(6.dp))
                 Text(
                     dateFormat.format(Date(backup.createdAt)),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium
                 )
             }
@@ -145,6 +168,11 @@ private fun RollbackBackupRow(
     }
 }
 
+private fun sourceLabel(source: BackupSource): String = when (source) {
+    BackupSource.PRIVATE -> "Внутренний"
+    BackupSource.PUBLIC -> "Загрузки"
+}
+
 private fun operationLabel(operation: String): String = when (operation) {
     "restore" -> "Импорт"
     "rollback" -> "Откат"
@@ -161,9 +189,7 @@ private fun operationColor(operation: String) = when (operation) {
 }
 
 /**
- * FIX 5.9-db-rollback:
- * Второй шаг подтверждения. Показывает содержимое бэкапа
- * и предупреждает, что текущая БД будет заменена.
+ * Второй шаг подтверждения — без изменений.
  */
 @Composable
 fun DbRollbackConfirmDialog(

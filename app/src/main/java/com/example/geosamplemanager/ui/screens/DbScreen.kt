@@ -1,6 +1,7 @@
 package com.example.geosamplemanager.ui.screens
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,49 +32,20 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.backup.BackupManifest
+import com.example.geosamplemanager.data.backup.BackupSource
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.backup.PublicBackup
+import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.ui.navigation.Screen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * FIX 5.9-db-restore-v2-hotfix-2:
- *  - recreate() не сбрасывает ViewModel;
- *  - killProcess + AlarmManager не работает на новых Android;
- *  - решение: startActivity(MainActivity, NEW_TASK|CLEAR_TASK) + finish().
- *
- * FIX 5.9-db-rollback:
- *  - кнопка «Откат»;
- *  - список pre_*_* из filesDir/db_backups/;
- *  - двойное подтверждение + авто-бэкап pre_rollback_*.
- *
- * FIX 5.9-db-backups-ops/2:
- *  - ленивая миграция старых бэкапов из корня GeoSampleManager/
- *    в подпапки — при первом показе экрана.
- *
- * FIX 5.9-db-clean:
- *  - кнопка «Очистить БД» с двойным подтверждением;
- *  - авто-бэкап pre_clean_*.
- *
- * FIX 5.9-db-soft-restart:
- *  - вместо пересоздания Activity — app.requestRestart(route);
- *  - MainActivity пересоберёт поддерево и обнулит ViewModelStore;
- *  - после пересборки показываем одноразовое сообщение
- *    «Готово. …» через app.consumeRestartMessage().
- *
- * FIX 5.9-db-import-picker:
- *  - кнопка «Импорт» открывает диалог со списком всех .gsmbackup
- *    из Загрузок/GeoSampleManager + SAF;
- *  - выбор из списка → существующий DbRestoreDialog (превью).
- */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val context = LocalContext.current
@@ -92,26 +64,21 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val lastExportUri by viewModel.lastExportUri.collectAsState()
     val restoreState by viewModel.restoreState.collectAsState()
 
-    // FIX 5.9-db-rollback
     val rollbackBackups by viewModel.rollbackBackups.collectAsState()
     val rollbackLoading by viewModel.rollbackLoading.collectAsState()
     val rollbackState by viewModel.rollbackState.collectAsState()
 
-    // FIX 5.9-db-clean
     val cleanState by viewModel.cleanState.collectAsState()
 
-    // FIX 5.9-db-import-picker
     val publicBackups by viewModel.publicBackups.collectAsState()
     val publicBackupsLoading by viewModel.publicBackupsLoading.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // FIX 5.9-db-backups-ops/2: ленивая миграция старых бэкапов.
     LaunchedEffect(Unit) {
         viewModel.migrateOldPublicBackupsIfNeeded()
     }
 
-    // FIX 5.9-db-soft-restart: показать «Готово» после пересборки.
     LaunchedEffect(Unit) {
         val doneMessage = app.consumeRestartMessage()
         if (doneMessage != null) {
@@ -133,40 +100,33 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var showDbInfoDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
 
-    var pendingImportUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var pendingImportName by remember { mutableStateOf<String?>(null) }
     var pendingManifest by remember { mutableStateOf<BackupManifest?>(null) }
 
     var pendingExternalName by remember { mutableStateOf<String?>(null) }
     var shareAfterNextExport by remember { mutableStateOf(false) }
 
-    // FIX 5.9-db-rollback: состояние диалогов отката.
     var showRollbackDialog by remember { mutableStateOf(false) }
-    var pendingRollbackFile by remember { mutableStateOf<File?>(null) }
+    var pendingRollback by remember { mutableStateOf<RollbackBackup?>(null) }
     var pendingRollbackName by remember { mutableStateOf<String?>(null) }
     var pendingRollbackManifest by remember { mutableStateOf<BackupManifest?>(null) }
 
-    // FIX 5.9-db-clean: диалог очистки.
     var showCleanDialog by remember { mutableStateOf(false) }
-
-    // FIX 5.9-db-import-picker: диалог импорта.
     var showImportPickerDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
 
-    // FIX 5.9-db-rollback: подгрузка списка при открытии диалога.
     LaunchedEffect(showRollbackDialog) {
         if (showRollbackDialog) viewModel.loadRollbackBackups()
     }
 
-    // FIX 5.9-db-clean: подгрузка счётчиков при открытии диалога.
     LaunchedEffect(showCleanDialog) {
         if (showCleanDialog) viewModel.loadDbInfo()
     }
 
-    // FIX 5.9-db-import-picker: подгрузка списка при открытии диалога.
     LaunchedEffect(showImportPickerDialog) {
         if (showImportPickerDialog) viewModel.loadPublicBackups()
     }
@@ -187,7 +147,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         viewModel.consumeLastExportUri()
     }
 
-    // FIX 5.9-db-soft-restart: после импорта — пересобрать поддерево.
     LaunchedEffect(restoreState) {
         when (val s = restoreState) {
             is RestoreState.Done -> {
@@ -203,7 +162,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-soft-restart: после отката — то же.
     LaunchedEffect(rollbackState) {
         when (val s = rollbackState) {
             is RestoreState.Done -> {
@@ -219,7 +177,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-soft-restart: после очистки — то же.
     LaunchedEffect(cleanState) {
         when (val s = cleanState) {
             is RestoreState.Done -> {
@@ -304,7 +261,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // FIX 5.9-db-import-picker: открываем диалог, не SAF.
                 OutlinedButton(
                     onClick = { showImportPickerDialog = true },
                     enabled = restoreState is RestoreState.Idle,
@@ -323,7 +279,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Инфо")
                 }
             }
-            // FIX 5.9-db-rollback (FIX 5.9-db-smooth-restart: имя «Откат»)
             OutlinedButton(
                 onClick = { showRollbackDialog = true },
                 enabled = rollbackState is RestoreState.Idle,
@@ -333,7 +288,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 Spacer(Modifier.width(4.dp))
                 Text("Откат")
             }
-            // FIX 5.9-db-clean
             OutlinedButton(
                 onClick = { showCleanDialog = true },
                 enabled = cleanState is RestoreState.Idle,
@@ -573,7 +527,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // FIX 5.9-db-import-picker: диалог со списком публичных бэкапов.
     if (showImportPickerDialog) {
         DbImportPickerDialog(
             backups = publicBackups,
@@ -588,7 +541,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                         )
                     }
                 } else {
-                    pendingImportUri = backup.uri
+                    // FIX 5.9-db-rollback-public: PublicBackup.uri — строка.
+                    pendingImportUri = Uri.parse(backup.uri)
                     pendingManifest = mf
                     pendingImportName = backup.displayName
                 }
@@ -622,43 +576,53 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // FIX 5.9-db-rollback: диалоги отката.
     if (showRollbackDialog) {
         DbRollbackDialog(
             backups = rollbackBackups,
             loading = rollbackLoading,
             onSelect = { backup ->
                 showRollbackDialog = false
-                pendingRollbackFile = backup.file
+                pendingRollback = backup
                 pendingRollbackManifest = backup.manifest
-                pendingRollbackName = backup.file.name
+                pendingRollbackName = backup.fileName
             },
             onDismiss = { showRollbackDialog = false }
         )
     }
 
-    val rbFile = pendingRollbackFile
+    val rbBackup = pendingRollback
     val rbName = pendingRollbackName
-    if (rbName != null && rbFile != null) {
+    if (rbName != null && rbBackup != null) {
         DbRollbackConfirmDialog(
             fileName = rbName,
             manifest = pendingRollbackManifest,
             onConfirm = {
-                val f = pendingRollbackFile
-                pendingRollbackFile = null
+                val b = pendingRollback
+                pendingRollback = null
                 pendingRollbackName = null
                 pendingRollbackManifest = null
-                if (f != null) viewModel.rollbackFromInternal(f)
+                if (b != null) {
+                    when (b.source) {
+                        BackupSource.PRIVATE -> {
+                            b.file?.let { viewModel.rollbackFromInternal(it) }
+                        }
+                        BackupSource.PUBLIC -> {
+                            val uriStr = b.publicUri
+                            if (uriStr != null) {
+                                viewModel.rollbackFromPublic(Uri.parse(uriStr))
+                            }
+                        }
+                    }
+                }
             },
             onDismiss = {
-                pendingRollbackFile = null
+                pendingRollback = null
                 pendingRollbackName = null
                 pendingRollbackManifest = null
             }
         )
     }
 
-    // FIX 5.9-db-clean: диалог очистки.
     if (showCleanDialog) {
         DbCleanDialog(
             info = dbInfo,
@@ -673,7 +637,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 }
 
 // ============================================================
-// ПОДКОМПОНЕНТЫ
+// ПОДКОМПОНЕНТЫ (без изменений)
 // ============================================================
 
 @Composable

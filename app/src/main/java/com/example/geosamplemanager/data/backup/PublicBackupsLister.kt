@@ -2,46 +2,68 @@ package com.example.geosamplemanager.data.backup
 
 import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 
 /**
  * FIX 5.9-db-import-picker:
- * Поиск .gsmbackup в публичных Загрузках — корень GeoSampleManager
- * и подпапки pre_restore, pre_rollback, pre_clean, exports.
+ * Поиск .gsmbackup в публичных Загрузках.
  *
- * Разделение по назначению:
- *   listForImport()    — только папка exports.
- *                        Диалог «Импорт» — работа с базами,
- *                        авто-бэкапы сюда не попадают.
- *   listAutoBackups()  — только папки pre_*.
- *                        Диалог «Откат» (используется в
- *                        db-rollback-public).
- *
- * Работает только на Android 10+ (MediaStore.Downloads).
- * На более старых возвращает пустой список — используется SAF.
+ * FIX 5.9-db-rollback-public:
+ *  - rotateAutoBackups() — ротация публичных pre_*;
+ *  - PublicBackup.uri теперь String; Uri.parse — только при
+ *    работе с ContentResolver.
  */
 object PublicBackupsLister {
 
     private const val EXT = "." + GsmBackupWriter.EXTENSION
 
-    /**
-     * FIX 5.9-db-import-picker:
-     * Для диалога «Импорт» — только пользовательские бэкапы
-     * из подпапки exports.
-     */
     fun listForImport(context: Context): List<PublicBackup> =
         queryAll(context) { subDir -> subDir == PublicBackupsMigrator.EXPORTS_DIR }
 
-    /**
-     * FIX 5.9-db-rollback-public:
-     * Для диалога «Откат» — авто-бэкапы из подпапок pre_*.
-     * Пока не используется — оставлено для следующей пачки.
-     */
     fun listAutoBackups(context: Context): List<PublicBackup> =
         queryAll(context) { subDir ->
             RollbackBackups.OPERATIONS.any { op -> subDir == "pre_$op" }
         }
+
+    /**
+     * Ротация публичных авто-бэкапов: держим N последних на каждую
+     * операцию (restore/rollback/clean), остальные удаляем.
+     */
+    fun rotateAutoBackups(
+        context: Context,
+        keep: Int = RollbackBackups.MAX_KEEP
+    ): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
+        if (keep < 0) return 0
+
+        val all = listAutoBackups(context)
+        if (all.isEmpty()) return 0
+
+        val toDelete = mutableListOf<PublicBackup>()
+        for (op in RollbackBackups.OPERATIONS) {
+            val subDir = "pre_$op"
+            val group = all
+                .filter { it.subDir == subDir }
+                .sortedByDescending { it.lastModified }
+            if (group.size > keep) toDelete += group.drop(keep)
+        }
+
+        if (toDelete.isEmpty()) return 0
+
+        val resolver = context.contentResolver
+        var deleted = 0
+        for (b in toDelete) {
+            try {
+                val uri = Uri.parse(b.uri)
+                if (resolver.delete(uri, null, null) > 0) deleted++
+            } catch (_: Exception) {
+                // Не критично: файл останется, следующая ротация уберёт.
+            }
+        }
+        return deleted
+    }
 
     private fun queryAll(
         context: Context,
@@ -104,7 +126,7 @@ object PublicBackupsLister {
                         ?: GsmBackupWriter.OP_UNKNOWN
 
                     result += PublicBackup(
-                        uri = uri,
+                        uri = uri.toString(),
                         displayName = name,
                         subDir = subDir,
                         operation = operation,
@@ -121,18 +143,6 @@ object PublicBackupsLister {
         return result.sortedByDescending { it.lastModified }
     }
 
-    /**
-     * FIX 5.9-db-import-picker:
-     * Из RELATIVE_PATH MediaStore вытащить подпапку внутри
-     * GeoSampleManager. Чистая функция — покрывается юнит-тестами.
-     *
-     * Примеры:
-     *   "Download/GeoSampleManager/"              -> ""  (корень)
-     *   "Download/GeoSampleManager/pre_restore/"  -> "pre_restore"
-     *   "Download/GeoSampleManager/exports/"      -> "exports"
-     *   "Download/Other/pre_restore/"             -> null
-     *   ""                                        -> null
-     */
     fun extractSubDir(relativePath: String): String? {
         if (relativePath.isBlank()) return null
         val segments = relativePath

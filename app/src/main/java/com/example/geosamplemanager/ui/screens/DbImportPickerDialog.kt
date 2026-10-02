@@ -25,10 +25,8 @@ import java.util.Locale
  * Диалог импорта — список .gsmbackup из папки exports.
  * Авто-бэкапы pre_* здесь НЕ показываются — ими занимается «Откат».
  *
- * FIX 5.9-db-import-picker (fix):
- *  - показываем имя файла (чтобы было понятно, что импортируем);
- *  - подпись диалога уточнена: «Файлы для импорта (папка exports)»;
- *  - пусто / API < 29 → подсказка про ручной выбор.
+ * FIX 5.9-db-rollback-public:
+ *  - PublicBackup.uri теперь String; key — сама строка.
  */
 @Composable
 fun DbImportPickerDialog(
@@ -94,7 +92,7 @@ fun DbImportPickerDialog(
                             modifier = Modifier.heightIn(max = 380.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(backups, key = { it.uri.toString() }) { b ->
+                            items(backups, key = { it.uri }) { b ->
                                 PublicBackupRow(b, dateFormat) { onSelect(b) }
                             }
                         }
@@ -131,7 +129,6 @@ private fun PublicBackupRow(
             .clickable(onClick = onClick)
     ) {
         Column(modifier = Modifier.padding(8.dp)) {
-            // FIX 5.9-db-import-picker (fix): имя файла — первым делом.
             Text(
                 backup.displayName,
                 style = MaterialTheme.typography.bodyMedium,
