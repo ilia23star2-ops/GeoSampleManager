@@ -16,9 +16,10 @@
 - Логика undo/redo.
 - Отчёты (XLSX, HTML).
 - Чистые функции вкладки Редактирование.
-- Чистая логика БД-бэкапов и слияния (`RollbackBackups`,
-  `PublicBackupsLister`, `BackupManifest`, `CleanConfirmState`,
-  `BackupManagerStats`, `MergeEngine`).
+- Чистая логика БД-бэкапов, слияния и сравнения
+  (`RollbackBackups`, `PublicBackupsLister`, `BackupManifest`,
+  `CleanConfirmState`, `BackupManagerStats`, `MergeEngine`,
+  `CompareEngine`).
 - Миграции БД.
 
 UI не тестируем — проверяем руками. I/O, zip, MediaStore, БД —
@@ -67,6 +68,12 @@ device-check.
 |---|---|---|
 | `MergeEngineTest.kt` | `planAreas` / `planOrders` / `planSamples` / `planWells` / `planNotes` / `planPhotos`, `diffFields`, `resolveSample`, `displayFor`, `FieldResolution`, `buildConflictTree`, `extractArchivePhotoName`, `MergeStats` | ~80 |
 
+### `data/compare/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `CompareEngineTest.kt` | `buildResult` — 4 дерева, ключи сопоставления, конфликты | 11 |
+
 ### `data/reconciliation/`
 
 | Файл | Что проверяет | Тестов |
@@ -98,7 +105,7 @@ device-check.
 | `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
 | `CleanConfirmStateTest.kt` | `CleanConfirmState` | 6 |
 
-**Всего: ~500+ тестов.** Все зелёные.
+**Всего: ~510+ тестов.** Все зелёные.
 
 ---
 
@@ -119,13 +126,14 @@ device-check.
 
 ## Что НЕ покрываем тестами
 
-- **Vosk** — галлюцинации, распознавание. Только device-check.
+- **Vosk** — галлюцинации, распознавание. Device-check.
 - **TTS** — произношение, кулдаун.
 - **Compose UI** — отдельная тема.
 - **Реальная БД** — только миграции.
 - **`ReconciliationViewModel`, `EditViewModel`, `DbViewModel`** —
   связаны с Application. Device-check.
-- **Backup/restore, merge** — io + zip + замена файлов. Device-check.
+- **Backup/restore, merge, compare** — io + zip + замена файлов.
+  Device-check.
 - **MediaStore** — реальные запросы. Device-check.
 
 ---
@@ -199,7 +207,8 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 **Сделано (5.9 Статистика):** XLSX, ~106 + HTML, 43.
 **Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
 **Сделано (5.9 БД):** `data/backup/` (5 файлов, ~76),
-`data/merge/` (1 файл, ~80), `CleanConfirmStateTest`.
+`data/merge/` (1 файл, ~80), `data/compare/` (1 файл, 11),
+`CleanConfirmStateTest` (6).
 
 **Осталось:**
 - `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
