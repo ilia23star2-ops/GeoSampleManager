@@ -17,6 +17,11 @@ import java.util.zip.ZipOutputStream
  * Извлекается любым архиватором.
  *
  * Используется при экспорте бэкапа и (позже) при восстановлении.
+ *
+ * FIX 5.9-db-backups-ops:
+ *  - параметр operation ("restore"/"rollback"/"clean"/"export") —
+ *    пишется в манифест, чтобы UI мог показать, после какой
+ *    операции сделан авто-бэкап.
  */
 data class BackupCounts(
     val areas: Int,
@@ -34,6 +39,9 @@ object GsmBackupWriter {
     /** Расширение файла. */
     const val EXTENSION = "gsmbackup"
 
+    /** Значение operation по умолчанию — если не задано. */
+    const val OP_UNKNOWN = "unknown"
+
     /**
      * Записать .gsmbackup в поток.
      *
@@ -43,6 +51,9 @@ object GsmBackupWriter {
      * @param dbSchemaVersion версия схемы БД Room.
      * @param appVersion версия приложения (для диагностики).
      * @param counts счётчики для манифеста.
+     * @param operation после какой операции сделан бэкап
+     *        ("restore"/"rollback"/"clean"/"export"). По умолчанию
+     *        "unknown".
      * @param createdAt timestamp создания (мс). По умолчанию — now.
      */
     fun write(
@@ -52,6 +63,7 @@ object GsmBackupWriter {
         dbSchemaVersion: Int,
         appVersion: String,
         counts: BackupCounts,
+        operation: String = OP_UNKNOWN,
         createdAt: Long = System.currentTimeMillis()
     ) {
         val zip = ZipOutputStream(out)
@@ -61,6 +73,7 @@ object GsmBackupWriter {
             dbSchemaVersion = dbSchemaVersion,
             appVersion = appVersion,
             counts = counts,
+            operation = operation,
             createdAt = createdAt
         )
         putEntry(zip, "manifest.json", manifestJson.toByteArray(Charsets.UTF_8))
@@ -93,6 +106,7 @@ object GsmBackupWriter {
         dbSchemaVersion: Int,
         appVersion: String,
         counts: BackupCounts,
+        operation: String,
         createdAt: Long
     ): String {
         val sb = StringBuilder(256)
@@ -101,6 +115,7 @@ object GsmBackupWriter {
         sb.append("\"created_at\":").append(createdAt).append(",")
         sb.append("\"app_version\":\"").append(escapeJson(appVersion)).append("\",")
         sb.append("\"db_schema_version\":").append(dbSchemaVersion).append(",")
+        sb.append("\"operation\":\"").append(escapeJson(operation)).append("\",")
         sb.append("\"counts\":{")
         sb.append("\"areas\":").append(counts.areas).append(",")
         sb.append("\"orders\":").append(counts.orders).append(",")
