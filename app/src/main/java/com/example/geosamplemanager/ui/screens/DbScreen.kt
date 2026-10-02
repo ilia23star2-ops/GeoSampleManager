@@ -1,6 +1,5 @@
 package com.example.geosamplemanager.ui.screens
 
-import android.app.Activity
 import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -30,13 +29,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.geosamplemanager.MainActivity
+import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
-import com.example.geosamplemanager.ui.navigation.RestartRouter
 import com.example.geosamplemanager.ui.navigation.Screen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -47,14 +45,9 @@ import java.util.Locale
 
 /**
  * FIX 5.9-db-restore-v2-hotfix-2:
- *  - recreate() не сбрасывает ViewModel (rememberNavController
- *    переживает пересоздание, и ViewModel'и в NavHost остаются);
- *  - killProcess + AlarmManager — не работает на новых Android;
- *  - решение: после импорта — стартуем MainActivity заново с
- *    флагами NEW_TASK | CLEAR_TASK и закрываем текущую Activity.
- *    Это пересоздаёт весь Compose-стек: NavController, ViewModelStore,
- *    все экраны. Приложение мгновенно «открывается заново» без
- *    закрытия процесса.
+ *  - recreate() не сбрасывает ViewModel;
+ *  - killProcess + AlarmManager не работает на новых Android;
+ *  - решение: startActivity(MainActivity, NEW_TASK|CLEAR_TASK) + finish().
  *
  * FIX 5.9-db-rollback:
  *  - кнопка «Откат»;
@@ -67,16 +60,19 @@ import java.util.Locale
  *
  * FIX 5.9-db-clean:
  *  - кнопка «Очистить БД» с двойным подтверждением;
- *  - авто-бэкап pre_clean_* + перезапуск стека.
+ *  - авто-бэкап pre_clean_*.
  *
- * FIX 5.9-db-smooth-restart:
- *  - перед перезапуском сохраняем вкладку БД в RestartRouter;
- *  - после startActivity глушим анимацию перехода
- *    (overridePendingTransition(0,0)).
+ * FIX 5.9-db-soft-restart:
+ *  - вместо пересоздания Activity — app.requestRestart(route);
+ *  - MainActivity пересоберёт поддерево и обнулит ViewModelStore;
+ *  - после пересборки показываем одноразовое сообщение
+ *    «Готово. …» через app.consumeRestartMessage() — чтобы ОП
+ *    было понятно, что операция закончилась.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val context = LocalContext.current
+    val app = context.applicationContext as GeoSampleApp
     val scope = rememberCoroutineScope()
 
     val areas by viewModel.areas.collectAsState()
@@ -104,6 +100,15 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-backups-ops/2: ленивая миграция старых бэкапов.
     LaunchedEffect(Unit) {
         viewModel.migrateOldPublicBackupsIfNeeded()
+    }
+
+    // FIX 5.9-db-soft-restart: показать «Готово» после пересборки.
+    // Срабатывает один раз при появлении экрана.
+    LaunchedEffect(Unit) {
+        val doneMessage = app.consumeRestartMessage()
+        if (doneMessage != null) {
+            snackbarHostState.showSnackbar(doneMessage)
+        }
     }
 
     LaunchedEffect(message) {
@@ -166,36 +171,16 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         viewModel.consumeLastExportUri()
     }
 
-    // FIX 5.9-db-restore-v2-hotfix-2:
-    // После успешного импорта — пересоздать весь стек приложения
-    // через startActivity(MainActivity) + finish().
-    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
+    // FIX 5.9-db-soft-restart:
+    // После успешного импорта — просим приложение пересобрать
+    // поддерево. Activity НЕ пересоздаётся. Сообщение «Готово»
+    // покажется в новом поддереве.
     LaunchedEffect(restoreState) {
         when (val s = restoreState) {
             is RestoreState.Done -> {
-                snackbarHostState.showSnackbar("БД заменена. Перезапуск…")
-                delay(700)
-                val act = context as? Activity
-                if (act != null) {
-                    try {
-                        RestartRouter.scheduleRestart(context, Screen.DB.route)
-                        val intent = Intent(context, MainActivity::class.java).apply {
-                            addFlags(
-                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-                            )
-                        }
-                        context.startActivity(intent)
-                        act.overridePendingTransition(0, 0)
-                        act.finish()
-                    } catch (_: Exception) {
-                        try {
-                            android.os.Process.killProcess(
-                                android.os.Process.myPid()
-                            )
-                        } catch (_: Exception) {}
-                    }
-                }
+                app.scheduleRestartMessage("Готово. БД импортирована")
+                delay(400)
+                app.requestRestart(Screen.DB.route)
             }
             is RestoreState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
@@ -205,35 +190,13 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-rollback:
-    // После отката — та же логика перезапуска стека.
-    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
+    // FIX 5.9-db-soft-restart: после отката — то же.
     LaunchedEffect(rollbackState) {
         when (val s = rollbackState) {
             is RestoreState.Done -> {
-                snackbarHostState.showSnackbar("БД восстановлена. Перезапуск…")
-                delay(700)
-                val act = context as? Activity
-                if (act != null) {
-                    try {
-                        RestartRouter.scheduleRestart(context, Screen.DB.route)
-                        val intent = Intent(context, MainActivity::class.java).apply {
-                            addFlags(
-                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-                            )
-                        }
-                        context.startActivity(intent)
-                        act.overridePendingTransition(0, 0)
-                        act.finish()
-                    } catch (_: Exception) {
-                        try {
-                            android.os.Process.killProcess(
-                                android.os.Process.myPid()
-                            )
-                        } catch (_: Exception) {}
-                    }
-                }
+                app.scheduleRestartMessage("Готово. БД восстановлена из бэкапа")
+                delay(400)
+                app.requestRestart(Screen.DB.route)
             }
             is RestoreState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
@@ -243,35 +206,13 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-clean:
-    // После очистки — та же логика перезапуска стека.
-    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
+    // FIX 5.9-db-soft-restart: после очистки — то же.
     LaunchedEffect(cleanState) {
         when (val s = cleanState) {
             is RestoreState.Done -> {
-                snackbarHostState.showSnackbar("БД очищена. Перезапуск…")
-                delay(700)
-                val act = context as? Activity
-                if (act != null) {
-                    try {
-                        RestartRouter.scheduleRestart(context, Screen.DB.route)
-                        val intent = Intent(context, MainActivity::class.java).apply {
-                            addFlags(
-                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-                            )
-                        }
-                        context.startActivity(intent)
-                        act.overridePendingTransition(0, 0)
-                        act.finish()
-                    } catch (_: Exception) {
-                        try {
-                            android.os.Process.killProcess(
-                                android.os.Process.myPid()
-                            )
-                        } catch (_: Exception) {}
-                    }
-                }
+                app.scheduleRestartMessage("Готово. БД очищена")
+                delay(400)
+                app.requestRestart(Screen.DB.route)
             }
             is RestoreState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
