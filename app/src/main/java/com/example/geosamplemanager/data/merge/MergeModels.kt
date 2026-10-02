@@ -8,10 +8,11 @@ import com.example.geosamplemanager.data.entity.SampleImageEntity
 import java.io.File
 
 /**
- * FIX 5.9-db-merge-v2:
- * Модели для движка слияния БД.
- *
- * /5 — умные конфликты: разрешение по полям, массовые стратегии.
+ * FIX 5.9-db-merge-v2/7:
+ *  - SampleConflict получил areaName / orderNumber / wellNumber —
+ *    чтобы UI мог группировать конфликты по наряду и скважине;
+ *  - добавлены ConflictTreeNode / ConflictWellNode — модель дерева;
+ *  - MassStrategy — стратегии для массовых действий на группе.
  */
 
 data class TempDatabaseHandle(
@@ -51,14 +52,9 @@ data class OrderPlan(
 )
 
 // ================================================================
-// /5: поля пробы, по которым может быть расхождение
+// /5: поля
 // ================================================================
 
-/**
- * FIX 5.9-db-merge-v2/5:
- * Идентификатор поля пробы — используется в FieldDiff и
- * FieldResolution. Русская подпись — отдельно (label).
- */
 enum class SampleField(val label: String) {
     WEIGHT("Вес"),
     SAMPLE_TYPE("Тип пробы"),
@@ -72,13 +68,6 @@ enum class SampleField(val label: String) {
     MATERIAL_DESC("Характеристика")
 }
 
-/**
- * FIX 5.9-db-merge-v2/5:
- * Одно различающееся поле между моей пробой и пробой из архива.
- *
- * myRaw / theirRaw — сырые значения для применения (Double?, String?, Boolean?).
- * myDisplay / theirDisplay — человекочитаемые строки для UI.
- */
 data class FieldDiff(
     val field: SampleField,
     val myRaw: Any?,
@@ -87,13 +76,8 @@ data class FieldDiff(
     val theirDisplay: String
 )
 
-/** Чьё значение выбрано для конкретного поля. */
 enum class FieldOwner { MINE, THEIRS }
 
-/**
- * FIX 5.9-db-merge-v2/5:
- * Карта «поле → чьё взять». Пустая = не разрешено ничего.
- */
 data class FieldResolution(
     val map: Map<SampleField, FieldOwner> = emptyMap()
 ) {
@@ -108,24 +92,15 @@ data class FieldResolution(
     fun isFullyResolved(diffs: List<FieldDiff>): Boolean =
         diffs.all { map.containsKey(it.field) }
 
-    /**
-     * Слить два разрешения: значения из other перекрывают мои.
-     * Используется для массовых стратегий.
-     */
     fun merge(other: FieldResolution): FieldResolution =
         copy(map = map + other.map)
 
     companion object {
         val Empty = FieldResolution()
 
-        /** Все поля → чьё-то. */
         fun all(diffs: List<FieldDiff>, owner: FieldOwner): FieldResolution =
             FieldResolution(diffs.associate { it.field to owner })
 
-        /**
-         * «Заполнить пустые»: где у меня пусто → theirs;
-         * где у меня есть значение → моё.
-         */
         fun fillEmpty(diffs: List<FieldDiff>): FieldResolution {
             val m = mutableMapOf<SampleField, FieldOwner>()
             for (d in diffs) {
@@ -144,7 +119,7 @@ data class FieldResolution(
 }
 
 // ================================================================
-// /2, /5: пробы
+// /5, /7: пробы
 // ================================================================
 
 data class SampleToAdd(
@@ -153,8 +128,9 @@ data class SampleToAdd(
 )
 
 /**
- * FIX 5.9-db-merge-v2/5:
- * Конфликт пробы — различия по полям + мои/их entity.
+ * FIX 5.9-db-merge-v2/7:
+ *  - areaName / orderNumber / wellNumber — для группировки в UI.
+ *    Заполняются в planSamples (для area/order нужны myOrders/myAreas).
  */
 data class SampleConflict(
     val theirId: Long,
@@ -162,14 +138,12 @@ data class SampleConflict(
     val sampleNumber: String,
     val myEntity: SampleEntity,
     val theirEntity: SampleEntity,
-    val fieldDiffs: List<FieldDiff>
+    val fieldDiffs: List<FieldDiff>,
+    val areaName: String = "",
+    val orderNumber: String = "",
+    val wellNumber: String = ""
 )
 
-/**
- * FIX 5.9-db-merge-v2/5:
- * Идентичная проба (все поля совпадают). Не требует решения,
- * но нужна для sampleIdMap (фото/заметки).
- */
 data class SampleMatch(
     val theirId: Long,
     val myId: Long
@@ -181,12 +155,33 @@ data class SamplePlan(
     val conflicts: List<SampleConflict>,
     val skippedOrphans: Int
 ) {
-    /** Все решения разрешены? */
     fun allResolved(resolutions: Map<Long, FieldResolution>): Boolean =
         conflicts.all { c ->
             resolutions[c.theirId]?.isFullyResolved(c.fieldDiffs) == true
         }
 }
+
+// ================================================================
+// /7: дерево конфликтов
+// ================================================================
+
+data class ConflictWellNode(
+    val wellNumber: String,
+    val conflicts: List<SampleConflict>
+)
+
+data class ConflictTreeNode(
+    val areaName: String,
+    val orderNumber: String,
+    val wells: List<ConflictWellNode>
+) {
+    /** Все пробы этого наряда — для массовых действий. */
+    val allConflicts: List<SampleConflict>
+        get() = wells.flatMap { it.conflicts }
+}
+
+/** FIX 5.9-db-merge-v2/7: массовая стратегия для группы. */
+enum class MassStrategy { ALL_MINE, ALL_THEIRS, FILL_EMPTY }
 
 // ================================================================
 // /2: скважины
@@ -261,25 +256,17 @@ data class MergePreview(
 )
 
 // ================================================================
-// /4, /5: состояние wizard
+// /4: состояние wizard
 // ================================================================
 
 sealed class MergeWizardState {
     data object Idle : MergeWizardState()
     data object Loading : MergeWizardState()
     data class Preview(val preview: MergePreview) : MergeWizardState()
-
-    /**
-     * FIX 5.9-db-merge-v2/5:
-     * Шаг разбора конфликтов.
-     *  - preview: исходные данные;
-     *  - resolutions: карта уже принятых решений (their sampleId → FieldResolution).
-     */
     data class ConflictStep(
         val preview: MergePreview,
         val resolutions: Map<Long, FieldResolution>
     ) : MergeWizardState()
-
     data class Running(val message: String) : MergeWizardState()
     data class Done(val stats: MergeStats) : MergeWizardState()
     data class Error(val message: String) : MergeWizardState()

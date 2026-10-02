@@ -18,8 +18,9 @@ import java.util.UUID
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-db-merge-v2/5:
- * Умные конфликты проб: разрешение по полям, массовые стратегии.
+ * FIX 5.9-db-merge-v2/7:
+ *  - planSamples заполняет areaName / orderNumber / wellNumber;
+ *  - buildConflictTree — дерево конфликтов по наряду и скважине.
  */
 object MergeEngine {
 
@@ -178,19 +179,29 @@ object MergeEngine {
     }
 
     // ================================================================
-    // /5: пробы — три категории
+    // /5, /6, /7: пробы
     // ================================================================
 
+    /**
+     * FIX 5.9-db-merge-v2/7:
+     * @param myOrders / myAreas — для заполнения orderNumber/areaName
+     *        в SampleConflict. Если не переданы — поля пустые.
+     */
     fun planSamples(
         mySamples: List<SampleEntity>,
         theirSamples: List<SampleEntity>,
         orderIdMap: Map<Long, Long>,
-        newlyAddedOrderIds: Map<Long, Long> = emptyMap()
+        newlyAddedOrderIds: Map<Long, Long> = emptyMap(),
+        myOrders: List<OrderEntity> = emptyList(),
+        myAreas: List<AreaEntity> = emptyList()
     ): SamplePlan {
         val combined = HashMap<Long, Long>(orderIdMap)
         combined.putAll(newlyAddedOrderIds)
 
         val myByKey = mySamples.associate { (it.orderId to it.sampleNumber) to it }
+
+        val orderById: Map<Long, OrderEntity> = myOrders.associateBy { it.id }
+        val areaById: Map<Long, AreaEntity> = myAreas.associateBy { it.id }
 
         val toAdd = mutableListOf<SampleToAdd>()
         val identical = mutableListOf<SampleMatch>()
@@ -215,18 +226,63 @@ object MergeEngine {
             if (diffs.isEmpty()) {
                 identical += SampleMatch(theirId = their.id, myId = my.id)
             } else {
+                val ord = orderById[myOrderId]
+                val areaName = ord?.let { areaById[it.areaId]?.areaName } ?: ""
                 conflicts += SampleConflict(
                     theirId = their.id,
                     myId = my.id,
                     sampleNumber = their.sampleNumber,
                     myEntity = my,
                     theirEntity = their,
-                    fieldDiffs = diffs
+                    fieldDiffs = diffs,
+                    areaName = areaName,
+                    orderNumber = ord?.orderNumber ?: "",
+                    wellNumber = my.wellNumber
                 )
             }
         }
 
         return SamplePlan(toAdd, identical, conflicts, skipped)
+    }
+
+    /**
+     * FIX 5.9-db-merge-v2/7:
+     * Дерево конфликтов: Наряд → Скважина → Проба.
+     *
+     * Группировка по (areaName, orderNumber), внутри — по wellNumber.
+     * Порядок групп — по первому появлению.
+     */
+    fun buildConflictTree(conflicts: List<SampleConflict>): List<ConflictTreeNode> {
+        if (conflicts.isEmpty()) return emptyList()
+
+        data class OrderKey(val area: String, val order: String)
+
+        val orderOrder = mutableListOf<OrderKey>()
+        val byOrder = mutableMapOf<OrderKey, MutableMap<String, MutableList<SampleConflict>>>()
+
+        for (c in conflicts) {
+            val key = OrderKey(c.areaName, c.orderNumber)
+            val wellMap = byOrder.getOrPut(key) {
+                orderOrder += key
+                mutableMapOf()
+            }
+            wellMap.getOrPut(c.wellNumber) { mutableListOf() }.add(c)
+        }
+
+        return orderOrder.map { key ->
+            val wellMap = byOrder[key] ?: emptyMap()
+            val wells = wellMap.map { (well, list) ->
+                ConflictWellNode(
+                    wellNumber = well,
+                    conflicts = list
+                )
+            }
+            ConflictTreeNode(
+                areaName = key.area,
+                orderNumber = key.order,
+                wells = wells
+            )
+        }
     }
 
     fun diffFields(my: SampleEntity, their: SampleEntity): List<FieldDiff> {
@@ -250,15 +306,17 @@ object MergeEngine {
         if (my.intervalTo != their.intervalTo) list += diff(
             SampleField.INTERVAL_TO, my.intervalTo, their.intervalTo
         )
-        if (my.found != their.found) list += diff(
+
+        if (!my.found && their.found) list += diff(
             SampleField.FOUND, my.found, their.found
         )
-        if (my.postponed != their.postponed) list += diff(
+        if (!my.postponed && their.postponed) list += diff(
             SampleField.POSTPONED, my.postponed, their.postponed
         )
-        if (my.weightControl != their.weightControl) list += diff(
+        if (!my.weightControl && their.weightControl) list += diff(
             SampleField.WEIGHT_CONTROL, my.weightControl, their.weightControl
         )
+
         if ((my.materialDesc ?: "") != (their.materialDesc ?: "")) list += diff(
             SampleField.MATERIAL_DESC, my.materialDesc, their.materialDesc
         )

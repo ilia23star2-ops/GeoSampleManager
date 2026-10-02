@@ -10,8 +10,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * FIX 5.9-db-merge-v2/5:
- * Оркестратор. Резолюции — по полям (Map<theirSampleId, FieldResolution>).
+ * FIX 5.9-db-merge-v2/7:
+ * Оркестратор. planSamples получает myOrders и myAreas, чтобы
+ * SampleConflict был заполнен orderNumber/areaName.
  */
 object MergeRunner {
 
@@ -53,6 +54,7 @@ object MergeRunner {
 
         onProgress("Сливаем наряды…")
         val myOrders = repo.getAllOrders()
+        val myAreas = repo.getAreas()
         val actualOrderPlan = MergeEngine.planOrders(
             myOrders = myOrders,
             theirOrders = archive.orders,
@@ -70,7 +72,9 @@ object MergeRunner {
             mySamples = mySamples,
             theirSamples = archive.samples,
             orderIdMap = preview.orderPlan.existing,
-            newlyAddedOrderIds = newlyOrderIds
+            newlyAddedOrderIds = newlyOrderIds,
+            myOrders = myOrders,
+            myAreas = myAreas
         )
         val sampleIdMap = MergeEngine.applySamplePlan(
             repo = repo,

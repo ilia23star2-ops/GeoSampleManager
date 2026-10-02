@@ -11,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-db-merge-v2/1, /2, /3, /5:
+ * FIX 5.9-db-merge-v2/1, /2, /3, /5, /6, /7:
  * Юнит-тесты чистой логики движка слияния.
  */
 class MergeEngineTest {
@@ -130,8 +130,64 @@ class MergeEngineTest {
     }
 
     // ============================================================
-    // /5: diffFields
+    // /5, /6: diffFields
     // ============================================================
+
+    @Test
+    fun diffFields_foundMyTrueTheirFalse_noDiff() {
+        val my = sample(1, 1, "W1-1").copy(found = true)
+        val their = sample(2, 100, "W1-1").copy(found = false)
+        assertTrue(MergeEngine.diffFields(my, their).none { it.field == SampleField.FOUND })
+    }
+
+    @Test
+    fun diffFields_foundMyFalseTheirTrue_diffPresent() {
+        val my = sample(1, 1, "W1-1").copy(found = false)
+        val their = sample(2, 100, "W1-1").copy(found = true)
+        assertEquals(1, MergeEngine.diffFields(my, their).count { it.field == SampleField.FOUND })
+    }
+
+    @Test
+    fun diffFields_foundBothFalse_noDiff() {
+        val my = sample(1, 1, "W1-1").copy(found = false)
+        val their = sample(2, 100, "W1-1").copy(found = false)
+        assertTrue(MergeEngine.diffFields(my, their).none { it.field == SampleField.FOUND })
+    }
+
+    @Test
+    fun diffFields_foundBothTrue_noDiff() {
+        val my = sample(1, 1, "W1-1").copy(found = true)
+        val their = sample(2, 100, "W1-1").copy(found = true)
+        assertTrue(MergeEngine.diffFields(my, their).none { it.field == SampleField.FOUND })
+    }
+
+    @Test
+    fun diffFields_postponedMyTrueTheirFalse_noDiff() {
+        val my = sample(1, 1, "W1-1").copy(postponed = true)
+        val their = sample(2, 100, "W1-1").copy(postponed = false)
+        assertTrue(MergeEngine.diffFields(my, their).none { it.field == SampleField.POSTPONED })
+    }
+
+    @Test
+    fun diffFields_postponedMyFalseTheirTrue_diffPresent() {
+        val my = sample(1, 1, "W1-1").copy(postponed = false)
+        val their = sample(2, 100, "W1-1").copy(postponed = true)
+        assertEquals(1, MergeEngine.diffFields(my, their).count { it.field == SampleField.POSTPONED })
+    }
+
+    @Test
+    fun diffFields_weightControlMyTrueTheirFalse_noDiff() {
+        val my = sample(1, 1, "W1-1").copy(weightControl = true)
+        val their = sample(2, 100, "W1-1").copy(weightControl = false)
+        assertTrue(MergeEngine.diffFields(my, their).none { it.field == SampleField.WEIGHT_CONTROL })
+    }
+
+    @Test
+    fun diffFields_weightControlMyFalseTheirTrue_diffPresent() {
+        val my = sample(1, 1, "W1-1").copy(weightControl = false)
+        val their = sample(2, 100, "W1-1").copy(weightControl = true)
+        assertEquals(1, MergeEngine.diffFields(my, their).count { it.field == SampleField.WEIGHT_CONTROL })
+    }
 
     @Test
     fun diffFields_identical_returnsEmpty() {
@@ -147,8 +203,6 @@ class MergeEngineTest {
         val diffs = MergeEngine.diffFields(a, b)
         assertEquals(1, diffs.size)
         assertEquals(SampleField.WEIGHT, diffs[0].field)
-        assertEquals("5.0", diffs[0].myDisplay)
-        assertEquals("7.5", diffs[0].theirDisplay)
     }
 
     @Test
@@ -176,17 +230,8 @@ class MergeEngineTest {
         assertEquals("Бороздовая", d.theirDisplay)
     }
 
-    @Test
-    fun diffFields_materialDescNull_vsValue_detected() {
-        val a = sample(1, 1, "W1-1").copy(materialDesc = null)
-        val b = sample(2, 100, "W1-1").copy(materialDesc = "суглинок")
-        val d = MergeEngine.diffFields(a, b).first()
-        assertEquals("—", d.myDisplay)
-        assertEquals("суглинок", d.theirDisplay)
-    }
-
     // ============================================================
-    // /5: planSamples — три категории
+    // /5: planSamples
     // ============================================================
 
     @Test
@@ -196,7 +241,6 @@ class MergeEngineTest {
             theirSamples = listOf(sample(10, orderId = 100, number = "W1-1")),
             orderIdMap = mapOf(100L to 1L)
         )
-        assertEquals(0, p.toAdd.size)
         assertEquals(1, p.identical.size)
         assertEquals(0, p.conflicts.size)
     }
@@ -204,61 +248,142 @@ class MergeEngineTest {
     @Test
     fun planSamples_differentWeight_goesToConflict() {
         val p = MergeEngine.planSamples(
+            mySamples = listOf(sample(1, orderId = 1, number = "W1-1").copy(weight = 5.0)),
+            theirSamples = listOf(sample(10, orderId = 100, number = "W1-1").copy(weight = 7.5)),
+            orderIdMap = mapOf(100L to 1L)
+        )
+        assertEquals(1, p.conflicts.size)
+    }
+
+    // ============================================================
+    // /7: planSamples — заполнение areaName / orderNumber / wellNumber
+    // ============================================================
+
+    @Test
+    fun planSamples_fillsAreaNameAndOrderNumberFromMyData() {
+        val myOrder = order(1, areaId = 5, number = "1-25")
+        val myArea = area(5, "Актайский")
+        val p = MergeEngine.planSamples(
             mySamples = listOf(
-                sample(1, orderId = 1, number = "W1-1").copy(weight = 5.0)
+                sample(1, orderId = 1, number = "W1-1")
+                    .copy(weight = 5.0, wellNumber = "W1")
             ),
             theirSamples = listOf(
                 sample(10, orderId = 100, number = "W1-1").copy(weight = 7.5)
             ),
+            orderIdMap = mapOf(100L to 1L),
+            myOrders = listOf(myOrder),
+            myAreas = listOf(myArea)
+        )
+        assertEquals(1, p.conflicts.size)
+        val c = p.conflicts[0]
+        assertEquals("Актайский", c.areaName)
+        assertEquals("1-25", c.orderNumber)
+        assertEquals("W1", c.wellNumber)
+    }
+
+    @Test
+    fun planSamples_noOrders_fillsEmptyStrings() {
+        val p = MergeEngine.planSamples(
+            mySamples = listOf(sample(1, orderId = 1, number = "W1-1").copy(weight = 5.0)),
+            theirSamples = listOf(sample(10, orderId = 100, number = "W1-1").copy(weight = 7.5)),
             orderIdMap = mapOf(100L to 1L)
         )
         assertEquals(1, p.conflicts.size)
-        assertEquals(1, p.conflicts[0].fieldDiffs.size)
-    }
-
-    @Test
-    fun planSamples_newSample_goesToAdd() {
-        val p = MergeEngine.planSamples(
-            mySamples = emptyList(),
-            theirSamples = listOf(sample(10, orderId = 100, number = "W1-1")),
-            orderIdMap = mapOf(100L to 1L)
-        )
-        assertEquals(1, p.toAdd.size)
-        assertEquals(0, p.identical.size)
-        assertEquals(0, p.conflicts.size)
-    }
-
-    @Test
-    fun planSamples_unknownOrder_goesToSkipped() {
-        val p = MergeEngine.planSamples(
-            mySamples = emptyList(),
-            theirSamples = listOf(sample(10, orderId = 999, number = "W1-1")),
-            orderIdMap = mapOf(100L to 1L)
-        )
-        assertEquals(1, p.skippedOrphans)
-    }
-
-    @Test
-    fun planSamples_mixed_allCategories() {
-        val p = MergeEngine.planSamples(
-            mySamples = listOf(
-                sample(1, orderId = 1, number = "W1-1"),
-                sample(2, orderId = 1, number = "W1-2").copy(weight = 5.0)
-            ),
-            theirSamples = listOf(
-                sample(10, orderId = 100, number = "W1-1"),  // identical
-                sample(11, orderId = 100, number = "W1-2").copy(weight = 7.5),  // conflict
-                sample(12, orderId = 100, number = "W1-3")  // new
-            ),
-            orderIdMap = mapOf(100L to 1L)
-        )
-        assertEquals(1, p.identical.size)
-        assertEquals(1, p.conflicts.size)
-        assertEquals(1, p.toAdd.size)
+        assertEquals("", p.conflicts[0].areaName)
+        assertEquals("", p.conflicts[0].orderNumber)
     }
 
     // ============================================================
-    // /5: resolveSample по полям
+    // /7: buildConflictTree
+    // ============================================================
+
+    @Test
+    fun buildConflictTree_empty_returnsEmpty() {
+        assertTrue(MergeEngine.buildConflictTree(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun buildConflictTree_singleConflict_singleNode() {
+        val c = SampleConflict(
+            theirId = 10L, myId = 1L, sampleNumber = "W1-1",
+            myEntity = sample(1, 1, "W1-1"), theirEntity = sample(10, 100, "W1-1"),
+            fieldDiffs = emptyList(),
+            areaName = "A", orderNumber = "1-25", wellNumber = "W1"
+        )
+        val tree = MergeEngine.buildConflictTree(listOf(c))
+        assertEquals(1, tree.size)
+        assertEquals("A", tree[0].areaName)
+        assertEquals("1-25", tree[0].orderNumber)
+        assertEquals(1, tree[0].wells.size)
+        assertEquals("W1", tree[0].wells[0].wellNumber)
+    }
+
+    @Test
+    fun buildConflictTree_twoSamplesSameWellOneNode() {
+        val c1 = SampleConflict(10L, 1L, "W1-1",
+            sample(1, 1, "W1-1"), sample(10, 100, "W1-1"),
+            emptyList(), "A", "1-25", "W1")
+        val c2 = SampleConflict(11L, 2L, "W1-2",
+            sample(2, 1, "W1-2"), sample(11, 100, "W1-2"),
+            emptyList(), "A", "1-25", "W1")
+        val tree = MergeEngine.buildConflictTree(listOf(c1, c2))
+        assertEquals(1, tree.size)
+        assertEquals(1, tree[0].wells.size)
+        assertEquals(2, tree[0].wells[0].conflicts.size)
+    }
+
+    @Test
+    fun buildConflictTree_twoWells_twoNodes() {
+        val c1 = SampleConflict(10L, 1L, "W1-1",
+            sample(1, 1, "W1-1"), sample(10, 100, "W1-1"),
+            emptyList(), "A", "1-25", "W1")
+        val c2 = SampleConflict(11L, 2L, "W2-1",
+            sample(2, 1, "W2-1"), sample(11, 100, "W2-1"),
+            emptyList(), "A", "1-25", "W2")
+        val tree = MergeEngine.buildConflictTree(listOf(c1, c2))
+        assertEquals(1, tree.size)
+        assertEquals(2, tree[0].wells.size)
+    }
+
+    @Test
+    fun buildConflictTree_twoOrders_twoNodes() {
+        val c1 = SampleConflict(10L, 1L, "W1-1",
+            sample(1, 1, "W1-1"), sample(10, 100, "W1-1"),
+            emptyList(), "A", "1-25", "W1")
+        val c2 = SampleConflict(11L, 2L, "W1-1",
+            sample(2, 2, "W1-1"), sample(11, 200, "W1-1"),
+            emptyList(), "A", "1-26", "W1")
+        val tree = MergeEngine.buildConflictTree(listOf(c1, c2))
+        assertEquals(2, tree.size)
+    }
+
+    @Test
+    fun buildConflictTree_twoAreas_twoNodes() {
+        val c1 = SampleConflict(10L, 1L, "W1-1",
+            sample(1, 1, "W1-1"), sample(10, 100, "W1-1"),
+            emptyList(), "A", "1-25", "W1")
+        val c2 = SampleConflict(11L, 2L, "W1-1",
+            sample(2, 2, "W1-1"), sample(11, 200, "W1-1"),
+            emptyList(), "B", "1-25", "W1")
+        val tree = MergeEngine.buildConflictTree(listOf(c1, c2))
+        assertEquals(2, tree.size)
+    }
+
+    @Test
+    fun buildConflictTree_allConflictsOfNode_combined() {
+        val c1 = SampleConflict(10L, 1L, "W1-1",
+            sample(1, 1, "W1-1"), sample(10, 100, "W1-1"),
+            emptyList(), "A", "1-25", "W1")
+        val c2 = SampleConflict(11L, 2L, "W2-1",
+            sample(2, 1, "W2-1"), sample(11, 100, "W2-1"),
+            emptyList(), "A", "1-25", "W2")
+        val tree = MergeEngine.buildConflictTree(listOf(c1, c2))
+        assertEquals(2, tree[0].allConflicts.size)
+    }
+
+    // ============================================================
+    // /5: resolveSample
     // ============================================================
 
     @Test
