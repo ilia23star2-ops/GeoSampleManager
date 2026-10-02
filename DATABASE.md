@@ -1,6 +1,6 @@
 # База данных GeoSample Manager
 
-> Room (SQLite). Схема, путь данных, что может быть `null`.
+> Room (SQLite). Схема, путь данных, что может быть `null`, бэкапы.
 >
 > **Текущая версия БД: 2.**
 
@@ -78,8 +78,7 @@
 
 **Одна заметка на пробу.** Фото хранятся отдельно.
 
-⚠️ **В v1 было поле `image_path`** — в v2 удалено (миграция пересоздала
-таблицу).
+⚠️ **В v1 было поле `image_path`** — в v2 удалено.
 
 ### 6. `sample_images` — фото пробы (**новая в v2**)
 
@@ -111,41 +110,31 @@
 1. **Чтение** — `XlsxReader.readSheet` → `SheetData`.
 2. **Анализ** — `ExcelAnalyzer.analyzeSheet` → `SheetAnalysis?`.
 3. **Сборка** — `ExcelImporter.buildOrder`:
-    - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
-    - `SampleFilter.classifyTypeAndStatus` → `(sampleType, status)`.
-    - `AreaResolver.resolve` → участок.
-    - `OrderNumberExtractor.extract` → номер наряда.
+   - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
+   - `SampleFilter.classifyTypeAndStatus`.
+   - `AreaResolver.resolve`, `OrderNumberExtractor.extract`.
 4. **Предпросмотр** — диалог.
 5. **Запись** — `AddViewModel.doImportToDb`:
-    - Конфликт → диалог «Добавить / Пропустить / Заменить».
-    - `getAreaId` / `addArea`, `getOrderId` / `addOrder`.
-    - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
-    - Уникальные `wellNumber` → `order_wells`.
+   - Конфликт → диалог «Добавить / Пропустить / Заменить».
+   - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
+   - Уникальные `wellNumber` → `order_wells`.
 
 ---
 
 ## Путь данных: заметки и фото (v2)
 
 ### Заметка
-1. Пользователь открывает `NotePhotoDialog` из строки пробы.
-2. `ReconciliationViewModel.loadNoteWithPhotos(sampleId)` → `(Note, [Photos])`.
-3. Ввод текста → «Сохранить» → `saveNoteText(sampleId, text)`:
-    - пустой текст → `repo.deleteNote(sampleId)`;
-    - иначе → `repo.upsertNote(note)`;
-    - потом `repo.syncHasNoteAndPhoto(sampleId)`.
+1. `NotePhotoDialog` из строки пробы.
+2. `loadNoteWithPhotos(sampleId)`.
+3. «Сохранить» → `saveNoteText` → `upsertNote` или `deleteNote` →
+   `syncHasNoteAndPhoto`.
 
 ### Фото
-1. «Сделать фото» → `TakePicture` → временный файл в `filesDir/sample_photos/`.
-2. «Из галереи» → `PickVisualMedia` → `Uri`.
-3. `PhotoStorage.compressAndSave` / `compressAndSaveFromFile`:
-    - декодирование, скейл до 1024 px, JPEG 80%, сохранение под финальным
-      именем в `filesDir/sample_photos/`.
-4. `repo.addPhoto(sampleId, path)` — запись в `sample_images`,
+1. «Сделать фото» / «Из галереи».
+2. `PhotoStorage.compressAndSave` — скейл до 1024 px, JPEG 80%.
+3. `repo.addPhoto(sampleId, path)` — запись в `sample_images`,
    обновление `has_photo`.
-5. Удаление: `repo.deletePhoto(imageId, sampleId)`:
-    - удаление записи из БД,
-    - удаление файла с диска,
-    - пересчёт `has_photo`.
+4. Удаление: `repo.deletePhoto` — БД + файл + пересчёт `has_photo`.
 
 ---
 
@@ -186,48 +175,129 @@
 `getPhotosForSample`, `getImagePathsForSample`, `addPhoto`, `deletePhoto`,
 `getNoteWithPhotos`, `syncHasNoteAndPhoto`.
 
----
-
-## Особенности
-
-1. **Дубликаты номеров** проб игнорируются.
-2. **«Заменить»** при импорте — удаляет все пробы наряда и скважины.
-3. **Скважины наряда** хранятся отдельно от проб.
-4. **Сортировка** — по `serial_number`.
-5. **Один наряд = один участок.**
-6. **Файлы фото** лежат в `filesDir/sample_photos/`, БД хранит только путь.
-7. **FK CASCADE чистит только БД.** Файлы фото удаляются вручную в
-   `DatabaseRepository` (`clearOrder`, `deleteSampleWithRenumber`,
-   `deletePhoto`).
+**Бэкапы и восстановление:**
+`checkpointWal`, `getDatabaseFile`, `getPhotosDir`,
+`getRollbackBackupsDir`, `getDbInfo`, `clearOrder`, `clearAllData`.
 
 ---
 
-## Что НЕ хранится в БД
+## Бэкапы и авто-бэкапы
 
-- Лист Excel, номер строки, сырые заголовки.
-- Дата отбора, примечания из Excel.
-- Настройки холостых и шага ВК по наряду (живут в `ReconciliationState`).
+### Формат `.gsmbackup`
 
----
+Zip-архив:
+- `manifest.json` — метаданные.
+- `geosamples.db` — сама БД (SQLite).
+- `sample_photos/` — папка с фото.
 
-## История миграций
+### `manifest.json`
 
-### v1 → v2 (этап 5.5.1, закрыт)
+```json
+{
+  "format_version": 1,
+  "created_at": 1727800000000,
+  "app_version": "1.0",
+  "db_schema_version": 2,
+  "operation": "restore",
+  "counts": {
+    "areas": 1, "orders": 2, "samples": 30,
+    "photos": 3, "notes": 1
+  }
+}
+format_version — версия формата. Несовместимая — импорт блокируется.
 
-**Причина:** заметки и фото.
+db_schema_version — версия схемы. Несовпадение — предупреждение.
 
-**Изменения:**
-1. `samples`: `ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0`.
-2. `sample_notes`: пересоздана без `image_path`.
-3. Создана `sample_images` + индекс по `sample_id`.
+operation — restore / rollback / clean / export / unknown.
 
-**Где:**
-`AppDatabase.kt` → `MIGRATION_1_2`, подключена через
-`.addMigrations(MIGRATION_1_2)`.
+Структура папок в Загрузках
+text
+Загрузки/GeoSampleManager/
+  pre_restore/    — авто-бэкапы перед импортом
+  pre_rollback/   — авто-бэкапы перед откатом
+  pre_clean/      — авто-бэкапы перед очисткой
+  exports/        — пользовательские экспорты
+Приватно те же файлы (кроме exports/) лежат в
+filesDir/db_backups/.
 
-### Будущие миграции (запланированы)
+Имя файла
+Авто-бэкап: pre_<operation>_YYYYMMDD_HHmm.gsmbackup.
 
-- `number_in_well` в `samples` — ТД-3.
-- `is_import_error` в `samples` — ТД-4.
-- Настройки холостых в `OrderEntity` — ТД-5.
-- Шаг ВК в `OrderEntity` — ТД-6.
+Пользовательский экспорт: <имя>_YYYYMMDD_HHmm.gsmbackup.
+
+Ротация
+Держим 5 последних на каждую операцию. Раздельно для приватных
+и публичных. Применяется:
+
+после импорта (pre_restore);
+
+после отката (pre_rollback);
+
+после очистки (pre_clean);
+
+при открытии диалога «Откат» (публичные, вручную).
+
+Импорт
+DbImportPickerDialog показывает только файлы из exports/ +
+SAF-выбор. Авто-бэкапы pre_* импортируются только через диалог
+«Откат».
+
+Откат
+DbRollbackDialog объединяет приватные и публичные pre_*.
+Дедупликация по имени файла, приоритет приватного. Метка источника
+в строке: «Внутренний» / «Загрузки».
+
+Авто-бэкап перед заменой
+Перед импортом, откатом, очисткой всегда создаётся авто-бэкап
+текущего состояния. Если что-то пойдёт не так — есть точка возврата.
+
+Особенности
+Дубликаты номеров проб игнорируются.
+
+«Заменить» при импорте — удаляет все пробы наряда и скважины.
+
+Скважины наряда хранятся отдельно от проб.
+
+Сортировка — по serial_number.
+
+Один наряд = один участок.
+
+Файлы фото лежат в filesDir/sample_photos/, БД хранит
+только путь.
+
+FK CASCADE чистит только БД. Файлы фото удаляются вручную
+в DatabaseRepository.
+
+.gsmbackup — zip-архив. Открывается любым архиватором.
+
+Что НЕ хранится в БД
+Лист Excel, номер строки, сырые заголовки.
+
+Дата отбора, примечания из Excel.
+
+Настройки холостых и шага ВК по наряду (живут в ReconciliationState).
+
+История миграций
+v1 → v2 (этап 5.5.1, закрыт)
+Причина: заметки и фото.
+
+Изменения:
+
+samples: ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0.
+
+sample_notes: пересоздана без image_path.
+
+Создана sample_images + индекс по sample_id.
+
+Где: AppDatabase.kt → MIGRATION_1_2.
+
+Будущие миграции (запланированы)
+number_in_well в samples — ТД-3.
+
+is_import_error в samples — ТД-4.
+
+Настройки холостых в OrderEntity — ТД-5.
+
+Шаг ВК в OrderEntity — ТД-6.
+
+operation_log — серия db-logs (миграция 2→3).

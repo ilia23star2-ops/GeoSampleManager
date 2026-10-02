@@ -9,15 +9,15 @@
 
 **Тестируем критичное, что легко сломать молча.**
 
-Не всё подряд. Только:
 - Парсеры (Excel, голос, числа, запросы).
 - Поиск (уровни `UnifiedSearch`, fuzzy).
-- Доменные решения (`MarkDecision`, `analyzeMark`, `VoiceMarkOrdinalFallback`).
+- Доменные решения (`MarkDecision`, `analyzeMark`).
 - Маппинг результатов (`ResponseMapper`).
 - Логика undo/redo.
 - Отчёты (XLSX, HTML).
 - Чистые функции вкладки Редактирование.
-- Чистая логика БД-бэкапов (`RollbackBackups`).
+- Чистая логика БД-бэкапов (`RollbackBackups`, `PublicBackupsLister`,
+  `BackupManifest`, `CleanConfirmState`).
 - Миграции БД.
 
 UI не тестируем — проверяем руками. I/O, zip, БД — тоже
@@ -31,26 +31,24 @@ io/zip/состояние Activity — device-check.
 
 ## Что уже есть
 
-Тесты в `app/src/test/java/com/example/geosamplemanager/`.
-
 ### `data/voice/`
 
 | Файл | Что проверяет | Тестов |
 |---|---|---|
-| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124, «тысяча пятьсот шестьдесят два» → 1562 | 12 |
+| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124 | 12 |
 | `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV | 7 |
-| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)`, «снять первую» → `ClearOrdinal(1)` | 12 |
-| `WeightVoiceParserTest.kt` | «два и шесть» → 2.6, «полтора» → 1.5 | 19 |
+| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)` | 12 |
+| `WeightVoiceParserTest.kt` | «два и шесть» → 2.6 | 19 |
 | `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy | 18 |
 | `AnswerStateTest.kt` | `AnswerState` из `AnswerReason` | 22 |
-| `VoiceCommandParserFindTest.kt` | «найди X» → `Find(X)`, «найди» → `Find(null)` | 8 |
-| `VoiceCommandParserPausedTest.kt` | Состояние PAUSED | 6 |
-| `VoiceCommandParserPin3Test.kt` | pin: «дальше», «следующая X», вес «X сотни» | 10 |
-| `VoiceCommandParserPin4Test.kt` | pin: склейка числительных, fallback 14↔4 | 7 |
+| `VoiceCommandParserFindTest.kt` | «найди X» | 8 |
+| `VoiceCommandParserPausedTest.kt` | PAUSED | 6 |
+| `VoiceCommandParserPin3Test.kt` | pin: «дальше», «следующая X» | 10 |
+| `VoiceCommandParserPin4Test.kt` | pin: склейка числительных | 7 |
 | `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED` | 8 |
-| `VoiceCommandParserQueueTest.kt` | Очередь: «дальше» → `NextInQueue` | 6 |
-| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть» и т.п. | 17 |
-| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4, 400→4; 1..3 → null | 27 |
+| `VoiceCommandParserQueueTest.kt` | Очередь | 6 |
+| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть» | 17 |
+| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4 | 27 |
 | `VoiceMarkersTest.kt` | Маркеры, отложение, SORT+pin | 17 |
 | `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman` | 19 |
 
@@ -58,13 +56,16 @@ io/zip/состояние Activity — device-check.
 
 | Файл | Что проверяет | Тестов |
 |---|---|---|
-| `RollbackBackupsTest.kt` | Парсер имени `pre_restore_*`, фильтр, сортировка, ротация | 12 |
+| `RollbackBackupsTest.kt` | Парсер имени, фильтр, сортировка, ротация, merge, fromPublic | 30 |
+| `PublicBackupsListerTest.kt` | `extractSubDir` (RELATIVE_PATH → подпапка) | 12 |
+| `PublicBackupsMigratorTest.kt` | `subdirFor` (имя файла → подпапка) | 10 |
+| `BackupManifestTest.kt` | Парсер `manifest.json`, operation, обратная совместимость | 6 |
 
 ### `data/reconciliation/`
 
 | Файл | Что проверяет | Тестов |
 |---|---|---|
-| `MarkDecisionTest.kt` | `analyzeMark`: уже отмечена, ошибка, отложена, ВК, холостая | 27 |
+| `MarkDecisionTest.kt` | `analyzeMark` | 27 |
 
 ### `data/report/`
 
@@ -86,11 +87,12 @@ io/zip/состояние Activity — device-check.
 | `EditViewModelTest.kt` | `buildEditTree` | 17 |
 | `EditScreenTreeItemsTest.kt` | `buildTreeItems` | 8 |
 | `EditSearchFilterTest.kt` | `applyEditFilters` | 18 |
-| `EditAddSampleTest.kt` | `planInsertPosition`, `parseSuffixNumber` и др. | 21 |
-| `EditMultiselectTest.kt` | `applyMultiselectToggle`, `computeSelectionLabel` | 13 |
+| `EditAddSampleTest.kt` | `planInsertPosition` и др. | 21 |
+| `EditMultiselectTest.kt` | `applyMultiselectToggle` | 13 |
 | `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
+| `CleanConfirmStateTest.kt` | `CleanConfirmState` | 6 |
 
-**Всего: ~382 теста.** Все зелёные.
+**Всего: ~408 тестов.** Все зелёные.
 
 ---
 
@@ -107,12 +109,6 @@ io/zip/состояние Activity — device-check.
 | `SearchServiceTest.kt` | Мок `VoiceSampleSource` |
 | `VoiceSessionStateTest.kt` | `VoiceSession.state` — все переходы |
 
-### Приоритет 2
-
-| Файл | Что проверять |
-|---|---|
-| `VoiceGrammarStateTest.kt` | Размер словаря в состояниях ГП |
-
 ### Приоритет 3
 
 | Файл | Что проверять |
@@ -120,11 +116,6 @@ io/zip/состояние Activity — device-check.
 | `AppDatabaseTest.kt` | Миграции БД (version 1 → 2). Только на устройстве. |
 | `GsmBackupWriterTest.kt` | Запись `.gsmbackup` — манифест, структура zip. |
 | `GsmBackupReaderTest.kt` | Чтение манифеста из архива. |
-
-**Заметка:** для БД-пачек (backup, restore) тесты не писались —
-всё покрыто device-check. С `db-rollback` начали покрывать
-чистую логику: `RollbackBackupsTest`. Io/zip/замена файлов
-остаются под device-check.
 
 ---
 
@@ -134,10 +125,11 @@ io/zip/состояние Activity — device-check.
 - **TTS** — произношение, кулдаун. Только device-check.
 - **Compose UI** — отдельная тема, не сейчас.
 - **Реальная БД** — только миграции.
-- **`ReconciliationViewModel`** целиком — связан с Application, Vosk, БД.
-- **`EditViewModel`** целиком — связан с Application и Room.
+- **`ReconciliationViewModel`** целиком.
+- **`EditViewModel`** целиком.
 - **`DbViewModel`** — io, состояние Activity. Device-check.
 - **Backup/restore** — io + zip + замена файлов. Device-check.
+- **MediaStore** — реальные запросы. Device-check.
 
 ---
 
@@ -162,12 +154,10 @@ CI (`.github/workflows/build.yml`):
 
 ### Вручную (Actions)
 
-1. Actions → **Build & Test**.
-2. **Run workflow**.
-3. Ветка.
-4. ✅ `Run unit tests`.
-5. ⬜ `Build Debug APK`.
-6. **Run workflow**.
+1. Actions → **Build & Test** → **Run workflow**.
+2. Ветка.
+3. ✅ `Run unit tests`.
+4. ⬜ `Build Debug APK`.
 
 Артефакты:
 - `test-report` — HTML.
@@ -183,7 +173,7 @@ CI (`.github/workflows/build.yml`):
 4. **Не тестировать UI.**
 5. **Не тестировать БД целиком.** Только миграции.
 6. **Тест должен проходить за <100 мс.**
-7. **Комментарии в тестах — на русском.** Имена — латиница.
+7. **Комментарии в тестах — на русском.**
 
 ---
 
@@ -194,24 +184,31 @@ CI (`.github/workflows/build.yml`):
 3. Если тест прав, а код неправ — откатить правку.
 4. Если тест устарел — обновить с пояснением.
 
+**Замечание:** `android.net.Uri.parse()` в JVM-тестах возвращает
+`null` (`returnDefaultValues = true`). Если модель зависит от
+Android — тест упадёт. Решение: не тащить `Uri` в data-модели,
+хранить строкой (`PublicBackup.uri`, `RollbackBackup.publicUri`).
+
 ---
 
 ## Приоритеты
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыто: Редактирование. В работе: БД (тесты на чистую логику + device-check) |
+| 🔴 Сейчас | Закрыто: Редактирование, большая часть БД |
 | 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
-| 🟢 Потом | `AppDatabaseTest`, `ReconciliationStateTest`, `GsmBackup*Test` |
+| 🟢 Потом | `AppDatabaseTest`, `GsmBackup*Test` |
 
 ---
 
 ## Долг — сводка
 
-**Сделано (серия `e4`):** 3 файла, 31 тест + 8 отдельных файлов.
-**Сделано (5.9 Статистика):** 5 файлов XLSX, ~106 тестов + HTML, 43.
+**Сделано (серия `e4`):** ~370 тестов.
+**Сделано (5.9 Статистика):** XLSX, ~106 тестов + HTML, 43.
 **Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
-**Сделано (5.9 БД):** 1 файл, 12 тестов (`RollbackBackupsTest`).
+**Сделано (5.9 БД):** 4 файла, ~58 тестов.
+**Удалён:** `RestartRouterTest.kt` (7 тестов) — вместе с
+`RestartRouter` после `db-soft-restart`.
 
 **Осталось:**
 - `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.

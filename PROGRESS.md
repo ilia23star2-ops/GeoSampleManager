@@ -2,7 +2,7 @@
 
 ## 5.9 серия — допиливание вкладок
 
-**Дата:** 2026-09-29 … 2026-10-01
+**Дата:** 2026-09-29 … 2026-10-02
 **Ветка:** `feature/5.9-full-project`
 **Контекст:** после релизной серии 5.8.11 — планомерное закрытие
 всех вкладок, кроме сверки. Закрыты: Статистика, Редактирование.
@@ -10,17 +10,19 @@
 
 ### Вкладка «БД» — в работе
 
-**Дата:** 2026-10-01
+**Дата:** 2026-10-01 … 2026-10-02
 **Пачки:** `db-style`, `db-info`, `db-backup-v2`, `db-backup-fix`,
-`db-restore-v2` (с 2 hotfix), `db-rollback`.
+`db-restore-v2` (с 2 hotfix), `db-rollback`, `db-clean`,
+`db-backups-ops` (2 подзахода), `db-smooth-restart`, `db-soft-restart`,
+`db-import-picker` (с фиксом), `db-rollback-public` (с фиксом).
 
 **Что было:** вкладка БД — просмотр участков/нарядов/проб,
 добавление участков и нарядов, удаление, простой бэкап файла `.db`
 без фото. `Toast` вместо Snackbar. Копирование `.db` без
 `wal_checkpoint` — потенциально неконсистентная копия.
 
-**Что стало:** полноценный менеджер БД с экспортом/импортом,
-инфо-панелью, авто-бэкапами, откатом.
+**Что стало:** полноценный менеджер БД — экспорт/импорт, инфо-панель,
+авто-бэкапы с ротацией, откат, очистка, бесшовный перезапуск стека.
 
 #### `db-style` — стилевые правки
 
@@ -80,58 +82,137 @@
 - `DbRestoreDialog` — превью: имя файла, дата, версия схемы, счётчики.
   Проверки: `format_version = 1` (блокирует), `db_schema_version = 2`
   (предупреждает).
-- `DbViewModel.restoreFromUri`:
-  1. Авто-бэкап текущей БД (публично + приватно).
-  2. `AppDatabase.closeAndReset()`.
-  3. Удаление `.db`, `.db-wal`, `.db-shm`.
-  4. Очистка `sample_photos/`.
-  5. Распаковка нового `.db` + фото.
-  6. `GeoSampleApp.resetRepository()`.
+- `DbViewModel.restoreFromUri` — авто-бэкап → закрытие БД → удаление
+  `.db`/`-wal`/`-shm` → очистка фото → распаковка → resetRepository.
 - `AppDatabase.closeAndReset()` — новый метод.
 - `GeoSampleApp.resetRepository()` — новый метод.
 - `RestoreState` — sealed class (Idle / InProgress / Done / Error).
 - Overlay с прогрессом на время импорта.
 - Кнопка «Импорт» в шапке БД.
 
-**Hotfix 1:** `activity.recreate()` не сбрасывает ViewModel
-(переживает реконфигурацию). Заменено на `killProcess` + `AlarmManager`.
+**Hotfix 1:** `activity.recreate()` не сбрасывает ViewModel.
+Заменено на `killProcess` + `AlarmManager`.
 
 **Hotfix 2:** `killProcess` + `AlarmManager` не работают на новых
 Android. Финальное решение — `startActivity(MainActivity,
-NEW_TASK|CLEAR_TASK)` + `finish()`. Полный сброс Compose-стека:
-NavController, ViewModelStore, все экраны — без закрытия процесса.
+NEW_TASK|CLEAR_TASK)` + `finish()`.
 
 **Device-check ✅** (01.10.2026): экспорт + импорт + пересоздание
-стека работают, данные восстанавливаются, авто-бэкап появляется в
-Загрузках.
+стека работают.
 
 #### `db-rollback` — откат к авто-бэкапу
 
-- Кнопка «Откатиться к авто-бэкапу» на вкладке БД.
+- Кнопка «Откатиться к авто-бэкапу» (позже переименована в «Откат»).
 - `RollbackBackups` — чистая логика: парсер имени
-  `pre_restore_YYYYMMDD_HHmm.gsmbackup`, фильтр по имени и типу,
-  сортировка по убыванию даты, ротация (`MAX_KEEP = 5`).
-- `GsmBackupReader` — перегрузки для `File` (чтение из приватной
-  папки без ContentResolver). Общая логика вынесена в
-  `readManifestFromStream` / `extractFromStream`.
-- `DatabaseRepository.getRollbackBackupsDir()` — путь к
-  `filesDir/db_backups/`.
-- `DbViewModel`: `loadRollbackBackups`, `rollbackFromInternal`,
-  общий метод `performReplacement` для import/rollback
-  (с префиксом авто-бэкапа и лямбдой extract).
-- `DbRollbackDialog` — список точек отката (дата, размер,
-  счётчики из манифеста).
-- `DbRollbackConfirmDialog` — двойное подтверждение (показ
-  содержимого + предупреждение о замене).
-- Авто-бэкап `pre_rollback_*` перед откатом (приватно +
-  публично).
+  `pre_restore_YYYYMMDD_HHmm.gsmbackup`, фильтр, сортировка, ротация.
+- `GsmBackupReader` — перегрузки для `File` (без ContentResolver).
+- `DatabaseRepository.getRollbackBackupsDir()` — `filesDir/db_backups/`.
+- `DbViewModel.loadRollbackBackups`, `rollbackFromInternal`, общий
+  метод `performReplacement` для import/rollback.
+- `DbRollbackDialog` — список точек отката.
+- `DbRollbackConfirmDialog` — двойное подтверждение.
+- Авто-бэкап `pre_rollback_*` перед откатом.
 - Ротация `pre_restore_*` после успешной замены (5 последних).
-- SAF-выбор внешнего файла — **убран** (упрощение, меньше
-  путаницы с папкой Загрузки).
 - Тесты: `RollbackBackupsTest` — 12 тестов.
 
-**Device-check ✅** (02.10.2026): список бэкапов, откат,
-авто-бэкап перед откатом, ротация — все сценарии прошли.
+**Device-check ✅** (02.10.2026).
+
+#### `db-backups-ops` — универсальная инфраструктура авто-бэкапов
+
+**Подзаход /1 — operation + универсальная ротация.**
+
+- `GsmBackupWriter` — параметр `operation` в `write()`, поле в манифест.
+- `GsmBackupReader.BackupManifest` — поле `operation` (`optString`).
+- `RollbackBackups` — поддержка трёх префиксов (`pre_restore_`,
+  `pre_rollback_`, `pre_clean_`); `RollbackBackup.operation`;
+  `rotateByPrefix` — ротация отдельно по каждой операции.
+- `DbViewModel.autoBackup(operation)` вместо `autoBackup(prefix)`.
+- `DbRollbackDialog` — плашка операции (Импорт/Откат/Очистка/Экспорт).
+- Тесты: `RollbackBackupsTest` (расширен), `BackupManifestTest` (6).
+
+**Подзаход /2 — папки в Загрузках + миграция.**
+
+- Структура: `GeoSampleManager/{pre_restore, pre_rollback, pre_clean,
+  exports}/`.
+- `PublicBackupsMigrator` — одноразовая ленивая миграция старых
+  файлов из корня `GeoSampleManager/` в подпапки (флаг в
+  `SharedPreferences`).
+- `DbScreen` — `LaunchedEffect(Unit)` вызывает миграцию при
+  первом показе.
+- Тесты: `PublicBackupsMigratorTest` (10).
+
+#### `db-clean` — полная очистка БД
+
+- Кнопка «Очистить БД» (красный контур).
+- Двойное подтверждение через `CleanConfirmState` (галочка «Понимаю»).
+- Авто-бэкап `pre_clean_*` перед очисткой.
+- `DatabaseRepository.clearAllData()` — `db.clearAllTables()` +
+  удаление всех фото.
+- Ротация `pre_*_` после успешной очистки.
+- Тесты: `CleanConfirmStateTest` (6).
+
+#### `db-smooth-restart` — бесшовный перезапуск (промежуточный)
+
+- `RestartRouter` — сохранение route в SharedPreferences перед
+  `startActivity(CLEAR_TASK)`.
+- `NavGraph` — `startDestination` из сохранённого route.
+- `overridePendingTransition(0, 0)` — без анимации.
+- Кнопка «Откатиться к авто-бэкапу» → «Откат».
+
+**Не закрыло проблему:** белый экран остался (пересоздание Activity).
+
+#### `db-soft-restart` — пересоздание ViewModel без пересоздания Activity
+
+**Решение проблемы белого экрана.**
+
+- `GeoSampleApp`: `restartRequest: StateFlow<RestartRequest?>`,
+  `requestRestart(route)`, `scheduleRestartMessage`, `consumeRestartMessage`.
+- `SimpleViewModelStoreOwner` — владелец ViewModelStore для
+  Compose-поддерева.
+- `MainActivity.ReadyContent(app)`: `key(tick)` +
+  `CompositionLocalProvider(LocalViewModelStoreOwner)` +
+  `DisposableEffect` → `owner.viewModelStore.clear()`.
+- `NavGraph.AppScaffold(initialRoute)`.
+- `DbScreen` — вместо `startActivity` → `app.requestRestart(Screen.DB.route)`.
+- Удалён `RestartRouter` + `RestartRouterTest`.
+- Снекбар «Готово. …» показывается **после** пересборки поддерева —
+  через `app.consumeRestartMessage()` в `LaunchedEffect(Unit)`.
+- **Activity больше не пересоздаётся.** Белого экрана нет.
+
+#### `db-import-picker` — импорт из списка exports
+
+- Кнопка «Импорт» открывает диалог со списком `.gsmbackup` из
+  `Загрузки/GeoSampleManager/exports/`.
+- Авто-бэкапы `pre_*` в импорте **не показываются** — ими
+  занимается «Откат».
+- `PublicBackup`, `PublicBackupsLister.listForImport`,
+  `PublicBackupsLister.listAutoBackups`.
+- `DbImportPickerDialog` — строка: имя файла (моноширинный),
+  дата, размер, счётчики.
+- Кнопка «Выбрать файл вручную…» (SAF) — всегда.
+- Тесты: `PublicBackupsListerTest` (12).
+
+**Фикс:** `PublicBackup.uri` — строка, не `android.net.Uri`
+(иначе JVM-тесты падают на `Uri.parse` = null).
+
+#### `db-rollback-public` — приватные + публичные авто-бэкапы
+
+- Откат объединяет `filesDir/db_backups/` и
+  `Загрузки/GeoSampleManager/pre_*/`.
+- `RollbackBackup.source` — `PRIVATE` / `PUBLIC`.
+- `RollbackBackups.merge()` — дедупликация по имени файла,
+  приоритет приватного.
+- `RollbackBackups.fromPublic()` — `PublicBackup` → `RollbackBackup`.
+- `PublicBackupsLister.rotateAutoBackups()` — ротация публичных
+  через MediaStore, 5 на операцию.
+- `DbViewModel.rollbackFromPublic(uri)`.
+- `loadRollbackBackups()` — сначала ротация публичных, потом сбор
+  и merge.
+- `rotateAllBackups()` — чистит и приватные, и публичные.
+- Метка источника в строке: «Внутренний» / «Загрузки».
+- Тесты: `RollbackBackupsTest` (расширен — `merge`, `fromPublic`).
+
+**Device-check ✅** (02.10.2026).
 
 ### Вкладка «Редактирование» — закрыта
 
@@ -140,120 +221,46 @@ NavController, ViewModelStore, все экраны — без закрытия �
 `edit-status-blank`, `edit-save-guard`, `edit-multiselect`,
 `edit-mass-ops`.
 
-**Что было:** `EditScreen.kt` — пустая заглушка с одним текстом
-«Здесь будет дерево проб и форма редактирования». ViewModel
-отсутствовал.
+**Что было:** `EditScreen.kt` — пустая заглушка.
 
-**Что стало:** полноценный редактор проб с деревом, поиском,
-фильтрами, добавлением, правкой, мультивыбором и массовыми
-операциями.
+**Что стало:** реактивный редактор с деревом, поиском, фильтрами,
+добавлением, правкой, мультивыбором, массовыми операциями.
 
-#### `edit-viewmodel` — ViewModel вкладки
-
-- `EditViewModel` — реактивная загрузка дерева участок → наряд
-  → проба через `combine(areasFlow, ordersFlow, samplesFlow)`.
-- `EditTreeData`, `EditAreaUi`, `EditOrderUi`.
-- Чистая функция `buildEditTree` — сортировка `(wellNumber, numberInWell)`,
-  фильтрация сирот.
-- `findSample`, `findOrder`.
-- Тесты: `EditViewModelTest` — 14 тестов.
-
-#### `edit-screen-search` — экран с поиском и фильтрами
-
-- Адаптивный экран: широкий (≥600 dp) — дерево 35% + карточка;
-  узкий — дерево во весь экран.
-- Строка поиска: подстрока по № пробы / № скважины / характеристике.
-- Фильтры-чипы.
-- Авто-разворот при поиске.
-- Тесты: `EditScreenTreeItemsTest` (8), `EditSearchFilterTest` (18).
-
-#### `edit-add-sample` — умная вставка
-
-Подзаходы /1, /2, /3.
-
-- Префикс наряда — общий буквенный префикс скважин.
-- Скважина: dropdown с фильтром или ручной ввод.
-- № пробы: автоподстановка `wellNumber + (max+1)`.
-- Интервал `from` = `to` предыдущей не-холостой.
-- Валидация в реальном времени.
-- Конфликт № пробы: ⚠ + второй диалог «Со сдвигом / Отмена».
-- Сдвиг номеров и интервалов при вставке.
-- HOTFIX UNIQUE: сдвиги применяются в **обратном порядке**.
-- Холостая: интервал null, сдвиг интервалов не выполняется.
-- Тесты: `EditAddSampleTest` — 21 тест.
-
-#### `edit-status-blank` — интервал для холостых
-
-- В `EditSampleDialog` при статусе «Холостая» интервал скрыт.
-- При возврате — восстанавливается.
-- При сохранении — «—» (null).
-- Для не-холостой интервал обязателен.
-
-#### `edit-save-guard` — проверка № по БД
-
-- `SampleDao.findByOrderAndNumber`, `DatabaseRepository.findSampleByOrderAndNumber`.
-- `saveEditedRow` / `saveSample` проверяют по БД, не по state.
-- `findConflictForEdit` — синхронная проверка для диалога.
-- `humanSaveError` — человеческий текст вместо `UNIQUE constraint`.
-- Откат state при ошибке БД.
-
-#### `edit-multiselect` — выделение
-
-- Режим `multiselectMode` + `selectedIds`.
-- Вход: длинный тап или кнопка «Выделять».
-- BottomBar: «N проб · [Изменить] [Удалить] [Снять] [Выход]».
-- Сброс при смене поиска/фильтров/наряда.
-- Чистые функции: `applyMultiselectToggle`, `computeSelectionLabel`.
-- Тесты: `EditMultiselectTest` — 13 тестов.
-
-#### `edit-mass-ops` — массовые операции
-
-Подзаходы /1, /2.
-
-- `MassEditFields` — характеристика, тип, статус (независимо).
-- `MassEditDialog` — чекбокс на каждое поле.
-- `MassDeleteDialog` — чекбокс «Пересчитать №».
-- `applyMassEdit` — пакетная запись.
-- `deleteSelected` — последовательное удаление.
-- **FIX /2:** синхронизация `status` ↔ `weightControl`:
-  CONTROL → `weightControl = true`; NORMAL/BLANK → `false`;
-  null → не трогаем.
-- Тесты: `EditMassOpsTest` — 14 тестов.
+- `edit-viewmodel` — `EditViewModel`, `buildEditTree`.
+- `edit-screen-search` — адаптивный экран, поиск, чипы.
+- `edit-add-sample` — умная вставка со сдвигом номеров и интервалов.
+- `edit-status-blank` — интервал для холостых.
+- `edit-save-guard` — проверка № по БД.
+- `edit-multiselect` — выделение.
+- `edit-mass-ops` — массовая правка/удаление.
 
 **Device-check ✅** (01.10.2026): все сценарии прошли.
 
 #### Известные недоработки Редактирования
 
 - Общий сервис сдвига (`SampleShiftPlanner`) — обсуждён, не реализован.
-- Правка интервала (from/to) не сдвигает последующие и не
-  предупреждает о разрывах/пересечениях.
-- RENAME не проверяет интервалы — согласовано: интервалы едут с
-  пробой, дырки допускаются.
+- Правка интервала не сдвигает последующие.
 - Undo для массовых операций отсутствует.
 
 ### Пачка `report-xlsx` — закрыта
 
-**Формат отчёта:** 1 лист = 1 наряд. Шапка (участок, №, дата)
-объединена A1:I1..A4:I4. Таблица проб с цветами как в сверке.
-Заметки — колонка + лист «Приложения». Фото — счётчик + картинки
-в блоке приложений. Гиперссылки внутри файла. Легенда цветов
-в колонке J.
+**Формат отчёта:** 1 лист = 1 наряд. Шапка A1:I1..A4:I4. Таблица
+проб с цветами как в сверке. Заметки — колонка + лист «Приложения».
+Фото — счётчик + картинки. Гиперссылки. Легенда в колонке J.
 
 **Подзаходы:**
 
-- ✅ `xlsx-core` — ручной генератор .xlsx (zip + XML).
-- ✅ `xlsx-cells` — заполнение ячеек из `ReportData`.
-- ✅ `xlsx-styles` — цвета строк, жирный.
+- ✅ `xlsx-core` — ручной генератор .xlsx.
+- ✅ `xlsx-cells` — заполнение ячеек.
+- ✅ `xlsx-styles` — цвета строк.
 - ✅ `xlsx-links` — гиперссылки.
-- ✅ `xlsx-multi` — N нарядов → N листов + общий лист «Приложения».
+- ✅ `xlsx-multi` — N нарядов → N листов + «Приложения».
 - ✅ `html-multi` — мультинарядный HTML.
-- ✅ `xlsx-ui` — подключение Excel + большой блок доработок.
-- ✅ `report-html-tests` — тесты на одиночный HTML-генератор.
+- ✅ `xlsx-ui` — подключение Excel.
+- ✅ `report-html-tests` — тесты одиночного HTML.
 - ✅ `multi-report-ui` — экран выбора нарядов.
 
-### `xlsx-ui` — детально
-
-**Инфраструктурные фиксы XLSX (критичные):**
+### `xlsx-ui` — критичные фиксы XLSX
 
 - `styles rel` в `workbook.xml.rels` — обязателен.
 - `fileVersion`, `workbookPr`, `calcPr` в `workbook.xml`.
@@ -261,17 +268,8 @@ NavController, ViewModelStore, все экраны — без закрытия �
 - Порядок в `<font>` по ECMA-376.
 - `bgColor = fgColor` в solid fill.
 - `indexed` + `rgb` одновременно в `<fgColor>`.
-- Запись через `ByteArrayOutputStream` (не `zip.finish()`).
-- `theme` в `<fgColor>` — **не использовать**.
-
-### `multi-report-ui` — детально
-
-- `MultiReportScreen` — полноэкранный overlay.
-- `detectDuplicateSheetNames`, `prepareOrdersForReport`.
-- Кнопки Excel / HTML.
-- Диалог при совпадении имён листов.
-
-**Device-check ✅** (01.10.2026): мультиотчёт Excel и HTML работают.
+- Запись через `ByteArrayOutputStream`.
+- `theme` в `<fgColor>` — не использовать.
 
 ### Инфраструктурные пачки
 
@@ -279,15 +277,18 @@ NavController, ViewModelStore, все экраны — без закрытия �
 - ✅ `fix/5.9-cleanup` — убраны дубликаты в корне.
 - ✅ `5.9-cleanup-2` — warnings компилятора в `XlsxWriter`.
 - ✅ `docs/5.9-docs-3` — доки после `xlsx-ui`.
+- ✅ `docs/5.9-docs-4` — доки после `report-xlsx`.
 - ✅ `docs/5.9-edit-docs` — доки после Редактирования.
-- ✅ `docs/5.9-db-docs` — доки после пачек БД.
+- ✅ `docs/5.9-db-docs` — доки после первых пачек БД.
+- ✅ `docs/5.9-ai-rules-confirm` — §24 в `AI_RULES.md`.
 - ✅ `docs/5.9-db-rollback-docs` — доки после `db-rollback`.
+- ✅ `docs/5.9-db-series` — этот заход.
 
 ### Пачки Статистики (закрыты ранее)
 
 `stats-screen`, `stats-reactive`, `stats-layout`, `stats-search`,
-`stats-search-2`, `stats-order-status`, `report-html`, `stats-charts`,
-`stats-fixes`, `stats-compare`, `stats-compare-2`.
+`stats-search-2`, `stats-order-status`, `report-html`,
+`stats-charts`, `stats-fixes`, `stats-compare`, `stats-compare-2`.
 `bulk-confirm-2`, `table-responsive`, `row-highlight` — в сверке.
 
 ---
@@ -334,7 +335,7 @@ NavController, ViewModelStore, все экраны — без закрытия �
 - `5.8.11-e4-pin-2` — очередь мультизапроса.
 - `5.8.11-e4-pin-1` — закрепление скважины.
 - `5.8.11-e4e-bundle` — мимикрия + единый путь.
-- `5.8.11-e4-tests` — покрытие парсера (Weights/Find/Paused).
+- `5.8.11-e4-tests` — покрытие парсера.
 
 ### Архитектурные решения серии
 
