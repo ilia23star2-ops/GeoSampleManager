@@ -18,12 +18,15 @@ import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import java.io.File
 
 /**
  * FIX 5.9-db-restore-v2:
- *  - добавлен closeAndReset() — закрыть текущее соединение и
- *    сбросить синглтон INSTANCE, чтобы следующий getInstance()
- *    открыл свежий файл (используется при импорте бэкапа).
+ *  - добавлен closeAndReset().
+ *
+ * FIX 5.9-db-merge-v2/1:
+ *  - добавлен buildTemp() — открыть БД по произвольному пути
+ *    (для чтения архива при слиянии). Не влияет на синглтон.
  */
 @Database(
     entities = [
@@ -117,16 +120,28 @@ abstract class AppDatabase : RoomDatabase() {
         /**
          * FIX 5.9-db-restore-v2:
          * Закрыть текущее соединение и сбросить синглтон.
-         * После вызова следующий getInstance() откроет свежий файл.
-         *
-         * ВАЖНО: после вызова все ссылки на старый AppDatabase
-         * (и на DatabaseRepository, который его держит) — невалидны.
          */
         fun closeAndReset() {
             synchronized(this) {
                 try { INSTANCE?.close() } catch (_: Exception) {}
                 INSTANCE = null
             }
+        }
+
+        /**
+         * FIX 5.9-db-merge-v2/1:
+         * Открыть AppDatabase по произвольному пути — используется
+         * для чтения временной БД архива при слиянии. Не пишет в
+         * синглтон INSTANCE, вызывающий обязан закрыть вручную.
+         */
+        fun buildTemp(context: Context, file: File): AppDatabase {
+            return Room.databaseBuilder(
+                context.applicationContext,
+                AppDatabase::class.java,
+                file.absolutePath
+            )
+                .addMigrations(MIGRATION_1_2)
+                .build()
         }
     }
 }
