@@ -55,8 +55,12 @@ import java.util.Locale
  *
  * FIX 5.9-db-rollback:
  *  - кнопка «Откатиться к авто-бэкапу»;
- *  - список pre_restore_* из filesDir/db_backups/;
+ *  - список pre_*_* из filesDir/db_backups/;
  *  - двойное подтверждение + авто-бэкап pre_rollback_*.
+ *
+ * FIX 5.9-db-backups-ops/2:
+ *  - ленивая миграция старых бэкапов из корня GeoSampleManager/
+ *    в подпапки — при первом показе экрана.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -81,6 +85,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val rollbackState by viewModel.rollbackState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // FIX 5.9-db-backups-ops/2: ленивая миграция старых бэкапов.
+    LaunchedEffect(Unit) {
+        viewModel.migrateOldPublicBackupsIfNeeded()
+    }
 
     LaunchedEffect(message) {
         message?.let {
