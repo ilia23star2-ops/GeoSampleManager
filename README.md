@@ -26,8 +26,9 @@ Android-приложение для управления геохимическ�
 **Правило:** перед изменением Room-сущностей — сверить с `DATABASE.md` и
 `NEXT_STEPS.md`, там указаны запланированные миграции.
 
-**Первым делом ИИ спрашивает: «где ты — дома или на работе?»** От ответа
-зависит формат ответа. См. `AI_RULES.md` §20.
+**Первым делом ИИ спрашивает: «где ты — дома или на работе?»** И дома,
+и на работе — Android Studio + git в терминале. Fallback — github.dev
+или github.com. См. `AI_RULES.md` §20.
 
 ---
 
@@ -68,44 +69,48 @@ Android-приложение для управления геохимическ�
 
 ---
 
-## Работа с двух машин — три режима
+## Работа с двух машин
 
 **Контекст:** проект разрабатывается на двух машинах.
 
-- **Дома** — Android Studio. Полный цикл: сборка, тесты, эмулятор,
-  реальное устройство.
-- **На работе** — без IDE. Git на машине не установлен. Приоритет —
-  `github.dev` (браузерный VS Code), fallback — `github.com` (веб).
+- **Дома** — Android Studio, git в терминале. Полный цикл: сборка,
+  тесты, эмулятор, реальное устройство.
+- **На работе** — тоже Android Studio + git в терминале. Полный цикл.
+- **Fallback** — если AS недоступен: `github.dev` (браузерный
+  VS Code) или `github.com` (веб).
 
-### Режим А — дома (Android Studio)
+### Режим А — Android Studio (основной)
 
-1. `git pull`.
-2. Создать feature-ветку: `feature/X.Y-краткое`.
+1. `git checkout feature/X.Y-xxx` → `git pull`.
+2. Создать ветку пачки: `git checkout -b fix/X.Y-bundle` →
+   `git push -u origin fix/X.Y-bundle`.
 3. Правки в IDE.
 4. Локально: `Build → Make Project`, юнит-тесты, эмулятор, устройство.
-5. **Коммит + push** (все файлы одним коммитом).
-6. **CI (вручную)** — GitHub → Actions → Build & Test → Run workflow.
-7. PR → Merge.
-8. Удалить ветку.
+5. **Ждать «норм»** от пользователя.
+6. **Коммит + push** (один общий на пачку).
+7. **Merge пачки в фичу** — локально в терминале.
+8. Удалить ветку пачки.
 
-### Режим Б — на работе, `github.dev` (приоритет)
+**Важно:** git-операции — **только через Terminal** (`Alt+F12`).
+Интерфейс AS (Commit/Push) ломает репо.
+
+### Режим Б — github.dev (fallback)
 
 1. Открыть репозиторий на github.com → нажать `.`.
-2. Создать feature-ветку (внизу слева кнопка с именем ветки).
+2. Создать ветку пачки от фичи.
 3. Править файлы.
-4. Source Control (`Ctrl+Shift+G`) → **один коммит** на все файлы →
-   Commit & Push.
-5. PR → **CI (вручную)** → Merge → Delete branch.
+4. Source Control (`Ctrl+Shift+G`) → один коммит → Commit & Push.
+5. PR → base: фича → Merge → Delete branch.
 
-### Режим В — на работе, `github.com` (fallback)
+### Режим В — github.com (fallback)
 
-Используется, если `github.dev` недоступен.
+Используется, если github.dev недоступен.
 
-1. Репозиторий → `main ▾` → Create branch: `feature/X.Y-краткое`.
+1. Репозиторий → `main ▾` → Create branch: `fix/X.Y-bundle`.
 2. **Каждый файл — отдельный коммит:**
    - Файл 1: открыть → ✏️ → правки → Commit changes → `X.Y/1 — Имя`.
    - Файл 2: ... → `X.Y/2 — Имя`.
-3. PR → **CI (вручную)** → Merge → Delete branch.
+3. PR → base: фича → Merge → Delete branch.
 
 ### Правила гигиены
 
@@ -114,44 +119,33 @@ Android-приложение для управления геохимическ�
 - **Одна задача = одна ветка.**
 - **Коммит после каждого захода.**
 - **Пуш в конце сессии.**
-- **После merge — удалить ветку.**
+- **После merge пачки — удалить.**
+- **После merge фичи в `main` — НЕ удалять (архив).**
 
 ### Схема веток
 
 - `main` — стабильная.
 - `feature/<заход>-<краткое>` — новая функциональность.
-- `fix/<заход>-<краткое>` — баг.
+- `fix/<заход>-<краткое>` — баг, пачка, подзаход.
 - `docs/<заход>-<краткое>` — документация.
 
-### CI (GitHub Actions) — только вручную
+### CI (GitHub Actions)
 
-**Автозапуска по push / PR нет.** CI запускается **по команде**.
+**Автоматически:**
+- **`unit-tests`** — на каждый PR в `main` и `feature/*`.
+- **`build-apk`** — если на PR висит лейбл `build-apk`.
 
-**Как запустить:**
-
-1. GitHub → вкладка **Actions**.
-2. Слева — **Build & Test**.
-3. Справа сверху — **Run workflow**.
-4. Выбрать ветку.
-5. Поставить чек-боксы:
-    - **Run unit tests** — прогнать юнит-тесты (по умолчанию ✅).
-    - **Build Debug APK** — собрать APK (по умолчанию ⬜).
-6. Зелёная кнопка **Run workflow**.
-
-**Что когда выбирать:**
-
-| Ситуация | run_tests | build_apk |
-|---|---|---|
-| Быстрая проверка (только тесты) | ✅ | ⬜ |
-| Полная сборка APK | ✅ | ✅ |
-| Только APK (тесты уже прогонялись) | ⬜ | ✅ |
+**Вручную (Actions → Build & Test → Run workflow):**
+- Прогнать тесты без PR.
+- Собрать APK без лейбла.
 
 **Артефакты** на странице запуска:
 - `app-debug` — APK (если `build_apk`).
 - `test-report` — HTML-отчёт (если `run_tests`).
 
 Vosk-модель не коммитится в Git. В CI она выкачивается из релиза GitHub
-отдельным шагом (заход 2e).
+(`models-v1`) в `build.yml`. Дома и на работе — локально в
+`app/src/main/assets/vosk-model-small-ru-0.22/`.
 
 **Подробности:** `AI_RULES.md` §20.
 
@@ -164,14 +158,14 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 ### Точка входа
 | Файл | Назначение |
 |---|---|
-| `MainActivity.kt` | Activity. |
-| `GeoSampleApp.kt` | Application. Инициализирует 3 репозитория. |
+| `MainActivity.kt` | Activity. `ReadyContent` — пересбор поддерева через `key(tick)` + `SimpleViewModelStoreOwner`. |
+| `GeoSampleApp.kt` | Application. Репозитории, `resetRepository()`, `requestRestart()`. |
 
 ### `data/` — слой данных
 | Файл | Назначение |
 |---|---|
-| `AppDatabase.kt` | Room-БД. **version = 2**, 6 сущностей, миграция 1→2. |
-| `DatabaseRepository.kt` | Обёртка над DAO. |
+| `AppDatabase.kt` | Room-БД. **version = 2**, 6 сущностей, миграция 1→2. `closeAndReset()`, `buildTemp()`. |
+| `DatabaseRepository.kt` | Обёртка над DAO. `checkpointWal()`, `clearAllData()`, `getDbInfo()`. |
 
 #### `data/entity/`
 `AreaEntity`, `OrderEntity`, `OrderWellEntity`, `SampleEntity`,
@@ -195,29 +189,68 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 
 #### `data/util/`
 `PhotoStorage` — работа с фото.
+`VoiceController` — Vosk + TTS.
 
 #### `data/voice/`
-`VoiceController`, `VoiceDictionary`, `VoiceNumberParser`,
-`VoiceSegmenter`, `VoiceSettings`, `VoicePrefixResolver`, `VoiceSearch`,
-`VoiceCommand`, `VoiceCommandParser`, `VoiceOrdinals`, `VoiceSession`,
-`VoiceSpeaker`, `VoiceSearchRepository`, `AnswerState`, `UnifiedSearch`.
+`VoiceDictionary`, `VoiceNumberParser`, `VoiceSegmenter`,
+`VoiceSettings`, `VoicePrefixResolver`, `VoiceSearch`, `VoiceCommand`,
+`VoiceCommandParser`, `VoiceOrdinals`, `VoiceSession`, `VoiceSpeaker`,
+`VoiceSearchRepository`, `AnswerState`, `UnifiedSearch`.
+
+#### `data/backup/` — бэкапы и авто-бэкапы
+| Файл | Назначение |
+|---|---|
+| `GsmBackupReader.kt` | Чтение `.gsmbackup` (zip + manifest + db + photos). |
+| `GsmBackupWriter.kt` | Запись `.gsmbackup`. |
+| `RollbackBackups.kt` | Парсер `pre_*` имён, ротация, merge. |
+| `PublicBackupsLister.kt` | Листинг публичных `.gsmbackup` через MediaStore. |
+| `PublicBackupsMigrator.kt` | Ленивая миграция старых бэкапов из корня. |
+| `BackupManagerStats.kt` | Сводка по бэкапам. |
+
+#### `data/merge/` — слияние БД
+| Файл | Назначение |
+|---|---|
+| `MergeModels.kt` | Планы, конфликты, дерево, resolutions. |
+| `MergeEngine.kt` | Движок: план, разрешение конфликтов, apply. |
+| `MergeRunner.kt` | Оркестратор apply-фаз. |
+
+#### `data/compare/` — сравнение БД
+| Файл | Назначение |
+|---|---|
+| `CompareModels.kt` | Дерево сравнения, `CompareResult`. |
+| `CompareEngine.kt` | `buildResult()` — 4 дерева. |
 
 ### `ui/navigation/`
-`NavGraph.kt` (AppScaffold), `Screen.kt`.
+| Файл | Назначение |
+|---|---|
+| `NavGraph.kt` | `AppScaffold(initialRoute)`. |
+| `Screen.kt` | Перечисление экранов. |
+| `SimpleViewModelStoreOwner.kt` | Владелец VMStore для пересбора поддерева. |
 
 ### `ui/screens/`
 Основные экраны: `MainScreen`, `AddScreen` + `AddViewModel`,
-`SearchScreen`, `StatsScreen`, `EditScreen`, `DbScreen` + `DbViewModel`,
-`SettingsScreen` + `SettingsViewModel`.
+`SearchScreen`, `StatsScreen`, `EditScreen` + `EditViewModel`,
+`DbScreen` + `DbViewModel`, `SettingsScreen` + `SettingsViewModel`.
 
 Модели и состояние сверки: `ReconciliationModels`,
 `ReconciliationState`, `ReconciliationMapper`, `ReconciliationViewModel`.
 
-Диалоги: `ReconciliationDialogs`, `KeywordsDialogs`,
+Диалоги сверки: `ReconciliationDialogs`, `KeywordsDialogs`,
 `MappingEditorDialog`, `VoiceDialog`.
 
 Вспомогательные: `RememberChanges`, `RoleColors`, `SampleDisplay`,
 `SamplesTable`.
+
+**Диалоги вкладки БД:**
+`DbBackupDialog`, `DbRestoreDialog`, `DbInfoDialog`,
+`DbRollbackDialog`, `DbCleanDialog`, `DbImportPickerDialog`,
+`BackupManagerDialog`.
+
+**Экраны БД:**
+`MergeWizard`, `MergeConflictsScreen`, `DbCompareScreen`.
+
+**Модели вкладки БД:**
+`CleanConfirmState`.
 
 ### `ui/theme/`
 `Color.kt`, `Theme.kt`, `Type.kt`.
@@ -226,12 +259,19 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 
 ## Как запускается приложение
 
-1. `MainActivity` → `GeoSampleManagerTheme` → `AppScaffold()`.
-2. `GeoSampleApp.onCreate` создаёт:
-    - `DatabaseRepository`
-    - `SettingsRepository`
-    - `ImportHistoryRepository`
-3. ViewModel'и берут репозиторий через `(application as GeoSampleApp).repository`.
+1. `MainActivity` → `GeoSampleManagerTheme` → `AppRoot()`.
+2. `AppRoot` ждёт загрузки Vosk-модели → `ReadyContent(app)`.
+3. `ReadyContent` — `key(tick)` + `SimpleViewModelStoreOwner` +
+   `AppScaffold(initialRoute)`.
+4. `GeoSampleApp.onCreate` создаёт:
+   - `DatabaseRepository`
+   - `SettingsRepository`
+   - `ImportHistoryRepository`
+   - `VoiceSettingsRepository`
+5. ViewModel'и берут репозиторий через `(application as GeoSampleApp).repository`.
+
+**После замены БД** (импорт/откат/слияние/очистка) — `requestRestart()`
+пересобирает поддерево без пересоздания Activity. См. `CONTEXT_BRIEF.md`.
 
 ---
 
@@ -241,6 +281,9 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 - **Сверка и поиск** → `SearchScreen` + `Reconciliation*` + `SampleDao`.
 - **Заметки и фото** → `NotePhotoDialog` + `PhotoStorage` + `SampleImageDao`.
 - **Управление БД** → `DbScreen` + `DbViewModel`.
+- **Бэкапы и авто-бэкапы** → `data/backup/*`.
+- **Слияние двух БД** → `data/merge/*` + `MergeWizard` + `MergeConflictsScreen`.
+- **Сравнение двух БД** → `data/compare/*` + `DbCompareScreen`.
 - **Настройки** → `SettingsScreen` + `SettingsRepository`.
 - **Голосовой помощник** → `VOICE.md` + `data/voice/*`.
 
@@ -257,6 +300,9 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 | Настройки импорта | `ImportSettings.kt` + `SettingsRepository.kt` |
 | Диалог сверки | `ReconciliationDialogs.kt` + `SearchScreen.kt` |
 | Логика ГП | `VOICE.md` + `data/voice/*` |
+| Бэкап/восстановление | `data/backup/*` + `DbViewModel` |
+| Слияние БД | `data/merge/*` + `MergeWizard` + `MergeConflictsScreen` |
+| Сравнение БД | `data/compare/*` + `DbCompareScreen` |
 | Термин — что значит | `GLOSSARY.md` |
 | Что тестировать | `TESTING.md` |
 | Открытые проблемы | `ISSUES.md` |
