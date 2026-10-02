@@ -18,31 +18,20 @@ import java.util.UUID
 import java.util.zip.ZipInputStream
 
 /**
- * FIX 5.9-db-merge-v2:
- * Движок слияния текущей БД с выбранным .gsmbackup.
- *
- * /1 — участки, наряды.
- * /2 — пробы, скважины, заметки.
- * /3 — фото (физическое копирование файлов).
+ * FIX 5.9-db-merge-v2/5:
+ * Умные конфликты проб: разрешение по полям, массовые стратегии.
  */
 object MergeEngine {
 
     const val SUPPORTED_SCHEMA_VERSION = 2
     const val DB_ENTRY = "geosamples.db"
     const val PHOTOS_PREFIX = "sample_photos/"
-
     private const val PHOTOS_DIR_NAME = "sample_photos"
 
     // ================================================================
     // Открытие / закрытие архива
     // ================================================================
 
-    /**
-     * FIX 5.9-db-merge-v2/3:
-     * Распаковывает и geosamples.db, и sample_photos/ во временные
-     * файлы в cacheDir. Проверяет версию схемы. Открывает Room
-     * на temp-БД.
-     */
     suspend fun openArchive(
         context: Context,
         uri: Uri,
@@ -70,20 +59,13 @@ object MergeEngine {
                 cleanTemp(tempDbFile, tempPhotosDir)
                 return@withContext Result.failure(
                     IllegalStateException(
-                        "Схема БД в архиве: $version, " +
-                                "ожидается $SUPPORTED_SCHEMA_VERSION"
+                        "Схема БД в архиве: $version, ожидается $SUPPORTED_SCHEMA_VERSION"
                     )
                 )
             }
 
             val db = AppDatabase.buildTemp(context, tempDbFile)
-            Result.success(
-                TempDatabaseHandle(
-                    db = db,
-                    file = tempDbFile,
-                    photosDir = tempPhotosDir
-                )
-            )
+            Result.success(TempDatabaseHandle(db, tempDbFile, tempPhotosDir))
         } catch (e: Exception) {
             cleanTemp(tempDbFile, tempPhotosDir)
             Result.failure(e)
@@ -97,7 +79,9 @@ object MergeEngine {
 
     private fun cleanTemp(dbFile: File?, photosDir: File?) {
         try { if (dbFile != null && dbFile.exists()) dbFile.delete() } catch (_: Exception) {}
-        try { if (photosDir != null && photosDir.exists()) photosDir.deleteRecursively() } catch (_: Exception) {}
+        try {
+            if (photosDir != null && photosDir.exists()) photosDir.deleteRecursively()
+        } catch (_: Exception) {}
     }
 
     // ================================================================
@@ -110,38 +94,25 @@ object MergeEngine {
     ): AreaPlan {
         val myByNameMinId = mutableMapOf<String, Long>()
         val myNameCount = mutableMapOf<String, Int>()
-
         for (a in myAreas) {
             val cur = myByNameMinId[a.areaName]
             if (cur == null || a.id < cur) myByNameMinId[a.areaName] = a.id
             myNameCount[a.areaName] = (myNameCount[a.areaName] ?: 0) + 1
         }
-
         val existing = mutableMapOf<Long, Long>()
         val toAdd = mutableListOf<AreaToAdd>()
-
         for (their in theirAreas) {
             val myId = myByNameMinId[their.areaName]
-            if (myId != null) {
-                existing[their.id] = myId
-            } else {
-                toAdd += AreaToAdd(
-                    theirId = their.id,
-                    entity = AreaEntity(
-                        id = 0,
-                        areaName = their.areaName,
-                        createdDate = their.createdDate
-                    )
-                )
-            }
+            if (myId != null) existing[their.id] = myId
+            else toAdd += AreaToAdd(
+                theirId = their.id,
+                entity = AreaEntity(0, their.areaName, their.createdDate)
+            )
         }
-
-        val duplicates = myNameCount.filter { it.value > 1 }.keys.toList()
-
         return AreaPlan(
             existing = existing,
             toAdd = toAdd,
-            duplicatesInMine = duplicates
+            duplicatesInMine = myNameCount.filter { it.value > 1 }.keys.toList()
         )
     }
 
@@ -169,10 +140,7 @@ object MergeEngine {
     ): OrderPlan {
         val combined = HashMap<Long, Long>(areaIdMap)
         combined.putAll(newlyAddedAreaIds)
-
-        val myByKey = myOrders.associate {
-            (it.areaId to it.orderNumber) to it.id
-        }
+        val myByKey = myOrders.associate { (it.areaId to it.orderNumber) to it.id }
 
         val existing = mutableMapOf<Long, Long>()
         val toAdd = mutableListOf<OrderToAdd>()
@@ -184,29 +152,17 @@ object MergeEngine {
                 skipped++
                 continue
             }
-
             val existingMyId = myByKey[myAreaId to their.orderNumber]
             if (existingMyId != null) {
                 existing[their.id] = existingMyId
                 continue
             }
-
             toAdd += OrderToAdd(
                 theirId = their.id,
-                entity = OrderEntity(
-                    id = 0,
-                    areaId = myAreaId,
-                    orderNumber = their.orderNumber,
-                    createdDate = their.createdDate
-                )
+                entity = OrderEntity(0, myAreaId, their.orderNumber, their.createdDate)
             )
         }
-
-        return OrderPlan(
-            existing = existing,
-            toAdd = toAdd,
-            skippedOrphans = skipped
-        )
+        return OrderPlan(existing, toAdd, skipped)
     }
 
     suspend fun applyOrderPlan(
@@ -215,17 +171,14 @@ object MergeEngine {
     ): Map<Long, Long> {
         val result = HashMap<Long, Long>(plan.existing)
         for (add in plan.toAdd) {
-            val newId = repo.addOrder(
-                areaId = add.entity.areaId,
-                orderNumber = add.entity.orderNumber
-            )
+            val newId = repo.addOrder(add.entity.areaId, add.entity.orderNumber)
             if (newId > 0) result[add.theirId] = newId
         }
         return result
     }
 
     // ================================================================
-    // /2: пробы
+    // /5: пробы — три категории
     // ================================================================
 
     fun planSamples(
@@ -237,11 +190,10 @@ object MergeEngine {
         val combined = HashMap<Long, Long>(orderIdMap)
         combined.putAll(newlyAddedOrderIds)
 
-        val myByKey = mySamples.associate {
-            (it.orderId to it.sampleNumber) to it
-        }
+        val myByKey = mySamples.associate { (it.orderId to it.sampleNumber) to it }
 
         val toAdd = mutableListOf<SampleToAdd>()
+        val identical = mutableListOf<SampleMatch>()
         val conflicts = mutableListOf<SampleConflict>()
         var skipped = 0
 
@@ -251,63 +203,143 @@ object MergeEngine {
                 skipped++
                 continue
             }
-
-            val myExisting = myByKey[myOrderId to their.sampleNumber]
-            if (myExisting != null) {
-                conflicts += SampleConflict(
+            val my = myByKey[myOrderId to their.sampleNumber]
+            if (my == null) {
+                toAdd += SampleToAdd(
                     theirId = their.id,
-                    myId = myExisting.id,
-                    sampleNumber = their.sampleNumber,
-                    myEntity = myExisting,
-                    theirEntity = their
+                    entity = their.copy(id = 0, orderId = myOrderId)
                 )
                 continue
             }
-
-            toAdd += SampleToAdd(
-                theirId = their.id,
-                entity = their.copy(id = 0, orderId = myOrderId)
-            )
+            val diffs = diffFields(my, their)
+            if (diffs.isEmpty()) {
+                identical += SampleMatch(theirId = their.id, myId = my.id)
+            } else {
+                conflicts += SampleConflict(
+                    theirId = their.id,
+                    myId = my.id,
+                    sampleNumber = their.sampleNumber,
+                    myEntity = my,
+                    theirEntity = their,
+                    fieldDiffs = diffs
+                )
+            }
         }
 
-        return SamplePlan(
-            toAdd = toAdd,
-            conflicts = conflicts,
-            skippedOrphans = skipped
+        return SamplePlan(toAdd, identical, conflicts, skipped)
+    }
+
+    fun diffFields(my: SampleEntity, their: SampleEntity): List<FieldDiff> {
+        val list = mutableListOf<FieldDiff>()
+
+        if (my.weight != their.weight) list += diff(
+            SampleField.WEIGHT, my.weight, their.weight
         )
+        if (my.sampleType != their.sampleType) list += diff(
+            SampleField.SAMPLE_TYPE, my.sampleType, their.sampleType
+        )
+        if (my.status != their.status) list += diff(
+            SampleField.STATUS, my.status, their.status
+        )
+        if (my.controlWeight != their.controlWeight) list += diff(
+            SampleField.CONTROL_WEIGHT, my.controlWeight, their.controlWeight
+        )
+        if (my.intervalFrom != their.intervalFrom) list += diff(
+            SampleField.INTERVAL_FROM, my.intervalFrom, their.intervalFrom
+        )
+        if (my.intervalTo != their.intervalTo) list += diff(
+            SampleField.INTERVAL_TO, my.intervalTo, their.intervalTo
+        )
+        if (my.found != their.found) list += diff(
+            SampleField.FOUND, my.found, their.found
+        )
+        if (my.postponed != their.postponed) list += diff(
+            SampleField.POSTPONED, my.postponed, their.postponed
+        )
+        if (my.weightControl != their.weightControl) list += diff(
+            SampleField.WEIGHT_CONTROL, my.weightControl, their.weightControl
+        )
+        if ((my.materialDesc ?: "") != (their.materialDesc ?: "")) list += diff(
+            SampleField.MATERIAL_DESC, my.materialDesc, their.materialDesc
+        )
+
+        return list
+    }
+
+    private fun diff(field: SampleField, myRaw: Any?, theirRaw: Any?): FieldDiff =
+        FieldDiff(
+            field = field,
+            myRaw = myRaw,
+            theirRaw = theirRaw,
+            myDisplay = displayFor(field, myRaw),
+            theirDisplay = displayFor(field, theirRaw)
+        )
+
+    fun displayFor(field: SampleField, raw: Any?): String = when (field) {
+        SampleField.SAMPLE_TYPE -> when (raw as? String) {
+            "auger" -> "Шнековая"
+            "channel" -> "Бороздовая"
+            "cobra" -> "Кобра"
+            "duplicate" -> "Дубликат"
+            else -> "—"
+        }
+        SampleField.STATUS -> when (raw as? String) {
+            "normal" -> "Обычная"
+            "blank" -> "Холостая"
+            "control" -> "Вес. контроль"
+            else -> "—"
+        }
+        SampleField.FOUND,
+        SampleField.POSTPONED,
+        SampleField.WEIGHT_CONTROL -> when (raw) {
+            true -> "Да"
+            false -> "Нет"
+            else -> "—"
+        }
+        SampleField.WEIGHT,
+        SampleField.CONTROL_WEIGHT,
+        SampleField.INTERVAL_FROM,
+        SampleField.INTERVAL_TO -> (raw as? Double)?.toString() ?: "—"
+        SampleField.MATERIAL_DESC -> {
+            val s = raw as? String
+            if (s.isNullOrBlank()) "—" else s
+        }
     }
 
     fun resolveSample(
         my: SampleEntity,
         their: SampleEntity,
-        resolution: ConflictResolution
+        resolution: FieldResolution
     ): SampleEntity? {
-        if (resolution == ConflictResolution.KEEP_MINE) return null
+        var s = my
+        for ((field, owner) in resolution.map) {
+            if (owner == FieldOwner.MINE) continue
+            s = applyField(s, field, their)
+        }
+        return if (s != my) s else null
+    }
 
-        return my.copy(
-            serialNumber = their.serialNumber,
-            wellNumber = their.wellNumber,
-            workings = their.workings,
-            intervalFrom = their.intervalFrom,
-            intervalTo = their.intervalTo,
-            weight = their.weight,
-            controlWeight = their.controlWeight,
-            actualWeight = their.actualWeight,
-            sampleType = their.sampleType,
-            status = their.status,
-            reservedType = their.reservedType,
-            materialDesc = their.materialDesc,
-            found = their.found,
-            weightControl = their.weightControl,
-            postponed = their.postponed
-            // hasNote / hasPhoto — не из архива, пересчитаются.
-        )
+    private fun applyField(
+        s: SampleEntity,
+        field: SampleField,
+        src: SampleEntity
+    ): SampleEntity = when (field) {
+        SampleField.WEIGHT -> s.copy(weight = src.weight)
+        SampleField.SAMPLE_TYPE -> s.copy(sampleType = src.sampleType)
+        SampleField.STATUS -> s.copy(status = src.status)
+        SampleField.CONTROL_WEIGHT -> s.copy(controlWeight = src.controlWeight)
+        SampleField.INTERVAL_FROM -> s.copy(intervalFrom = src.intervalFrom)
+        SampleField.INTERVAL_TO -> s.copy(intervalTo = src.intervalTo)
+        SampleField.FOUND -> s.copy(found = src.found)
+        SampleField.POSTPONED -> s.copy(postponed = src.postponed)
+        SampleField.WEIGHT_CONTROL -> s.copy(weightControl = src.weightControl)
+        SampleField.MATERIAL_DESC -> s.copy(materialDesc = src.materialDesc)
     }
 
     suspend fun applySamplePlan(
         repo: DatabaseRepository,
         plan: SamplePlan,
-        resolutions: Map<Long, ConflictResolution>
+        resolutions: Map<Long, FieldResolution>
     ): Map<Long, Long> {
         val result = HashMap<Long, Long>()
 
@@ -316,18 +348,15 @@ object MergeEngine {
             if (newId > 0) result[add.theirId] = newId
         }
 
+        for (m in plan.identical) {
+            result[m.theirId] = m.myId
+        }
+
         for (conflict in plan.conflicts) {
             result[conflict.theirId] = conflict.myId
-            val resolution = resolutions[conflict.theirId]
-                ?: ConflictResolution.KEEP_MINE
-            val updated = resolveSample(
-                my = conflict.myEntity,
-                their = conflict.theirEntity,
-                resolution = resolution
-            )
-            if (updated != null) {
-                repo.updateSample(updated)
-            }
+            val r = resolutions[conflict.theirId] ?: FieldResolution.Empty
+            val updated = resolveSample(conflict.myEntity, conflict.theirEntity, r)
+            if (updated != null) repo.updateSample(updated)
         }
 
         return result
@@ -345,32 +374,23 @@ object MergeEngine {
     ): WellPlan {
         val combined = HashMap<Long, Long>(orderIdMap)
         combined.putAll(newlyAddedOrderIds)
-
         val toAdd = mutableListOf<OrderWellToAdd>()
-
         for ((theirOrderId, theirList) in theirWells) {
             val myOrderId = combined[theirOrderId] ?: continue
             val mine = myWells[myOrderId]?.toHashSet() ?: HashSet()
             val seen = HashSet<String>()
-
             for (well in theirList) {
                 if (well.isBlank()) continue
                 if (well in mine) continue
                 if (!seen.add(well)) continue
-                toAdd += OrderWellToAdd(myOrderId = myOrderId, wellNumber = well)
+                toAdd += OrderWellToAdd(myOrderId, well)
             }
         }
-
-        return WellPlan(toAdd = toAdd)
+        return WellPlan(toAdd)
     }
 
-    suspend fun applyWellPlan(
-        repo: DatabaseRepository,
-        plan: WellPlan
-    ) {
-        for (add in plan.toAdd) {
-            repo.addWell(orderId = add.myOrderId, wellNumber = add.wellNumber)
-        }
+    suspend fun applyWellPlan(repo: DatabaseRepository, plan: WellPlan) {
+        for (add in plan.toAdd) repo.addWell(add.myOrderId, add.wellNumber)
     }
 
     // ================================================================
@@ -384,58 +404,36 @@ object MergeEngine {
     ): NotePlan {
         val toAdd = mutableListOf<NoteToAdd>()
         val conflicts = mutableListOf<NoteConflict>()
-
         for ((theirSampleId, theirText) in theirNotes) {
             val mySampleId = sampleIdMap[theirSampleId] ?: continue
             val myText = myNotes[mySampleId]
-
             val myHas = !myText.isNullOrBlank()
             val theirHas = !theirText.isNullOrBlank()
-
             when {
                 myHas && theirHas -> conflicts += NoteConflict(
-                    theirSampleId = theirSampleId,
-                    mySampleId = mySampleId,
-                    myText = myText,
-                    theirText = theirText
+                    theirSampleId, mySampleId, myText, theirText
                 )
-                !myHas && theirHas -> toAdd += NoteToAdd(
-                    mySampleId = mySampleId,
-                    text = theirText
-                )
+                !myHas && theirHas -> toAdd += NoteToAdd(mySampleId, theirText)
             }
         }
-
-        return NotePlan(toAdd = toAdd, conflicts = conflicts)
+        return NotePlan(toAdd, conflicts)
     }
 
     suspend fun applyNotePlan(
         repo: DatabaseRepository,
         plan: NotePlan,
-        resolutions: Map<Long, ConflictResolution>
+        resolutions: Map<Long, FieldResolution>
     ) {
         for (add in plan.toAdd) {
             repo.upsertNote(
-                SampleNoteEntity(
-                    id = 0,
-                    sampleId = add.mySampleId,
-                    noteText = add.text,
-                    createdDate = System.currentTimeMillis()
-                )
+                SampleNoteEntity(0, add.mySampleId, add.text, System.currentTimeMillis())
             )
         }
-
-        for (conflict in plan.conflicts) {
-            val resolution = resolutions[conflict.theirSampleId]
-                ?: ConflictResolution.KEEP_MINE
-            if (resolution == ConflictResolution.TAKE_THEIRS) {
+        for (c in plan.conflicts) {
+            val r = resolutions[c.theirSampleId] ?: FieldResolution.Empty
+            if (r.ownerOf(SampleField.MATERIAL_DESC) == FieldOwner.THEIRS) {
                 repo.upsertNote(
-                    SampleNoteEntity(
-                        id = 0,
-                        sampleId = conflict.mySampleId,
-                        noteText = conflict.theirText,
-                        createdDate = System.currentTimeMillis()
-                    )
+                    SampleNoteEntity(0, c.mySampleId, c.theirText, System.currentTimeMillis())
                 )
             }
         }
@@ -445,69 +443,31 @@ object MergeEngine {
     // /3: фото
     // ================================================================
 
-    /**
-     * FIX 5.9-db-merge-v2/3:
-     * Из image_path архива вытащить имя файла.
-     * Например:
-     *   "/data/.../sample_photos/photo_abc.jpg" → "photo_abc.jpg"
-     *   "photo_abc.jpg"                          → "photo_abc.jpg"
-     *   ""                                       → null
-     */
     fun extractArchivePhotoName(imagePath: String): String? {
         if (imagePath.isBlank()) return null
-        val name = imagePath.substringAfterLast('/')
-        return name.takeIf { it.isNotBlank() }
+        return imagePath.substringAfterLast('/').takeIf { it.isNotBlank() }
     }
 
-    /**
-     * FIX 5.9-db-merge-v2/3:
-     * План слияния фото.
-     *
-     * Правила:
-     *  - Новая проба → все её фото из архива добавляем.
-     *  - Конфликт + TAKE_THEIRS → фото архива добавляем
-     *    (к существующим у меня, ничего не удаляем).
-     *  - Конфликт + KEEP_MINE → фото архива НЕ добавляем.
-     *
-     * @param theirImages все фото из архива.
-     * @param sampleIdMap Map<theirSampleId, mySampleId>.
-     * @param conflictSampleIds Set<theirSampleId> — какие были
-     *        конфликтами (from SamplePlan.conflicts).
-     * @param resolutions Map<theirSampleId, Resolution>.
-     */
     fun planPhotos(
         theirImages: List<SampleImageEntity>,
         sampleIdMap: Map<Long, Long>,
         conflictSampleIds: Set<Long>,
-        resolutions: Map<Long, ConflictResolution>
+        resolutions: Map<Long, FieldResolution>
     ): PhotoPlan {
         val toAdd = mutableListOf<PhotoToAdd>()
-
         for (img in theirImages) {
             val mySampleId = sampleIdMap[img.sampleId] ?: continue
-
             if (img.sampleId in conflictSampleIds) {
                 val r = resolutions[img.sampleId]
-                    ?: ConflictResolution.KEEP_MINE
-                if (r == ConflictResolution.KEEP_MINE) continue
+                val anyTheirs = r?.map?.values?.any { it == FieldOwner.THEIRS } == true
+                if (!anyTheirs) continue
             }
-
             val name = extractArchivePhotoName(img.imagePath) ?: continue
-            toAdd += PhotoToAdd(mySampleId = mySampleId, archiveFileName = name)
+            toAdd += PhotoToAdd(mySampleId, name)
         }
-
-        return PhotoPlan(toAdd = toAdd)
+        return PhotoPlan(toAdd)
     }
 
-    /**
-     * FIX 5.9-db-merge-v2/3:
-     * Скопировать файлы из archivePhotosDir в
-     * filesDir/sample_photos/ под UUID-именем и записать
-     * в sample_images через addPhoto.
-     *
-     * Если файла в архиве нет — пропускаем (архив мог быть без
-     * части фото). Ошибки отдельного файла не валят весь merge.
-     */
     suspend fun applyPhotoPlan(
         context: Context,
         repo: DatabaseRepository,
@@ -515,14 +475,11 @@ object MergeEngine {
         archivePhotosDir: File
     ) {
         if (plan.toAdd.isEmpty()) return
-
         val targetDir = File(context.filesDir, PHOTOS_DIR_NAME)
         if (!targetDir.exists()) targetDir.mkdirs()
-
         for (add in plan.toAdd) {
             val src = File(archivePhotosDir, add.archiveFileName)
             if (!src.exists()) continue
-
             val newName = "photo_${UUID.randomUUID()}.jpg"
             val dst = File(targetDir, newName)
             try {
@@ -581,9 +538,7 @@ object MergeEngine {
         var db: SQLiteDatabase? = null
         return try {
             db = SQLiteDatabase.openDatabase(
-                dbFile.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY
+                dbFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY
             )
             db.rawQuery("PRAGMA user_version", null).use { c ->
                 if (c.moveToFirst()) c.getInt(0) else -1

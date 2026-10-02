@@ -234,7 +234,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-merge-v2/4: выбор архива для слияния.
     val mergeFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -437,13 +436,16 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         if (cs is RestoreState.InProgress) ProgressOverlay(cs.message)
     }
 
-    // ---- Диалоги ----
-
+    // FIX 5.9-db-merge-v2/5: wizard с умными конфликтами.
     MergeWizard(
         state = mergeState,
         onContinue = { viewModel.continueFromPreview() },
-        onSetConflict = { id, r -> viewModel.setConflictResolution(id, r) },
-        onSetAllConflicts = { r -> viewModel.setAllConflictsResolution(r) },
+        onSetField = { id, f, o -> viewModel.setFieldResolution(id, f, o) },
+        onSetSample = { id, o -> viewModel.setSampleResolution(id, o) },
+        onMassAll = { o -> viewModel.applyMassStrategy(o) },
+        onMassFillEmpty = { viewModel.applyFillEmptyStrategy() },
+        onMassByField = { f, o -> viewModel.applyStrategyForField(f, o) },
+        onConfirmConflicts = { viewModel.confirmConflicts() },
         onCancel = { viewModel.cancelMerge() },
         onCloseDone = { viewModel.resetMergeState() }
     )
@@ -671,7 +673,7 @@ private fun ProgressOverlay(message: String) {
 }
 
 // ============================================================
-// ПОДКОМПОНЕНТЫ (без изменений)
+// ПОДКОМПОНЕНТЫ
 // ============================================================
 
 @Composable

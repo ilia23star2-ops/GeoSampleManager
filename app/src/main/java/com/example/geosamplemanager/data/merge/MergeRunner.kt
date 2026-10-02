@@ -10,9 +10,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * FIX 5.9-db-merge-v2/4:
- * Оркестратор слияния. Читает данные архива из temp-БД,
- * поэтапно применяет планы через репозиторий.
+ * FIX 5.9-db-merge-v2/5:
+ * Оркестратор. Резолюции — по полям (Map<theirSampleId, FieldResolution>).
  */
 object MergeRunner {
 
@@ -20,34 +19,20 @@ object MergeRunner {
         tempDb: TempDatabaseHandle
     ): ArchiveData = withContext(Dispatchers.IO) {
         val db = tempDb.db
-
         val areas = db.areaDao().getAreasList()
         val orders = db.orderDao().getAllOrders()
         val samples = db.sampleDao().getAllSamplesFlow().first()
 
         val wells = HashMap<Long, List<String>>()
-        for (o in orders) {
-            wells[o.id] = db.orderWellDao().getWellsForOrder(o.id)
-        }
+        for (o in orders) wells[o.id] = db.orderWellDao().getWellsForOrder(o.id)
 
         val notes = HashMap<Long, String?>()
-        for (s in samples) {
-            notes[s.id] = db.sampleNoteDao().getNote(s.id)?.noteText
-        }
+        for (s in samples) notes[s.id] = db.sampleNoteDao().getNote(s.id)?.noteText
 
         val images = HashMap<Long, List<SampleImageEntity>>()
-        for (s in samples) {
-            images[s.id] = db.sampleImageDao().getPhotosForSample(s.id)
-        }
+        for (s in samples) images[s.id] = db.sampleImageDao().getPhotosForSample(s.id)
 
-        ArchiveData(
-            areas = areas,
-            orders = orders,
-            samples = samples,
-            wellsByOrderId = wells,
-            notesBySampleId = notes,
-            imagesBySampleId = images
-        )
+        ArchiveData(areas, orders, samples, wells, notes, images)
     }
 
     suspend fun run(
@@ -55,7 +40,7 @@ object MergeRunner {
         repo: DatabaseRepository,
         preview: MergePreview,
         archivePhotosDir: File,
-        resolutions: Map<Long, ConflictResolution>,
+        resolutions: Map<Long, FieldResolution>,
         onProgress: suspend (String) -> Unit
     ): MergeStats = withContext(Dispatchers.IO) {
         val archive = preview.archive
@@ -119,9 +104,7 @@ object MergeRunner {
         MergeEngine.applyNotePlan(repo, actualNotePlan, resolutions)
 
         onProgress("Копируем фото…")
-        val conflictSampleIds = actualSamplePlan.conflicts
-            .map { it.theirId }
-            .toHashSet()
+        val conflictSampleIds = actualSamplePlan.conflicts.map { it.theirId }.toHashSet()
         val theirImages = archive.imagesBySampleId.values.flatten()
         val actualPhotoPlan = MergeEngine.planPhotos(
             theirImages = theirImages,
@@ -156,10 +139,8 @@ object MergeRunner {
         orderIdMap: Map<Long, Long>,
         newlyOrderIds: Map<Long, Long>
     ): List<SampleEntity> {
-        val allOrderIds = (orderIdMap.values + newlyOrderIds.values)
-            .toSet()
-            .toList()
-        if (allOrderIds.isEmpty()) return emptyList()
-        return repo.getSamplesForOrders(allOrderIds)
+        val ids = (orderIdMap.values + newlyOrderIds.values).toSet().toList()
+        if (ids.isEmpty()) return emptyList()
+        return repo.getSamplesForOrders(ids)
     }
 }
