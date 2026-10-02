@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import org.json.JSONObject
 import java.io.File
+import java.io.InputStream
 import java.util.zip.ZipInputStream
 
 data class BackupManifest(
@@ -31,19 +32,42 @@ object GsmBackupReader {
             val input = context.contentResolver.openInputStream(uri)
             if (input != null) {
                 input.use { stream ->
-                    val zip = ZipInputStream(stream)
-                    var entry = zip.nextEntry
-                    while (entry != null) {
-                        if (entry.name == MANIFEST) {
-                            val bytes = zip.readBytes()
-                            result = parseManifest(bytes.toString(Charsets.UTF_8))
-                            break
-                        }
-                        entry = zip.nextEntry
-                    }
-                    try { zip.close() } catch (_: Exception) {}
+                    result = readManifestFromStream(stream)
                 }
             }
+        } catch (_: Exception) {
+            return null
+        }
+        return result
+    }
+
+    /**
+     * FIX 5.9-db-rollback:
+     * Чтение манифеста из локального файла (авто-бэкап
+     * в filesDir/db_backups/). Не требует ContentResolver.
+     */
+    fun readManifest(file: File): BackupManifest? {
+        return try {
+            file.inputStream().use { readManifestFromStream(it) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readManifestFromStream(stream: InputStream): BackupManifest? {
+        var result: BackupManifest? = null
+        try {
+            val zip = ZipInputStream(stream)
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (entry.name == MANIFEST) {
+                    val bytes = zip.readBytes()
+                    result = parseManifest(bytes.toString(Charsets.UTF_8))
+                    break
+                }
+                entry = zip.nextEntry
+            }
+            try { zip.close() } catch (_: Exception) {}
         } catch (_: Exception) {
             return null
         }
@@ -76,31 +100,58 @@ object GsmBackupReader {
         targetDb: File,
         targetPhotosDir: File
     ): Boolean {
+        val input = try {
+            context.contentResolver.openInputStream(uri)
+        } catch (_: Exception) {
+            null
+        }
+        if (input == null) return false
+        return input.use { extractFromStream(it, targetDb, targetPhotosDir) }
+    }
+
+    /**
+     * FIX 5.9-db-rollback:
+     * Распаковка .gsmbackup из локального файла.
+     */
+    fun extract(
+        file: File,
+        targetDb: File,
+        targetPhotosDir: File
+    ): Boolean {
+        return try {
+            file.inputStream().use {
+                extractFromStream(it, targetDb, targetPhotosDir)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun extractFromStream(
+        input: InputStream,
+        targetDb: File,
+        targetPhotosDir: File
+    ): Boolean {
         var dbWritten = false
         try {
-            val input = context.contentResolver.openInputStream(uri)
-            if (input != null) {
-                input.use { stream ->
-                    val zip = ZipInputStream(stream)
-                    var entry = zip.nextEntry
-                    while (entry != null) {
-                        val name = entry.name ?: ""
-                        if (name == DB_ENTRY) {
-                            targetDb.outputStream().use { out -> zip.copyTo(out) }
-                            dbWritten = true
-                        } else if (name.startsWith(PHOTOS_PREFIX) && !entry.isDirectory) {
-                            val relative = name.removePrefix(PHOTOS_PREFIX)
-                            if (relative.isNotBlank()) {
-                                val f = File(targetPhotosDir, relative)
-                                f.parentFile?.mkdirs()
-                                f.outputStream().use { out -> zip.copyTo(out) }
-                            }
-                        }
-                        entry = zip.nextEntry
+            val zip = ZipInputStream(input)
+            var entry = zip.nextEntry
+            while (entry != null) {
+                val name = entry.name ?: ""
+                if (name == DB_ENTRY) {
+                    targetDb.outputStream().use { out -> zip.copyTo(out) }
+                    dbWritten = true
+                } else if (name.startsWith(PHOTOS_PREFIX) && !entry.isDirectory) {
+                    val relative = name.removePrefix(PHOTOS_PREFIX)
+                    if (relative.isNotBlank()) {
+                        val f = File(targetPhotosDir, relative)
+                        f.parentFile?.mkdirs()
+                        f.outputStream().use { out -> zip.copyTo(out) }
                     }
-                    try { zip.close() } catch (_: Exception) {}
                 }
+                entry = zip.nextEntry
             }
+            try { zip.close() } catch (_: Exception) {}
         } catch (_: Exception) {
             return false
         }
