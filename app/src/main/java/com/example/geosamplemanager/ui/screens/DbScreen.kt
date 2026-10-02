@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -50,6 +52,11 @@ import java.util.Locale
  *    Это пересоздаёт весь Compose-стек: NavController, ViewModelStore,
  *    все экраны. Приложение мгновенно «открывается заново» без
  *    закрытия процесса.
+ *
+ * FIX 5.9-db-rollback:
+ *  - кнопка «Откатиться к авто-бэкапу»;
+ *  - список pre_restore_* из filesDir/db_backups/;
+ *  - двойное подтверждение + авто-бэкап pre_rollback_*.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -67,6 +74,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val exporting by viewModel.exporting.collectAsState()
     val lastExportUri by viewModel.lastExportUri.collectAsState()
     val restoreState by viewModel.restoreState.collectAsState()
+
+    // FIX 5.9-db-rollback
+    val rollbackBackups by viewModel.rollbackBackups.collectAsState()
+    val rollbackLoading by viewModel.rollbackLoading.collectAsState()
+    val rollbackState by viewModel.rollbackState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -91,8 +103,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var pendingExternalName by remember { mutableStateOf<String?>(null) }
     var shareAfterNextExport by remember { mutableStateOf(false) }
 
+    // FIX 5.9-db-rollback: состояние диалогов отката.
+    var showRollbackDialog by remember { mutableStateOf(false) }
+    var pendingRollbackFile by remember { mutableStateOf<File?>(null) }
+    var pendingRollbackName by remember { mutableStateOf<String?>(null) }
+    var pendingRollbackManifest by remember { mutableStateOf<BackupManifest?>(null) }
+
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
+    }
+
+    // FIX 5.9-db-rollback: подгрузка списка при открытии диалога.
+    LaunchedEffect(showRollbackDialog) {
+        if (showRollbackDialog) viewModel.loadRollbackBackups()
     }
 
     LaunchedEffect(lastExportUri) {
@@ -142,6 +165,41 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             is RestoreState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
                 viewModel.resetRestoreState()
+            }
+            else -> Unit
+        }
+    }
+
+    // FIX 5.9-db-rollback:
+    // После отката — та же логика перезапуска стека.
+    LaunchedEffect(rollbackState) {
+        when (val s = rollbackState) {
+            is RestoreState.Done -> {
+                snackbarHostState.showSnackbar("БД восстановлена. Перезапуск…")
+                delay(700)
+                val act = context as? Activity
+                if (act != null) {
+                    try {
+                        val intent = Intent(context, MainActivity::class.java).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+                            )
+                        }
+                        context.startActivity(intent)
+                        act.finish()
+                    } catch (_: Exception) {
+                        try {
+                            android.os.Process.killProcess(
+                                android.os.Process.myPid()
+                            )
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            is RestoreState.Error -> {
+                snackbarHostState.showSnackbar(s.message)
+                viewModel.resetRollbackState()
             }
             else -> Unit
         }
@@ -234,6 +292,16 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Инфо")
                 }
             }
+            // FIX 5.9-db-rollback
+            OutlinedButton(
+                onClick = { showRollbackDialog = true },
+                enabled = rollbackState is RestoreState.Idle,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Restore, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Откатиться к авто-бэкапу")
+            }
 
             HorizontalDivider()
 
@@ -321,6 +389,32 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             Spacer(Modifier.height(12.dp))
                             Text(
                                 rs.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // FIX 5.9-db-rollback: модалка прогресса отката.
+        val rbs = rollbackState
+        if (rbs is RestoreState.InProgress) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black.copy(alpha = 0.5f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Card {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                rbs.message,
                                 style = MaterialTheme.typography.bodyMedium,
                                 textAlign = TextAlign.Center
                             )
@@ -428,6 +522,42 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 pendingManifest = null
                 pendingImportUri = null
                 pendingImportName = null
+            }
+        )
+    }
+
+    // FIX 5.9-db-rollback: диалоги отката.
+    if (showRollbackDialog) {
+        DbRollbackDialog(
+            backups = rollbackBackups,
+            loading = rollbackLoading,
+            onSelect = { backup ->
+                showRollbackDialog = false
+                pendingRollbackFile = backup.file
+                pendingRollbackManifest = backup.manifest
+                pendingRollbackName = backup.file.name
+            },
+            onDismiss = { showRollbackDialog = false }
+        )
+    }
+
+    val rbFile = pendingRollbackFile
+    val rbName = pendingRollbackName
+    if (rbName != null && rbFile != null) {
+        DbRollbackConfirmDialog(
+            fileName = rbName,
+            manifest = pendingRollbackManifest,
+            onConfirm = {
+                val f = pendingRollbackFile
+                pendingRollbackFile = null
+                pendingRollbackName = null
+                pendingRollbackManifest = null
+                if (f != null) viewModel.rollbackFromInternal(f)
+            },
+            onDismiss = {
+                pendingRollbackFile = null
+                pendingRollbackName = null
+                pendingRollbackManifest = null
             }
         )
     }

@@ -16,6 +16,8 @@ import com.example.geosamplemanager.data.backup.BackupCounts
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
+import com.example.geosamplemanager.data.backup.RollbackBackup
+import com.example.geosamplemanager.data.backup.RollbackBackups
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -177,14 +179,109 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun restoreFromUri(uri: Uri) {
-        if (_restoreState.value is RestoreState.InProgress) return
+        performReplacement(
+            stateFlow = _restoreState,
+            autoBackupPrefix = AUTO_BACKUP_PREFIX_RESTORE,
+            errorMessage = "Ошибка импорта",
+            extract = { targetDb, targetPhotosDir ->
+                GsmBackupReader.extract(
+                    context = getApplication(),
+                    uri = uri,
+                    targetDb = targetDb,
+                    targetPhotosDir = targetPhotosDir
+                )
+            }
+        )
+    }
+
+    // ================================================================
+    // FIX 5.9-db-rollback: откат к авто-бэкапу
+    // ================================================================
+
+    private val _rollbackBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())
+    val rollbackBackups: StateFlow<List<RollbackBackup>> =
+        _rollbackBackups.asStateFlow()
+
+    private val _rollbackLoading = MutableStateFlow(false)
+    val rollbackLoading: StateFlow<Boolean> = _rollbackLoading.asStateFlow()
+
+    private val _rollbackState = MutableStateFlow<RestoreState>(RestoreState.Idle)
+    val rollbackState: StateFlow<RestoreState> = _rollbackState.asStateFlow()
+
+    fun resetRollbackState() {
+        _rollbackState.value = RestoreState.Idle
+    }
+
+    /**
+     * Загружает список pre_restore_* из filesDir/db_backups/.
+     * Manifest читается для каждого файла — нужен для диалога.
+     */
+    fun loadRollbackBackups() {
+        if (_rollbackLoading.value) return
+        _rollbackLoading.value = true
+        viewModelScope.launch {
+            try {
+                val dir = repo.getRollbackBackupsDir()
+                val list = withContext(Dispatchers.IO) {
+                    RollbackBackups.list(dir) { GsmBackupReader.readManifest(it) }
+                }
+                _rollbackBackups.value = list
+            } catch (e: Exception) {
+                _message.value = "Ошибка чтения бэкапов: ${e.message}"
+            } finally {
+                _rollbackLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Откат к авто-бэкапу из приватной папки.
+     */
+    fun rollbackFromInternal(file: File) {
+        performReplacement(
+            stateFlow = _rollbackState,
+            autoBackupPrefix = AUTO_BACKUP_PREFIX_ROLLBACK,
+            errorMessage = "Ошибка отката",
+            extract = { targetDb, targetPhotosDir ->
+                GsmBackupReader.extract(
+                    file = file,
+                    targetDb = targetDb,
+                    targetPhotosDir = targetPhotosDir
+                )
+            }
+        )
+    }
+
+    // ================================================================
+    // Общая цепочка замены БД (импорт и откат)
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-rollback:
+     * Общая логика для import/rollback:
+     *  1) авто-бэкап текущего состояния с префиксом (pre_restore / pre_rollback);
+     *  2) закрытие БД, удаление -wal/-shm, очистка папки фото;
+     *  3) extract;
+     *  4) resetRepository;
+     *  5) ротация pre_restore_*;
+     *  6) Done.
+     *
+     * Импорт и откат отличаются только источником extract и префиксом.
+     */
+    private fun performReplacement(
+        stateFlow: MutableStateFlow<RestoreState>,
+        autoBackupPrefix: String,
+        errorMessage: String,
+        extract: (targetDb: File, targetPhotosDir: File) -> Boolean
+    ) {
+        if (stateFlow.value is RestoreState.InProgress) return
 
         viewModelScope.launch {
             try {
-                _restoreState.value = RestoreState.InProgress("Готовим бэкап…")
-                withContext(Dispatchers.IO) { autoBackupBeforeRestore() }
+                stateFlow.value = RestoreState.InProgress("Готовим бэкап…")
+                withContext(Dispatchers.IO) { autoBackup(autoBackupPrefix) }
 
-                _restoreState.value = RestoreState.InProgress("Закрываем БД…")
+                stateFlow.value = RestoreState.InProgress("Закрываем БД…")
                 val ok = withContext(Dispatchers.IO) {
                     AppDatabase.closeAndReset()
 
@@ -201,12 +298,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     if (photosDir.exists()) photosDir.deleteRecursively()
                     photosDir.mkdirs()
 
-                    GsmBackupReader.extract(
-                        context = getApplication(),
-                        uri = uri,
-                        targetDb = dbFile,
-                        targetPhotosDir = photosDir
-                    )
+                    extract(dbFile, photosDir)
                 }
 
                 if (!ok) {
@@ -214,10 +306,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 app.resetRepository()
-                _restoreState.value = RestoreState.Done
+                withContext(Dispatchers.IO) { rotatePreRestore() }
+                stateFlow.value = RestoreState.Done
             } catch (e: Exception) {
-                _restoreState.value = RestoreState.Error(
-                    e.message ?: "Ошибка импорта"
+                stateFlow.value = RestoreState.Error(
+                    e.message ?: errorMessage
                 )
             }
         }
@@ -227,13 +320,18 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // Внутренние утилиты
     // ================================================================
 
-    private suspend fun autoBackupBeforeRestore() {
+    /**
+     * FIX 5.9-db-rollback:
+     * Общий авто-бэкап. prefix — pre_restore или pre_rollback.
+     * Пишем в приватную папку и (на Android 10+) в публичные Загрузки.
+     */
+    private suspend fun autoBackup(prefix: String) {
         val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
-        val name = "pre_restore_${sdf.format(Date())}"
+        val name = "${prefix}_${sdf.format(Date())}"
         val fileName = "$name.${GsmBackupWriter.EXTENSION}"
 
         try {
-            val dir = File(getApplication<Application>().filesDir, "db_backups")
+            val dir = repo.getRollbackBackupsDir()
             if (!dir.exists()) dir.mkdirs()
             val f = File(dir, fileName)
             f.outputStream().use { out -> writeBackup(out) }
@@ -245,6 +343,21 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 writeToPublicDownloads(fileName)
             } catch (_: Exception) {
             }
+        }
+    }
+
+    /**
+     * FIX 5.9-db-rollback:
+     * Держим не больше RollbackBackups.MAX_KEEP последних pre_restore_*.
+     * Вызывается после успешной замены БД.
+     */
+    private suspend fun rotatePreRestore() {
+        try {
+            RollbackBackups.rotate(
+                repo.getRollbackBackupsDir(),
+                RollbackBackups.MAX_KEEP
+            )
+        } catch (_: Exception) {
         }
     }
 
@@ -386,5 +499,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 _message.value = "Ошибка: ${e.message}"
             }
         }
+    }
+
+    companion object {
+        /** FIX 5.9-db-rollback: префиксы авто-бэкапов. */
+        private const val AUTO_BACKUP_PREFIX_RESTORE = "pre_restore"
+        private const val AUTO_BACKUP_PREFIX_ROLLBACK = "pre_rollback"
     }
 }

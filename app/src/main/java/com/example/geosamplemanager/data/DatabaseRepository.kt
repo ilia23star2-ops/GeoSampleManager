@@ -22,6 +22,10 @@ import java.io.File
  *  - checkpointWal() — сброс WAL перед чтением файла .db;
  *  - getPhotosDir() — путь к папке sample_photos;
  *  - DB_SCHEMA_VERSION — константа для манифеста.
+ *
+ * FIX 5.9-db-rollback:
+ *  - getRollbackBackupsDir() — путь к папке авто-бэкапов
+ *    (pre_restore_*, pre_rollback_*).
  */
 data class DbInfo(
     val dbPath: String,
@@ -232,6 +236,13 @@ class DatabaseRepository(context: Context) {
      * Папка с фото проб.
      */
     fun getPhotosDir(): File = File(appContext.filesDir, "sample_photos")
+
+    /**
+     * FIX 5.9-db-rollback:
+     * Папка с авто-бэкапами (pre_restore_*, pre_rollback_*).
+     * Создаётся при первом обращении при необходимости.
+     */
+    fun getRollbackBackupsDir(): File = File(appContext.filesDir, "db_backups")
 
     /**
      * FIX 5.9-db-backup-v2:
