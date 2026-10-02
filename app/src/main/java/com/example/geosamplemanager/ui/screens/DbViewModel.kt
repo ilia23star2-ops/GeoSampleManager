@@ -17,6 +17,8 @@ import com.example.geosamplemanager.data.backup.BackupCounts
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
+import com.example.geosamplemanager.data.backup.PublicBackup
+import com.example.geosamplemanager.data.backup.PublicBackupsLister
 import com.example.geosamplemanager.data.backup.PublicBackupsMigrator
 import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.backup.RollbackBackups
@@ -153,6 +155,39 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         prefs.edit()
             .putBoolean(PublicBackupsMigrator.KEY_MIGRATED, true)
             .apply()
+    }
+
+    // ================================================================
+    // FIX 5.9-db-import-picker: список публичных бэкапов
+    // ================================================================
+
+    private val _publicBackups = MutableStateFlow<List<PublicBackup>>(emptyList())
+    val publicBackups: StateFlow<List<PublicBackup>> = _publicBackups.asStateFlow()
+
+    private val _publicBackupsLoading = MutableStateFlow(false)
+    val publicBackupsLoading: StateFlow<Boolean> =
+        _publicBackupsLoading.asStateFlow()
+
+    /**
+     * FIX 5.9-db-import-picker:
+     * Список .gsmbackup для диалога «Импорт» — только папка exports.
+     * Авто-бэкапы pre_* в импорт не попадают: ими занимается «Откат».
+     */
+    fun loadPublicBackups() {
+        if (_publicBackupsLoading.value) return
+        _publicBackupsLoading.value = true
+        viewModelScope.launch {
+            try {
+                val list = withContext(Dispatchers.IO) {
+                    PublicBackupsLister.listForImport(getApplication())
+                }
+                _publicBackups.value = list
+            } catch (e: Exception) {
+                _message.value = "Ошибка чтения списка: ${e.message}"
+            } finally {
+                _publicBackupsLoading.value = false
+            }
+        }
     }
 
     // ================================================================
@@ -322,7 +357,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
      *  2) clearAllTables + удалить фото;
      *  3) closeAndReset + resetRepository;
      *  4) ротация pre_*_;
-     *  5) Done (UI перезапустит стек).
+     *  5) Done (UI пересоберёт поддерево).
      */
     fun cleanDatabase() {
         if (_cleanState.value is RestoreState.InProgress) return
