@@ -76,7 +76,7 @@
 | `note_text` | String? | Текст |
 | `created_date` | Long | |
 
-**Одна заметка на пробу.** Фото хранятся отдельно.
+**Одна заметка на пробу.**
 
 ⚠️ **В v1 было поле `image_path`** — в v2 удалено.
 
@@ -91,7 +91,7 @@
 
 **Индекс** по `sample_id`.
 
-Одна проба — 0..N фото. Заметка и фото независимы.
+Одна проба — 0..N фото.
 
 ---
 
@@ -108,16 +108,12 @@
 
 ### Шаг 4. Для каждого листа
 1. **Чтение** — `XlsxReader.readSheet` → `SheetData`.
-2. **Анализ** — `ExcelAnalyzer.analyzeSheet` → `SheetAnalysis?`.
+2. **Анализ** — `ExcelAnalyzer.analyzeSheet`.
 3. **Сборка** — `ExcelImporter.buildOrder`:
    - `SampleFilter.classify` → KEEP / SKIP_BLANK / SKIP_EMPTY.
-   - `SampleFilter.classifyTypeAndStatus`.
    - `AreaResolver.resolve`, `OrderNumberExtractor.extract`.
 4. **Предпросмотр** — диалог.
-5. **Запись** — `AddViewModel.doImportToDb`:
-   - Конфликт → диалог «Добавить / Пропустить / Заменить».
-   - Для каждой `ParsedSample` → `SampleEntity` + `repo.addSample`.
-   - Уникальные `wellNumber` → `order_wells`.
+5. **Запись** — `AddViewModel.doImportToDb`.
 
 ---
 
@@ -126,15 +122,12 @@
 ### Заметка
 1. `NotePhotoDialog` из строки пробы.
 2. `loadNoteWithPhotos(sampleId)`.
-3. «Сохранить» → `saveNoteText` → `upsertNote` или `deleteNote` →
-   `syncHasNoteAndPhoto`.
+3. «Сохранить» → `saveNoteText` → `upsertNote` → `syncHasNoteAndPhoto`.
 
 ### Фото
 1. «Сделать фото» / «Из галереи».
 2. `PhotoStorage.compressAndSave` — скейл до 1024 px, JPEG 80%.
-3. `repo.addPhoto(sampleId, path)` — запись в `sample_images`,
-   обновление `has_photo`.
-4. Удаление: `repo.deletePhoto` — БД + файл + пересчёт `has_photo`.
+3. `repo.addPhoto(sampleId, path)`.
 
 ---
 
@@ -166,18 +159,16 @@
 
 ## Методы `DatabaseRepository`
 
-**Сверка:**
-`setSampleStatus`, `setHasNote`, `setWeight`, `setWeightControl`,
-`saveRows`, `deleteSampleWithRenumber`, `deleteWellsForOrder`,
-`upsertNote`, `getNote`.
+**Сверка:** `setSampleStatus`, `setHasNote`, `setWeight`,
+`setWeightControl`, `saveRows`, `deleteSampleWithRenumber`,
+`deleteWellsForOrder`, `upsertNote`, `getNote`.
 
-**Заметки и фото (v2):**
-`getPhotosForSample`, `getImagePathsForSample`, `addPhoto`, `deletePhoto`,
-`getNoteWithPhotos`, `syncHasNoteAndPhoto`.
+**Заметки и фото (v2):** `getPhotosForSample`, `getImagePathsForSample`,
+`addPhoto`, `deletePhoto`, `getNoteWithPhotos`, `syncHasNoteAndPhoto`.
 
-**Бэкапы и восстановление:**
-`checkpointWal`, `getDatabaseFile`, `getPhotosDir`,
-`getRollbackBackupsDir`, `getDbInfo`, `clearOrder`, `clearAllData`.
+**Бэкапы и восстановление:** `checkpointWal`, `getDatabaseFile`,
+`getPhotosDir`, `getRollbackBackupsDir`, `getDbInfo`, `clearOrder`,
+`clearAllData`.
 
 ---
 
@@ -187,7 +178,7 @@
 
 Zip-архив:
 - `manifest.json` — метаданные.
-- `geosamples.db` — сама БД (SQLite).
+- `geosamples.db` — сама БД.
 - `sample_photos/` — папка с фото.
 
 ### `manifest.json`
@@ -204,9 +195,9 @@ Zip-архив:
     "photos": 3, "notes": 1
   }
 }
-format_version — версия формата. Несовместимая — импорт блокируется.
+format_version — версия формата.
 
-db_schema_version — версия схемы. Несовпадение — предупреждение.
+db_schema_version — версия схемы.
 
 operation — restore / rollback / clean / export / unknown.
 
@@ -217,8 +208,7 @@ text
   pre_rollback/   — авто-бэкапы перед откатом
   pre_clean/      — авто-бэкапы перед очисткой
   exports/        — пользовательские экспорты
-Приватно те же файлы (кроме exports/) лежат в
-filesDir/db_backups/.
+Приватно те же файлы (кроме exports/) — в filesDir/db_backups/.
 
 Имя файла
 Авто-бэкап: pre_<operation>_YYYYMMDD_HHmm.gsmbackup.
@@ -247,9 +237,46 @@ DbRollbackDialog объединяет приватные и публичные p
 Дедупликация по имени файла, приоритет приватного. Метка источника
 в строке: «Внутренний» / «Загрузки».
 
+Управление бэкапами
+BackupManagerDialog:
+
+сводка (количество, размер, счётчики по источнику/операции);
+
+список всех бэкапов;
+
+удаление одного (стирает обе копии);
+
+«Удалить старые» — ручная ротация;
+
+«Удалить авто» — все авто-бэкапы, экспорты остаются.
+
+Слияние двух БД
+MergeWizard:
+
+превью: новые / идентичные / конфликты;
+
+конфликты проб — по полям, массовые стратегии + точечно;
+
+дерево Наряд → Скважина → Проба;
+
+авторазворот при ≤30 конфликтах.
+
+Ключ сопоставления:
+
+участки — по area_name;
+
+наряды — по (area_id, order_number);
+
+пробы — по (order_id, sample_number);
+
+скважины — по (order_id, well_number).
+
+Защита: found / postponed / weightControl — моё true
+не сбрасывается при слиянии.
+
 Авто-бэкап перед заменой
 Перед импортом, откатом, очисткой всегда создаётся авто-бэкап
-текущего состояния. Если что-то пойдёт не так — есть точка возврата.
+текущего состояния.
 
 Особенности
 Дубликаты номеров проб игнорируются.
@@ -262,8 +289,7 @@ DbRollbackDialog объединяет приватные и публичные p
 
 Один наряд = один участок.
 
-Файлы фото лежат в filesDir/sample_photos/, БД хранит
-только путь.
+Файлы фото лежат в filesDir/sample_photos/, БД хранит путь.
 
 FK CASCADE чистит только БД. Файлы фото удаляются вручную
 в DatabaseRepository.
@@ -275,7 +301,7 @@ FK CASCADE чистит только БД. Файлы фото удаляютс�
 
 Дата отбора, примечания из Excel.
 
-Настройки холостых и шага ВК по наряду (живут в ReconciliationState).
+Настройки холостых и шага ВК (живут в ReconciliationState).
 
 История миграций
 v1 → v2 (этап 5.5.1, закрыт)

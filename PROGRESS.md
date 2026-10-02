@@ -8,13 +8,15 @@
 всех вкладок, кроме сверки. Закрыты: Статистика, Редактирование.
 В работе — БД.
 
-### Вкладка «БД» — в работе
+### Вкладка «БД» — почти закрыта
 
 **Дата:** 2026-10-01 … 2026-10-02
 **Пачки:** `db-style`, `db-info`, `db-backup-v2`, `db-backup-fix`,
-`db-restore-v2` (с 2 hotfix), `db-rollback`, `db-clean`,
-`db-backups-ops` (2 подзахода), `db-smooth-restart`, `db-soft-restart`,
-`db-import-picker` (с фиксом), `db-rollback-public` (с фиксом).
+`db-restore-v2` (с 2 hotfix), `db-rollback`, `db-backups-ops`
+(2 подзахода), `db-clean`, `db-smooth-restart`, `db-soft-restart`,
+`db-import-picker` (с фиксом), `db-rollback-public` (с фиксом),
+`db-backup-manager` (с фиксом), `db-merge-v2` (7 подзаходов),
+`db-backups-fix`.
 
 **Что было:** вкладка БД — просмотр участков/нарядов/проб,
 добавление участков и нарядов, удаление, простой бэкап файла `.db`
@@ -22,25 +24,22 @@
 `wal_checkpoint` — потенциально неконсистентная копия.
 
 **Что стало:** полноценный менеджер БД — экспорт/импорт, инфо-панель,
-авто-бэкапы с ротацией, откат, очистка, бесшовный перезапуск стека.
+авто-бэкапы с ротацией, откат, очистка, управление бэкапами,
+бесшовный перезапуск стека, слияние БД с умными конфликтами.
 
 #### `db-style` — стилевые правки
 
 - `Toast` → `SnackbarHost`.
 - `maxWidth > 600.dp` → `>= 600.dp`.
 - Убран `!!` при работе с `selectedOrder`.
-- Комментарии приведены к общему стилю.
 
 #### `db-info` — инфо-панель
 
-- Кнопка «Инфо» в шапке → `DbInfoDialog`.
+- Кнопка «Инфо» → `DbInfoDialog`.
 - `DatabaseRepository.getDbInfo()` — счётчики всех таблиц + размеры
   файла БД и папки фото.
 - `SampleNoteDao.countAll()`, `SampleImageDao.countAll()`,
   `OrderWellDao.countAll()` — новые запросы.
-- Отображение: путь, размер БД, размер фото, дата изменения,
-  участков/нарядов/скважин/проб/фото/заметок.
-- Кнопка «Обновить» + авто-загрузка при открытии.
 
 #### `db-backup-v2` — экспорт `.gsmbackup`
 
@@ -50,150 +49,107 @@
 - `manifest.json`: `format_version`, `created_at`, `app_version`,
   `db_schema_version`, `counts`.
 - `DatabaseRepository.checkpointWal()` — `PRAGMA
-  wal_checkpoint(TRUNCATE)` перед чтением `.db`.
-- `DatabaseRepository.getPhotosDir()` — путь к фото.
+  wal_checkpoint(TRUNCATE)`.
 - `DB_SCHEMA_VERSION = 2` — константа.
-- `DbBackupDialog` — имя файла (редактируемое) + чекбокс «Сохранить
-  во внутреннюю папку / наружу».
-- `DbViewModel.exportToInternal`, `exportToUri`.
+- `DbBackupDialog` — имя файла + чекбокс «Поделиться после сохранения».
 
 #### `db-backup-fix` — сохранение в публичные Загрузки
 
-**Проблема:** внутренняя папка `filesDir/db_backups/` невидима
-рабочему в проводнике. Файл «не находится».
-
-**Решение:**
-- `db-backup-v2` переделан: сохранение в **публичные Загрузки**
-  через `MediaStore` (API 29+).
-- Путь: `Downloads/GeoSampleManager/geosamples_YYYYMMDD_HHMM.gsmbackup`.
-- Имя папки «Downloads» на каждом устройстве своё (Android переводит
-  сам) — например, на MIUI «Donwload».
-- На API < 29 — fallback через `CreateDocument` (системный диалог).
-- Чекбокс «Поделиться после сохранения» в диалоге — открывает
-  Share-интент после записи.
-- `_lastExportUri` в ViewModel; `LaunchedEffect` в UI читает и
-  запускает Share.
+- Сохранение в **публичные Загрузки** через `MediaStore` (API 29+).
+- Путь: `Загрузки/GeoSampleManager/`.
+- На API < 29 — fallback через `CreateDocument`.
 
 #### `db-restore-v2` — импорт `.gsmbackup`
 
 - `GsmBackupReader` — чтение архива, парсинг `manifest.json`,
   извлечение `.db` + фото.
-- `BackupManifest` — data-класс.
-- `DbRestoreDialog` — превью: имя файла, дата, версия схемы, счётчики.
-  Проверки: `format_version = 1` (блокирует), `db_schema_version = 2`
-  (предупреждает).
-- `DbViewModel.restoreFromUri` — авто-бэкап → закрытие БД → удаление
-  `.db`/`-wal`/`-shm` → очистка фото → распаковка → resetRepository.
-- `AppDatabase.closeAndReset()` — новый метод.
-- `GeoSampleApp.resetRepository()` — новый метод.
-- `RestoreState` — sealed class (Idle / InProgress / Done / Error).
-- Overlay с прогрессом на время импорта.
-- Кнопка «Импорт» в шапке БД.
+- `DbRestoreDialog` — превью: имя файла, дата, схема, счётчики.
+- `DbViewModel.restoreFromUri` — авто-бэкап → `closeAndReset` →
+  удаление `.db`/`-wal`/`-shm` → распаковка → `resetRepository`.
+- `RestoreState` — Idle / InProgress / Done / Error.
 
 **Hotfix 1:** `activity.recreate()` не сбрасывает ViewModel.
-Заменено на `killProcess` + `AlarmManager`.
 
 **Hotfix 2:** `killProcess` + `AlarmManager` не работают на новых
 Android. Финальное решение — `startActivity(MainActivity,
 NEW_TASK|CLEAR_TASK)` + `finish()`.
 
-**Device-check ✅** (01.10.2026): экспорт + импорт + пересоздание
-стека работают.
-
 #### `db-rollback` — откат к авто-бэкапу
 
-- Кнопка «Откатиться к авто-бэкапу» (позже переименована в «Откат»).
-- `RollbackBackups` — чистая логика: парсер имени
-  `pre_restore_YYYYMMDD_HHmm.gsmbackup`, фильтр, сортировка, ротация.
-- `GsmBackupReader` — перегрузки для `File` (без ContentResolver).
+- Кнопка «Откатиться к авто-бэкапу» → позже переименована в «Откат».
+- `RollbackBackups` — парсер имени, фильтр, сортировка, ротация.
+- `GsmBackupReader` — перегрузки для `File`.
 - `DatabaseRepository.getRollbackBackupsDir()` — `filesDir/db_backups/`.
-- `DbViewModel.loadRollbackBackups`, `rollbackFromInternal`, общий
-  метод `performReplacement` для import/rollback.
-- `DbRollbackDialog` — список точек отката.
-- `DbRollbackConfirmDialog` — двойное подтверждение.
+- `DbRollbackDialog` + `DbRollbackConfirmDialog`.
 - Авто-бэкап `pre_rollback_*` перед откатом.
 - Ротация `pre_restore_*` после успешной замены (5 последних).
-- Тесты: `RollbackBackupsTest` — 12 тестов.
+- `RollbackBackupsTest` — 12 тестов.
 
-**Device-check ✅** (02.10.2026).
-
-#### `db-backups-ops` — универсальная инфраструктура авто-бэкапов
+#### `db-backups-ops` — универсальная инфраструктура
 
 **Подзаход /1 — operation + универсальная ротация.**
 
-- `GsmBackupWriter` — параметр `operation` в `write()`, поле в манифест.
-- `GsmBackupReader.BackupManifest` — поле `operation` (`optString`).
+- `GsmBackupWriter` — параметр `operation` в `write()` и манифест.
+- `GsmBackupReader.BackupManifest` — поле `operation`.
 - `RollbackBackups` — поддержка трёх префиксов (`pre_restore_`,
   `pre_rollback_`, `pre_clean_`); `RollbackBackup.operation`;
-  `rotateByPrefix` — ротация отдельно по каждой операции.
-- `DbViewModel.autoBackup(operation)` вместо `autoBackup(prefix)`.
-- `DbRollbackDialog` — плашка операции (Импорт/Откат/Очистка/Экспорт).
-- Тесты: `RollbackBackupsTest` (расширен), `BackupManifestTest` (6).
+  `rotateByPrefix`.
+- Тесты: `BackupManifestTest` — 6.
 
 **Подзаход /2 — папки в Загрузках + миграция.**
 
 - Структура: `GeoSampleManager/{pre_restore, pre_rollback, pre_clean,
   exports}/`.
-- `PublicBackupsMigrator` — одноразовая ленивая миграция старых
-  файлов из корня `GeoSampleManager/` в подпапки (флаг в
-  `SharedPreferences`).
-- `DbScreen` — `LaunchedEffect(Unit)` вызывает миграцию при
-  первом показе.
-- Тесты: `PublicBackupsMigratorTest` (10).
+- `PublicBackupsMigrator` — одноразовая ленивая миграция.
+- `PublicBackupsMigratorTest` — 10 тестов.
 
 #### `db-clean` — полная очистка БД
 
 - Кнопка «Очистить БД» (красный контур).
-- Двойное подтверждение через `CleanConfirmState` (галочка «Понимаю»).
+- Двойное подтверждение через `CleanConfirmState` (галочка).
 - Авто-бэкап `pre_clean_*` перед очисткой.
 - `DatabaseRepository.clearAllData()` — `db.clearAllTables()` +
   удаление всех фото.
-- Ротация `pre_*_` после успешной очистки.
-- Тесты: `CleanConfirmStateTest` (6).
+- `CleanConfirmStateTest` — 6.
 
 #### `db-smooth-restart` — бесшовный перезапуск (промежуточный)
 
-- `RestartRouter` — сохранение route в SharedPreferences перед
-  `startActivity(CLEAR_TASK)`.
+- `RestartRouter` — сохранение route в SharedPreferences.
 - `NavGraph` — `startDestination` из сохранённого route.
 - `overridePendingTransition(0, 0)` — без анимации.
 - Кнопка «Откатиться к авто-бэкапу» → «Откат».
 
-**Не закрыло проблему:** белый экран остался (пересоздание Activity).
+**Не закрыло проблему:** белый экран остался.
 
-#### `db-soft-restart` — пересоздание ViewModel без пересоздания Activity
+#### `db-soft-restart` — пересбор ViewModel без пересоздания Activity
 
 **Решение проблемы белого экрана.**
 
 - `GeoSampleApp`: `restartRequest: StateFlow<RestartRequest?>`,
   `requestRestart(route)`, `scheduleRestartMessage`, `consumeRestartMessage`.
-- `SimpleViewModelStoreOwner` — владелец ViewModelStore для
-  Compose-поддерева.
+- `SimpleViewModelStoreOwner` — владелец ViewModelStore для поддерева.
 - `MainActivity.ReadyContent(app)`: `key(tick)` +
   `CompositionLocalProvider(LocalViewModelStoreOwner)` +
   `DisposableEffect` → `owner.viewModelStore.clear()`.
 - `NavGraph.AppScaffold(initialRoute)`.
 - `DbScreen` — вместо `startActivity` → `app.requestRestart(Screen.DB.route)`.
 - Удалён `RestartRouter` + `RestartRouterTest`.
-- Снекбар «Готово. …» показывается **после** пересборки поддерева —
-  через `app.consumeRestartMessage()` в `LaunchedEffect(Unit)`.
-- **Activity больше не пересоздаётся.** Белого экрана нет.
+- Снекбар «Готово. …» — после пересборки через
+  `app.consumeRestartMessage()`.
 
 #### `db-import-picker` — импорт из списка exports
 
-- Кнопка «Импорт» открывает диалог со списком `.gsmbackup` из
+- Кнопка «Импорт» → диалог со списком `.gsmbackup` из
   `Загрузки/GeoSampleManager/exports/`.
 - Авто-бэкапы `pre_*` в импорте **не показываются** — ими
   занимается «Откат».
-- `PublicBackup`, `PublicBackupsLister.listForImport`,
-  `PublicBackupsLister.listAutoBackups`.
-- `DbImportPickerDialog` — строка: имя файла (моноширинный),
-  дата, размер, счётчики.
-- Кнопка «Выбрать файл вручную…» (SAF) — всегда.
-- Тесты: `PublicBackupsListerTest` (12).
+- `PublicBackup`, `PublicBackupsLister.listForImport`.
+- `DbImportPickerDialog` — имя файла (моноширинный), дата, размер.
+- Кнопка «Выбрать файл вручную…» (SAF).
+- `PublicBackupsListerTest` — 12.
 
-**Фикс:** `PublicBackup.uri` — строка, не `android.net.Uri`
-(иначе JVM-тесты падают на `Uri.parse` = null).
+**Фикс:** `PublicBackup.uri` — строка, не `Uri` (иначе JVM-тесты
+падают на `Uri.parse` = null).
 
 #### `db-rollback-public` — приватные + публичные авто-бэкапы
 
@@ -202,17 +158,99 @@ NEW_TASK|CLEAR_TASK)` + `finish()`.
 - `RollbackBackup.source` — `PRIVATE` / `PUBLIC`.
 - `RollbackBackups.merge()` — дедупликация по имени файла,
   приоритет приватного.
-- `RollbackBackups.fromPublic()` — `PublicBackup` → `RollbackBackup`.
 - `PublicBackupsLister.rotateAutoBackups()` — ротация публичных
   через MediaStore, 5 на операцию.
 - `DbViewModel.rollbackFromPublic(uri)`.
-- `loadRollbackBackups()` — сначала ротация публичных, потом сбор
-  и merge.
-- `rotateAllBackups()` — чистит и приватные, и публичные.
 - Метка источника в строке: «Внутренний» / «Загрузки».
-- Тесты: `RollbackBackupsTest` (расширен — `merge`, `fromPublic`).
 
-**Device-check ✅** (02.10.2026).
+**Фикс:** `PublicBackup.uri` → String.
+
+#### `db-backup-manager` — управление бэкапами
+
+- Кнопка «Бэкапы» на вкладке БД.
+- `BackupManagerDialog` — сводка (количество, размер, счётчики по
+  источнику/операции), список всех бэкапов (приватные + публичные).
+- Удаление по одному (крестик → подтверждение).
+- Кнопка «Удалить старые» — ручная ротация (5 на операцию).
+- Кнопка «Удалить авто» (было «Удалить всё») — все авто-бэкапы,
+  экспорты не трогает (см. `db-backups-fix`).
+- `BackupManagerStats` — чистая логика сводки + форматирование размера.
+- `BackupManagerStatsTest` — 11 тестов.
+
+**Фикс:** удаление одной пробы стирает **все копии** (приватную и
+публичную); компактная раскладка кнопок на вкладке БД — 4 + 3
+в двух рядах.
+
+#### `db-merge-v2` — слияние БД
+
+**Самая крупная пачка, 7 подзаходов.**
+
+**Подзаход /1 — движок (участки + наряды).**
+
+- `MergeEngine` — `openArchive`, `planAreas`, `planOrders`,
+  `applyAreaPlan`, `applyOrderPlan`, `closeAndClean`.
+- `MergeModels` — `AreaPlan`, `OrderPlan`, `TempDatabaseHandle`.
+- `AppDatabase.buildTemp()` — открыть БД по произвольному пути.
+- `MergeEngineTest` — старт.
+
+**Подзаход /2 — пробы, скважины, заметки.**
+
+- `planSamples`, `planWells`, `planNotes`, `apply*` для них.
+- `ConflictResolution` (KEEP_MINE / TAKE_THEIRS).
+
+**Подзаход /3 — фото.**
+
+- Распаковка `sample_photos/` из архива.
+- `planPhotos`, `applyPhotoPlan` — копирование файлов под UUID-именем.
+- `extractArchivePhotoName` — чистая функция.
+
+**Подзаход /4 — UI wizard.**
+
+- Кнопка «Слияние» на вкладке БД.
+- `MergeWizard` — превью → конфликты → прогресс → итог.
+- `MergeRunner` — оркестратор apply-фаз.
+- `MergePreview`, `MergeStats`.
+
+**Подзаход /5 — умные конфликты по полям.**
+
+- `SampleField` — перечень полей пробы.
+- `FieldDiff` — расхождение по одному полю с raw + display.
+- `FieldResolution` — карта «поле → чей вариант».
+- `FieldOwner` — MINE / THEIRS.
+- `displayFor` — человекочитаемые подписи (русские).
+- Три категории в `planSamples`: `identical` / `toAdd` / `conflicts`.
+- «Заполнить пустые» — умная стратегия.
+
+**Подзаход /6 — детализация + защита отметок.**
+
+- `DetailsBlock` в превью показывает все категории с подписями
+  «нет новых» и т.п.
+- Группы в конфликтах кликабельны — фильтруют список.
+- `found` / `postponed` / `weightControl`: **моё true защищено**.
+  Конфликт — только если у меня false, в архиве true.
+- `MergeConflictsScreen` — полноэкранный экран (не тесный диалог).
+- Широкая раскладка: слева панель массовых (30%), справа список (70%).
+- Узкая: две вкладки «Массовые» / «Список».
+
+**Подзаход /7 — дерево и группы.**
+
+- `SampleConflict` получил `areaName` / `orderNumber` / `wellNumber`.
+- `buildConflictTree` — дерево Наряд → Скважина → Проба.
+- `MassStrategy` — ALL_MINE / ALL_THEIRS / FILL_EMPTY.
+- Массовые действия на каждой группе (наряд / скважина).
+- Авторазворот: ≤30 конфликтов — сразу развёрнуто; >30 — свёрнуто.
+- Иконка «Развернуть всё / Свернуть всё» в шапке дерева.
+
+**`MergeEngineTest`** — существенно расширен (порядка 80 тестов).
+
+#### `db-backups-fix` — «Удалить авто» не трогает экспорты
+
+- `PublicBackupsLister.isAutoBackupSubDir()` — предикат
+  «это авто-бэкап».
+- `DbViewModel.deleteAllBackups()` — фильтр по предикату.
+- `BackupManagerDialog` — кнопка «Удалить авто», подтверждение
+  про «экспорты останутся».
+- `PublicBackupsListerTest` — +7 тестов.
 
 ### Вкладка «Редактирование» — закрыта
 
@@ -221,26 +259,10 @@ NEW_TASK|CLEAR_TASK)` + `finish()`.
 `edit-status-blank`, `edit-save-guard`, `edit-multiselect`,
 `edit-mass-ops`.
 
-**Что было:** `EditScreen.kt` — пустая заглушка.
-
 **Что стало:** реактивный редактор с деревом, поиском, фильтрами,
 добавлением, правкой, мультивыбором, массовыми операциями.
 
-- `edit-viewmodel` — `EditViewModel`, `buildEditTree`.
-- `edit-screen-search` — адаптивный экран, поиск, чипы.
-- `edit-add-sample` — умная вставка со сдвигом номеров и интервалов.
-- `edit-status-blank` — интервал для холостых.
-- `edit-save-guard` — проверка № по БД.
-- `edit-multiselect` — выделение.
-- `edit-mass-ops` — массовая правка/удаление.
-
-**Device-check ✅** (01.10.2026): все сценарии прошли.
-
-#### Известные недоработки Редактирования
-
-- Общий сервис сдвига (`SampleShiftPlanner`) — обсуждён, не реализован.
-- Правка интервала не сдвигает последующие.
-- Undo для массовых операций отсутствует.
+**Device-check ✅** (01.10.2026).
 
 ### Пачка `report-xlsx` — закрыта
 
@@ -251,45 +273,28 @@ NEW_TASK|CLEAR_TASK)` + `finish()`.
 **Подзаходы:**
 
 - ✅ `xlsx-core` — ручной генератор .xlsx.
-- ✅ `xlsx-cells` — заполнение ячеек.
-- ✅ `xlsx-styles` — цвета строк.
-- ✅ `xlsx-links` — гиперссылки.
+- ✅ `xlsx-cells`, `xlsx-styles`, `xlsx-links`.
 - ✅ `xlsx-multi` — N нарядов → N листов + «Приложения».
 - ✅ `html-multi` — мультинарядный HTML.
 - ✅ `xlsx-ui` — подключение Excel.
-- ✅ `report-html-tests` — тесты одиночного HTML.
-- ✅ `multi-report-ui` — экран выбора нарядов.
-
-### `xlsx-ui` — критичные фиксы XLSX
-
-- `styles rel` в `workbook.xml.rels` — обязателен.
-- `fileVersion`, `workbookPr`, `calcPr` в `workbook.xml`.
-- `sheetViews`, `sheetFormatPr` в `sheet.xml`.
-- Порядок в `<font>` по ECMA-376.
-- `bgColor = fgColor` в solid fill.
-- `indexed` + `rgb` одновременно в `<fgColor>`.
-- Запись через `ByteArrayOutputStream`.
-- `theme` в `<fgColor>` — не использовать.
+- ✅ `report-html-tests`, `multi-report-ui`.
 
 ### Инфраструктурные пачки
 
-- ✅ `docs/5.9-docs-2` — доки после `xlsx-multi` и `html-multi`.
-- ✅ `fix/5.9-cleanup` — убраны дубликаты в корне.
-- ✅ `5.9-cleanup-2` — warnings компилятора в `XlsxWriter`.
-- ✅ `docs/5.9-docs-3` — доки после `xlsx-ui`.
-- ✅ `docs/5.9-docs-4` — доки после `report-xlsx`.
-- ✅ `docs/5.9-edit-docs` — доки после Редактирования.
-- ✅ `docs/5.9-db-docs` — доки после первых пачек БД.
+- ✅ `docs/5.9-docs-2`, `docs/5.9-docs-3`, `docs/5.9-docs-4`.
+- ✅ `fix/5.9-cleanup`, `5.9-cleanup-2`.
+- ✅ `docs/5.9-edit-docs` — доки Редактирования.
+- ✅ `docs/5.9-db-docs` — первые пачки БД.
 - ✅ `docs/5.9-ai-rules-confirm` — §24 в `AI_RULES.md`.
-- ✅ `docs/5.9-db-rollback-docs` — доки после `db-rollback`.
-- ✅ `docs/5.9-db-series` — этот заход.
+- ✅ `docs/5.9-db-rollback-docs` — после `db-rollback`.
+- ✅ `docs/5.9-db-series` — серия БД (средняя часть).
+- ✅ `docs/5.9-db-merge` — этот заход.
 
 ### Пачки Статистики (закрыты ранее)
 
 `stats-screen`, `stats-reactive`, `stats-layout`, `stats-search`,
 `stats-search-2`, `stats-order-status`, `report-html`,
 `stats-charts`, `stats-fixes`, `stats-compare`, `stats-compare-2`.
-`bulk-confirm-2`, `table-responsive`, `row-highlight` — в сверке.
 
 ---
 
