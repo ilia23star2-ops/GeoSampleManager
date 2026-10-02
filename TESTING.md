@@ -16,16 +16,15 @@
 - Логика undo/redo.
 - Отчёты (XLSX, HTML).
 - Чистые функции вкладки Редактирование.
-- Чистая логика БД-бэкапов (`RollbackBackups`, `PublicBackupsLister`,
-  `BackupManifest`, `CleanConfirmState`).
+- Чистая логика БД-бэкапов и слияния (`RollbackBackups`,
+  `PublicBackupsLister`, `BackupManifest`, `CleanConfirmState`,
+  `BackupManagerStats`, `MergeEngine`).
 - Миграции БД.
 
-UI не тестируем — проверяем руками. I/O, zip, БД — тоже
+UI не тестируем — проверяем руками. I/O, zip, MediaStore, БД —
 device-check.
 
 **Правило (§23 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
-Для вкладки БД — чистая логика покрывается юнит-тестами,
-io/zip/состояние Activity — device-check.
 
 ---
 
@@ -39,7 +38,7 @@ io/zip/состояние Activity — device-check.
 | `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV | 7 |
 | `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)` | 12 |
 | `WeightVoiceParserTest.kt` | «два и шесть» → 2.6 | 19 |
-| `UnifiedSearchTest.kt` | Уровни поиска, точное / суффикс / fuzzy | 18 |
+| `UnifiedSearchTest.kt` | Уровни поиска | 18 |
 | `AnswerStateTest.kt` | `AnswerState` из `AnswerReason` | 22 |
 | `VoiceCommandParserFindTest.kt` | «найди X» | 8 |
 | `VoiceCommandParserPausedTest.kt` | PAUSED | 6 |
@@ -47,9 +46,9 @@ io/zip/состояние Activity — device-check.
 | `VoiceCommandParserPin4Test.kt` | pin: склейка числительных | 7 |
 | `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED` | 8 |
 | `VoiceCommandParserQueueTest.kt` | Очередь | 6 |
-| `VoiceCommandParserWeightsTest.kt` | Вес: «два шесть» | 17 |
-| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4 | 27 |
-| `VoiceMarkersTest.kt` | Маркеры, отложение, SORT+pin | 17 |
+| `VoiceCommandParserWeightsTest.kt` | Вес | 17 |
+| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor` | 27 |
+| `VoiceMarkersTest.kt` | Маркеры, отложение | 17 |
 | `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman` | 19 |
 
 ### `data/backup/`
@@ -57,9 +56,16 @@ io/zip/состояние Activity — device-check.
 | Файл | Что проверяет | Тестов |
 |---|---|---|
 | `RollbackBackupsTest.kt` | Парсер имени, фильтр, сортировка, ротация, merge, fromPublic | 30 |
-| `PublicBackupsListerTest.kt` | `extractSubDir` (RELATIVE_PATH → подпапка) | 12 |
-| `PublicBackupsMigratorTest.kt` | `subdirFor` (имя файла → подпапка) | 10 |
-| `BackupManifestTest.kt` | Парсер `manifest.json`, operation, обратная совместимость | 6 |
+| `PublicBackupsListerTest.kt` | `extractSubDir`, `isAutoBackupSubDir` | 19 |
+| `PublicBackupsMigratorTest.kt` | `subdirFor` | 10 |
+| `BackupManifestTest.kt` | Парсер `manifest.json`, `operation` | 6 |
+| `BackupManagerStatsTest.kt` | `summarize`, `formatSize` | 11 |
+
+### `data/merge/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `MergeEngineTest.kt` | `planAreas` / `planOrders` / `planSamples` / `planWells` / `planNotes` / `planPhotos`, `diffFields`, `resolveSample`, `displayFor`, `FieldResolution`, `buildConflictTree`, `extractArchivePhotoName`, `MergeStats` | ~80 |
 
 ### `data/reconciliation/`
 
@@ -92,7 +98,7 @@ io/zip/состояние Activity — device-check.
 | `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
 | `CleanConfirmStateTest.kt` | `CleanConfirmState` | 6 |
 
-**Всего: ~408 тестов.** Все зелёные.
+**Всего: ~500+ тестов.** Все зелёные.
 
 ---
 
@@ -100,35 +106,26 @@ io/zip/состояние Activity — device-check.
 
 ### Приоритет 1 (закладки `5.8.11-b/c`)
 
-| Файл | Что проверять |
-|---|---|
-| `QueryTokenizerTest.kt` | `KPD1090031` → `[Prefix, Number]` |
-| `QueryNormalizerTest.kt` | Lowercase, ё→е, дефисы |
-| `DigitGrouperTest.kt` | «109 00 31» → три группы |
-| `GroupToCandidatesTest.kt` | Порядок кандидатов |
-| `SearchServiceTest.kt` | Мок `VoiceSampleSource` |
-| `VoiceSessionStateTest.kt` | `VoiceSession.state` — все переходы |
+- `QueryTokenizerTest.kt`, `QueryNormalizerTest.kt`.
+- `DigitGrouperTest.kt`, `GroupToCandidatesTest.kt`.
+- `SearchServiceTest.kt`, `VoiceSessionStateTest.kt`.
 
 ### Приоритет 3
 
-| Файл | Что проверять |
-|---|---|
-| `AppDatabaseTest.kt` | Миграции БД (version 1 → 2). Только на устройстве. |
-| `GsmBackupWriterTest.kt` | Запись `.gsmbackup` — манифест, структура zip. |
-| `GsmBackupReaderTest.kt` | Чтение манифеста из архива. |
+- `AppDatabaseTest.kt` — миграции. Только device-check.
+- `GsmBackupWriterTest.kt`, `GsmBackupReaderTest.kt` — если решим.
 
 ---
 
 ## Что НЕ покрываем тестами
 
 - **Vosk** — галлюцинации, распознавание. Только device-check.
-- **TTS** — произношение, кулдаун. Только device-check.
-- **Compose UI** — отдельная тема, не сейчас.
+- **TTS** — произношение, кулдаун.
+- **Compose UI** — отдельная тема.
 - **Реальная БД** — только миграции.
-- **`ReconciliationViewModel`** целиком.
-- **`EditViewModel`** целиком.
-- **`DbViewModel`** — io, состояние Activity. Device-check.
-- **Backup/restore** — io + zip + замена файлов. Device-check.
+- **`ReconciliationViewModel`, `EditViewModel`, `DbViewModel`** —
+  связаны с Application. Device-check.
+- **Backup/restore, merge** — io + zip + замена файлов. Device-check.
 - **MediaStore** — реальные запросы. Device-check.
 
 ---
@@ -137,8 +134,7 @@ io/zip/состояние Activity — device-check.
 
 ### В Android Studio
 
-1. ПКМ по `app/src/test/` → **Run 'Tests in …'**.
-2. Отчёт: вкладка `Run` внизу.
+ПКМ по `app/src/test/` → **Run 'Tests in …'**.
 
 ### В терминале
 ./gradlew testDebugUnitTest
@@ -149,15 +145,11 @@ io/zip/состояние Activity — device-check.
 
 CI (`.github/workflows/build.yml`):
 - Job **`unit-tests`** — на каждый PR в `main` и `feature/*`.
-- Пропускается, если в PR только документация.
 - Блокирует merge при красном.
 
 ### Вручную (Actions)
 
-1. Actions → **Build & Test** → **Run workflow**.
-2. Ветка.
-3. ✅ `Run unit tests`.
-4. ⬜ `Build Debug APK`.
+Actions → **Build & Test** → **Run workflow**.
 
 Артефакты:
 - `test-report` — HTML.
@@ -195,7 +187,7 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыто: Редактирование, большая часть БД |
+| 🔴 Сейчас | Закрыты: Редактирование, большая часть БД |
 | 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest`, `GsmBackup*Test` |
 
@@ -204,11 +196,10 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 ## Долг — сводка
 
 **Сделано (серия `e4`):** ~370 тестов.
-**Сделано (5.9 Статистика):** XLSX, ~106 тестов + HTML, 43.
+**Сделано (5.9 Статистика):** XLSX, ~106 + HTML, 43.
 **Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
-**Сделано (5.9 БД):** 4 файла, ~58 тестов.
-**Удалён:** `RestartRouterTest.kt` (7 тестов) — вместе с
-`RestartRouter` после `db-soft-restart`.
+**Сделано (5.9 БД):** `data/backup/` (5 файлов, ~76),
+`data/merge/` (1 файл, ~80), `CleanConfirmStateTest`.
 
 **Осталось:**
 - `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
