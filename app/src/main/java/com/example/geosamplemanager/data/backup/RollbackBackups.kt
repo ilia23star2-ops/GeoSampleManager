@@ -5,21 +5,15 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
- * FIX 5.9-db-rollback:
- * Одна точка авто-отката в filesDir/db_backups/.
- *
- * createdAt — timestamp, извлечённый из имени файла
- * (pre_restore_YYYYMMDD_HHmm.gsmbackup), а не lastModified.
- * Manifest подтягивается опционально (см. list(dir, manifestReader)).
- *
- * FIX 5.9-db-backups-ops:
- *  - поддержка трёх префиксов: pre_restore_, pre_rollback_, pre_clean_;
- *  - поле operation — после какой операции сделан бэкап;
- *  - rotateByPrefix — ротация отдельно по каждому префиксу
- *    (5 на каждый).
+ * FIX 5.9-db-rollback / 5.9-db-backups-ops / 5.9-db-rollback-public.
  */
+enum class BackupSource { PRIVATE, PUBLIC }
+
 data class RollbackBackup(
-    val file: File,
+    val fileName: String,
+    val source: BackupSource,
+    val file: File?,
+    val publicUri: String?,
     val operation: String,
     val createdAt: Long,
     val sizeBytes: Long,
@@ -33,24 +27,17 @@ data class ParsedName(
 
 object RollbackBackups {
 
-    /** Известные операции авто-бэкапа. */
     val OPERATIONS: List<String> = listOf("restore", "rollback", "clean")
 
     const val NAME_SUFFIX = ".gsmbackup"
 
-    /** Сколько последних pre_*_ держим на диске — для каждой операции. */
     const val MAX_KEEP = 5
 
     private const val NAME_PATTERN = "yyyyMMdd_HHmm"
-    private const val DATE_PART_LENGTH = 13 // YYYYMMDD_HHmm
+    private const val DATE_PART_LENGTH = 13
 
-    /** Префикс имени файла для операции. */
     fun prefixFor(operation: String): String = "pre_${operation}_"
 
-    /**
-     * Парсит имя pre_<operation>_YYYYMMDD_HHmm.gsmbackup.
-     * Возвращает operation и timestamp, либо null.
-     */
     fun parseFileName(fileName: String): ParsedName? {
         if (!fileName.endsWith(NAME_SUFFIX)) return null
         val body = fileName.removeSuffix(NAME_SUFFIX)
@@ -79,13 +66,6 @@ object RollbackBackups {
         }
     }
 
-    /**
-     * Список pre_*_* из папки, отсортированный по убыванию даты.
-     * Не-файлы и посторонние имена отбрасываются.
-     *
-     * @param manifestReader читает manifest.json из конкретного файла;
-     *        передаётся, чтобы не делать IO в юнит-тестах.
-     */
     fun list(
         dir: File,
         manifestReader: (File) -> BackupManifest? = { null }
@@ -99,7 +79,10 @@ object RollbackBackups {
             .mapNotNull { file ->
                 val parsed = parseFileName(file.name) ?: return@mapNotNull null
                 RollbackBackup(
+                    fileName = file.name,
+                    source = BackupSource.PRIVATE,
                     file = file,
+                    publicUri = null,
                     operation = parsed.operation,
                     createdAt = parsed.createdAt,
                     sizeBytes = file.length(),
@@ -111,12 +94,40 @@ object RollbackBackups {
     }
 
     /**
-     * FIX 5.9-db-backups-ops:
-     * Ротация отдельно по каждой операции (префиксу).
-     * Оставляем N последних в каждой группе, остальные удаляем.
-     *
-     * @return список реально удалённых файлов.
+     * FIX 5.9-db-rollback-public:
+     * PublicBackup → RollbackBackup. publicUri — уже строка, без
+     * Android-зависимостей.
      */
+    fun fromPublic(pb: PublicBackup): RollbackBackup {
+        val parsed = parseFileName(pb.displayName)
+        val createdAt = parsed?.createdAt ?: pb.lastModified
+        return RollbackBackup(
+            fileName = pb.displayName,
+            source = BackupSource.PUBLIC,
+            file = null,
+            publicUri = pb.uri,
+            operation = pb.operation,
+            createdAt = createdAt,
+            sizeBytes = pb.sizeBytes,
+            manifest = pb.manifest
+        )
+    }
+
+    fun merge(
+        privateList: List<RollbackBackup>,
+        publicList: List<RollbackBackup>
+    ): List<RollbackBackup> {
+        val seen = mutableSetOf<String>()
+        val result = mutableListOf<RollbackBackup>()
+        for (b in privateList) {
+            if (seen.add(b.fileName)) result += b
+        }
+        for (b in publicList) {
+            if (seen.add(b.fileName)) result += b
+        }
+        return result.sortedByDescending { it.createdAt }
+    }
+
     fun rotateByPrefix(
         dir: File,
         keep: Int = MAX_KEEP
@@ -130,10 +141,10 @@ object RollbackBackups {
             val group = all.filter { it.operation == op }
             if (group.size <= keep) continue
             group.drop(keep).forEach { b ->
+                val f = b.file ?: return@forEach
                 try {
-                    if (b.file.delete()) deleted += b.file
+                    if (f.delete()) deleted += f
                 } catch (_: Exception) {
-                    // Не критично: файл останется, следующая ротация уберёт.
                 }
             }
         }

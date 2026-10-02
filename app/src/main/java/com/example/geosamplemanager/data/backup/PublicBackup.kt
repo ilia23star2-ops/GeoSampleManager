@@ -1,18 +1,18 @@
 package com.example.geosamplemanager.data.backup
 
-import android.net.Uri
-
 /**
  * FIX 5.9-db-import-picker:
  * Один .gsmbackup, найденный в публичных Загрузках
  * (Downloads/GeoSampleManager/...).
  *
- * Используется в диалоге «Импорт» — показываем список, пользователь
- * выбирает файл сам, вместо немедленного открытия SAF.
+ * FIX 5.9-db-rollback-public:
+ *  - uri — строка, не android.net.Uri. Модель данных не должна
+ *    зависеть от Android: тесты в JVM (Uri.parse возвращает null).
+ *    В местах, где нужен Uri, делаем Uri.parse(uri).
  */
 data class PublicBackup(
-    /** content:// Uri файла в MediaStore. */
-    val uri: Uri,
+    /** content:// строка файла в MediaStore. */
+    val uri: String,
     /** Имя файла с расширением. */
     val displayName: String,
     /**
@@ -24,7 +24,6 @@ data class PublicBackup(
     val subDir: String,
     /**
      * Операция бэкапа: "restore"/"rollback"/"clean"/"export"/"unknown".
-     * Из manifest, или (если не прочитался) — из имени файла.
      */
     val operation: String,
     /** Размер файла в байтах. */
