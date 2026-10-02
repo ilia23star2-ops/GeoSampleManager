@@ -3,7 +3,7 @@
 Одна страница «где мы сейчас». Обновляется в конце каждой сессии.
 Новый ИИ читает вторым после `AI_RULES.md`.
 
-**Дата обновления:** 2026-10-02 (утро)
+**Дата обновления:** 2026-10-02 (день)
 
 ## Где мы
 
@@ -13,10 +13,13 @@
 проекта (все вкладки кроме сверки). Порядок: **Статистика →
 Редактирование → БД → Настройки → Главная.**
 
-**Текущий фокус:** **серия БД в процессе.** Закрыты 6 пачек:
+**Текущий фокус:** **серия БД почти закрыта.** Закрыты 12+ пачек:
 `db-style`, `db-info`, `db-backup-v2`, `db-backup-fix`,
-`db-restore-v2` (с 2 hotfix), `db-rollback`. **Следующая —
-`db-clean`, `db-merge-v2`** (порядок уточняется).
+`db-restore-v2`, `db-rollback`, `db-clean`, `db-backups-ops` (2
+подзахода), `db-smooth-restart`, `db-soft-restart`, `db-import-picker`,
+`db-rollback-public`. **Следующая — `db-backup-manager`** (ручное
+удаление бэкапов). Затем `db-merge-v2`, `db-diagnostics`,
+`db-compare`, `db-wells`, `db-logs`.
 
 ## Что сделано в серии 5.9
 
@@ -30,93 +33,102 @@
 
 ### Пачка `report-xlsx` — закрыта
 
-- ✅ `xlsx-core` — ручной генератор .xlsx (zip + XML).
-- ✅ `xlsx-cells` — заполнение ячеек из `ReportData`.
-- ✅ `xlsx-styles` — цвета строк, жирный.
-- ✅ `xlsx-links` — гиперссылки.
-- ✅ `xlsx-multi` — N нарядов → N листов + общий лист «Приложения».
+- ✅ `xlsx-core` — ручной генератор .xlsx.
+- ✅ `xlsx-cells`, `xlsx-styles`, `xlsx-links`.
+- ✅ `xlsx-multi` — N нарядов → N листов.
 - ✅ `html-multi` — мультинарядный HTML.
-- ✅ `xlsx-ui` — Excel в одиночном диалоге + все доработки.
-- ✅ `report-html-tests` — тесты на одиночный HTML-генератор.
-- ✅ `multi-report-ui` — экран выбора нарядов для мультиотчёта.
+- ✅ `xlsx-ui` — Excel в одиночном диалоге.
+- ✅ `report-html-tests`, `multi-report-ui`.
 
 ### Редактирование — закрыта
 
-- ✅ `edit-viewmodel` — ViewModel вкладки, дерево, поиск/фильтры.
-- ✅ `edit-screen-search` — адаптивный экран.
-- ✅ `edit-add-sample` — умная вставка со сдвигом номеров и интервалов.
-- ✅ `edit-status-blank` — интервал скрыт у холостых.
-- ✅ `edit-save-guard` — проверка № по БД перед сохранением.
-- ✅ `edit-multiselect` — режим выделения (BottomBar, чекбоксы).
-- ✅ `edit-mass-ops` — массовая правка и удаление.
+- ✅ `edit-viewmodel`, `edit-screen-search`, `edit-add-sample`,
+  `edit-status-blank`, `edit-save-guard`, `edit-multiselect`,
+  `edit-mass-ops`.
 
 **Возможности Редактирования:**
 
 - Реактивный редактор с деревом, поиском, фильтрами.
-- Добавление пробы с авто-номером, авто-интервалом, валидацией,
-  диалогом конфликтов, сдвигом номеров и интервалов.
-- Правка одной пробы (интервал, вес, ВК, характеристика, тип,
-  статус). Для холостых интервал скрыт.
+- Умная вставка с авто-номером, авто-интервалом, сдвигом.
+- Правка одной пробы. Для холостых интервал скрыт.
 - Мультивыбор длинным тапом.
-- Массовая правка статуса синхронизирует флаг `weightControl`.
+- Массовая правка статуса синхронизирует `weightControl`.
 - Массовое удаление с опциональным пересчётом номеров.
-- Проверка конфликта № по БД (не только по видимым строкам).
 
-### БД — в работе
+### БД — почти закрыта
 
 **Закрыто:**
 
 - ✅ `db-style` — Snackbar вместо Toast, `>= 600.dp`, без `!!`.
-- ✅ `db-info` — инфо-панель (путь, размеры БД/фото, счётчики).
+- ✅ `db-info` — инфо-панель (путь, размеры, счётчики).
 - ✅ `db-backup-v2` — экспорт `.gsmbackup` (БД + фото + manifest).
-- ✅ `db-backup-fix` — сохранение в **публичные Загрузки** через
-  MediaStore (папка `GeoSampleManager`).
-- ✅ `db-restore-v2` — импорт `.gsmbackup` с авто-бэкапом текущей БД
-  и пересозданием стека приложения (без `killProcess`, через
-  `startActivity(CLEAR_TASK)`).
-- ✅ `db-rollback` — откат к авто-бэкапу `pre_restore_*`, ротация
-  5 последних, общий `performReplacement` с импортом.
+- ✅ `db-backup-fix` — сохранение в публичные Загрузки.
+- ✅ `db-restore-v2` — импорт с авто-бэкапом и пересозданием стека.
+- ✅ `db-rollback` — откат к авто-бэкапу.
+- ✅ `db-backups-ops` — инфраструктура авто-бэкапов:
+  - `operation` в манифесте (`restore`/`rollback`/`clean`/`export`).
+  - Универсальная ротация по каждому префиксу.
+  - Папки в Загрузках: `pre_restore/`, `pre_rollback/`,
+    `pre_clean/`, `exports/`.
+  - Ленивая миграция старых файлов из корня.
+- ✅ `db-clean` — полная очистка БД с `pre_clean_*`.
+- ✅ `db-smooth-restart` — перезапуск с возвратом на вкладку БД
+  и `overridePendingTransition(0, 0)`.
+- ✅ `db-soft-restart` — **бесшовный** пересбор поддерева через
+  `restartTick` + `SimpleViewModelStoreOwner`. Activity **не
+  пересоздаётся**, белого экрана нет.
+- ✅ `db-import-picker` — импорт из списка `exports/` + SAF.
+- ✅ `db-rollback-public` — откат объединяет приватные и публичные
+  `pre_*`, ротация публичных, дедупликация по имени файла.
 
 **Формат `.gsmbackup`** — zip-архив:
-- `manifest.json` — версия формата, дата, версия схемы, счётчики.
+- `manifest.json` — версия формата, дата, схема, счётчики, operation.
 - `geosamples.db` — сама БД.
 - `sample_photos/` — папка с фото.
 
-**Авто-бэкап перед импортом и откатом** сохраняется в двух местах:
-- публично: `Загрузки/GeoSampleManager/pre_restore_*.gsmbackup`
-  или `pre_rollback_*.gsmbackup`;
-- приватно: `filesDir/db_backups/pre_restore_*.gsmbackup`
-  или `pre_rollback_*.gsmbackup`.
+**Структура публичных Загрузок:**
+Загрузки/GeoSampleManager/
+pre_restore/ — авто-бэкапы перед импортом
+pre_rollback/ — авто-бэкапы перед откатом
+pre_clean/ — авто-бэкапы перед очисткой
+exports/ — пользовательские экспорты
 
-`pre_restore_*` ротируются: держим 5 последних.
+**Ротация** — 5 последних на операцию, приватно и публично.
 
 **Осталось:**
 
-- `db-clean` — полная очистка БД с бэкапом.
-- `db-merge-v2` — слияние двух БД + диалог конфликтов (большая, 3-4 подзахода).
+- `db-backup-manager` — ручное удаление бэкапов, «Удалить старые»,
+  «Удалить все».
+- `db-merge-v2` — слияние двух БД + диалог конфликтов (3-4
+  подзахода).
 - `db-diagnostics` — сироты, битые ссылки, отсутствующие фото.
 - `db-compare` — сравнение двух БД.
 - `db-wells` — просмотр `order_wells`.
-- `db-logs` — логи операций. **Отдельная серия** (миграция 2→3).
+- `db-logs` — логи операций (отдельная серия, миграция 2→3).
 
 ### Пачки инфраструктуры
 
-- ✅ `docs/5.9-docs-2` — доки после `xlsx-multi` и `html-multi`.
-- ✅ `fix/5.9-cleanup` — убраны дубликаты в корне.
-- ✅ `5.9-cleanup-2` — warnings компилятора в `XlsxWriter`.
-- ✅ `docs/5.9-docs-3` — доки после `xlsx-ui`.
-- ✅ `docs/5.9-edit-docs` — доки после Редактирования.
-- ✅ `docs/5.9-db-docs` — доки после пачек БД.
-- ✅ `docs/5.9-db-rollback-docs` — доки после `db-rollback`.
+- ✅ `docs/5.9-docs-2`, `docs/5.9-docs-3`, `docs/5.9-docs-4` —
+  доки Статистики.
+- ✅ `fix/5.9-cleanup`, `5.9-cleanup-2` — чистка и warnings.
+- ✅ `docs/5.9-edit-docs` — доки Редактирования.
+- ✅ `docs/5.9-db-docs` — первые пачки БД.
+- ✅ `docs/5.9-ai-rules-confirm` — §24 в `AI_RULES.md`.
+- ✅ `docs/5.9-db-rollback-docs` — после `db-rollback`.
+- ✅ `docs/5.9-db-series` — этот заход.
 
 ## Что делать дальше
 
-**Серия БД — осталось 5 пачек.** Следующая на выбор:
-- `db-clean` — простая, полезная.
-- `db-merge-v2` — большая, с конфликтами.
-- `db-diagnostics` — поиск проблем.
+**Серия БД — осталось 6 пачек.** Следующая:
 
-Затем: **Настройки → Главная → PR фичи в `main`.**
+- `db-backup-manager` — управление бэкапами: просмотр, ручное
+  удаление отдельных, «Удалить старые» (ручная ротация), «Удалить
+  все».
+
+Затем: **`db-merge-v2` → `db-diagnostics` → `db-compare` →
+`db-wells` → `db-logs`.**
+
+После БД: **Настройки → Главная → PR фичи в `main`.**
 
 ## Известные грабли (важно!)
 
@@ -132,15 +144,13 @@
 ### Gradle
 
 - **Test-worker'ы падают при многопоточной сборке.**
-  Обход: **AS-runner** или
-  `./gradlew testDebugUnitTest --no-daemon --max-workers=1`.
+  Обход: `./gradlew testDebugUnitTest --no-daemon --max-workers=1`.
 
 ### XLSX (критичные — все из 30.09.2026, не забывать!)
 
 - **`styles rel` в `workbook.xml.rels` — обязателен.**
 - **`theme` в `<fgColor>` не использовать.**
-- **Порядок элементов в `<font>` строго по ECMA-376:**
-  `b, i, ..., u, sz, color, name`.
+- **Порядок элементов в `<font>` строго по ECMA-376.**
 - **В `workbook.xml`** нужны `fileVersion`, `workbookPr`, `calcPr`.
 - **В `sheet.xml`** нужны `sheetViews`, `sheetFormatPr`.
 - **`bgColor` = `fgColor`** в solid fill.
@@ -159,21 +169,21 @@
   `Row`/`Column`-скоупа.** Считать значение до входа в скоуп.
 - **`@OptIn(ExperimentalMaterial3Api::class)`** нужен для
   `ExposedDropdownMenuBox`, `ExposedDropdownMenu`, `menuAnchor`,
-  `FilterChip` (при использовании `FilterChipDefaults`).
-- **`activity.recreate()` не сбрасывает ViewModel.** Compose
-  `viewModel()` переживает пересоздание Activity. Для полного сброса
-  использовать `startActivity(MainActivity, NEW_TASK|CLEAR_TASK)` +
-  `finish()`.
+  `FilterChip`.
+- **`activity.recreate()` не сбрасывает ViewModel.**
+- **Для бесшовной пересборки** — `key(tick)` +
+  `SimpleViewModelStoreOwner` + `CompositionLocalProvider`, а не
+  `startActivity`. См. `MainActivity.ReadyContent`.
 
 ### Восстановление БД
 
 - **Перед чтением файла `.db` — `PRAGMA wal_checkpoint(TRUNCATE)`.**
-  Иначе копия неконсистентная.
 - **Перед заменой файла `.db` — закрыть соединение и удалить
-  `-wal`/`-shm`.** Иначе SQLite подхватит старые.
+  `-wal`/`-shm`.**
 - **После замены — `AppDatabase.closeAndReset()` +
-  `GeoSampleApp.resetRepository()`.** Без этого старый `repo` держит
-  закрытое соединение.
+  `GeoSampleApp.resetRepository()`.**
+- **Kotlin-нюанс:** в KDoc нельзя писать `/*` внутри `/**…*/` —
+  вложенный блочный комментарий.
 
 ## Отложенные вопросы
 
@@ -182,10 +192,8 @@
 - **Общий сервис сдвига** (`SampleShiftPlanner`) — унификация
   INSERT/RENAME/DELETE/EDIT_INTERVAL. Обсуждён, не реализован.
 - **Бороздовые пробы → ВК** — особая логика взвешивания. Отложено.
-- **Правка интервала в редакторе** — сдвиг следующих проб,
-  предупреждение о разрывах/пересечениях. Обсуждено, не реализовано.
-- **Undo для массовых операций** — `applyMassEdit` и `deleteSelected`
-  не создают undo-записей.
+- **Правка интервала в редакторе** — сдвиг последующих.
+- **Undo для массовых операций.**
 
 ## Не трогать
 
@@ -195,11 +203,11 @@
 ## Правила текущей сессии
 
 - Сначала спроси: дома или на работе? (Оба — AS.)
-- **Ветки — левый нижний угол AS.**
+- **Ветки — левый нижний угол AS** или git в терминале.
 - Дома/на работе пачка → merge локально в фичу.
 - **Git — только через терминал.**
 - **Порядок закрытия захода:** код → тесты → подтверждение
-  пользователя → merge → удаление ветки.
+  пользователя → merge → удаление ветки (§24).
 - **После каждого захода** — обновлять `CONTEXT_BRIEF`, `PROGRESS`,
   `NEXT_STEPS`.
 - **Правки в файлах — точечные.**
