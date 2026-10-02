@@ -151,7 +151,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     val resolver = getApplication<Application>().contentResolver
                     resolver.openOutputStream(uri)?.use { out ->
-                        writeBackup(out)
+                        writeBackup(out, AUTO_BACKUP_OP_EXPORT)
                     } ?: throw IllegalStateException("Не удалось открыть файл")
                 }
                 _message.value = "Бэкап сохранён"
@@ -181,7 +181,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     fun restoreFromUri(uri: Uri) {
         performReplacement(
             stateFlow = _restoreState,
-            autoBackupPrefix = AUTO_BACKUP_PREFIX_RESTORE,
+            autoBackupOperation = AUTO_BACKUP_OP_RESTORE,
             errorMessage = "Ошибка импорта",
             extract = { targetDb, targetPhotosDir ->
                 GsmBackupReader.extract(
@@ -213,7 +213,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Загружает список pre_restore_* из filesDir/db_backups/.
+     * Загружает список pre_*_* из filesDir/db_backups/.
      * Manifest читается для каждого файла — нужен для диалога.
      */
     fun loadRollbackBackups() {
@@ -240,7 +240,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     fun rollbackFromInternal(file: File) {
         performReplacement(
             stateFlow = _rollbackState,
-            autoBackupPrefix = AUTO_BACKUP_PREFIX_ROLLBACK,
+            autoBackupOperation = AUTO_BACKUP_OP_ROLLBACK,
             errorMessage = "Ошибка отката",
             extract = { targetDb, targetPhotosDir ->
                 GsmBackupReader.extract(
@@ -259,18 +259,22 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * FIX 5.9-db-rollback:
      * Общая логика для import/rollback:
-     *  1) авто-бэкап текущего состояния с префиксом (pre_restore / pre_rollback);
+     *  1) авто-бэкап текущего состояния с операцией;
      *  2) закрытие БД, удаление -wal/-shm, очистка папки фото;
      *  3) extract;
      *  4) resetRepository;
-     *  5) ротация pre_restore_*;
+     *  5) ротация pre_*_ по каждому префиксу;
      *  6) Done.
      *
-     * Импорт и откат отличаются только источником extract и префиксом.
+     * Импорт и откат отличаются только источником extract и operation.
+     *
+     * FIX 5.9-db-backups-ops:
+     *  - параметр operation ("restore"/"rollback"/"clean");
+     *  - ротация теперь по каждому префиксу.
      */
     private fun performReplacement(
         stateFlow: MutableStateFlow<RestoreState>,
-        autoBackupPrefix: String,
+        autoBackupOperation: String,
         errorMessage: String,
         extract: (targetDb: File, targetPhotosDir: File) -> Boolean
     ) {
@@ -279,7 +283,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 stateFlow.value = RestoreState.InProgress("Готовим бэкап…")
-                withContext(Dispatchers.IO) { autoBackup(autoBackupPrefix) }
+                withContext(Dispatchers.IO) { autoBackup(autoBackupOperation) }
 
                 stateFlow.value = RestoreState.InProgress("Закрываем БД…")
                 val ok = withContext(Dispatchers.IO) {
@@ -306,7 +310,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 app.resetRepository()
-                withContext(Dispatchers.IO) { rotatePreRestore() }
+                withContext(Dispatchers.IO) { rotateAllBackups() }
                 stateFlow.value = RestoreState.Done
             } catch (e: Exception) {
                 stateFlow.value = RestoreState.Error(
@@ -321,20 +325,22 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // ================================================================
 
     /**
-     * FIX 5.9-db-rollback:
-     * Общий авто-бэкап. prefix — pre_restore или pre_rollback.
+     * FIX 5.9-db-backups-ops:
+     * Общий авто-бэкап. operation — restore/rollback/clean/export.
+     * Имя файла — pre_<operation>_YYYYMMDD_HHmm.gsmbackup.
      * Пишем в приватную папку и (на Android 10+) в публичные Загрузки.
      */
-    private suspend fun autoBackup(prefix: String) {
+    private suspend fun autoBackup(operation: String) {
         val sdf = SimpleDateFormat("yyyyMMdd_HHmm", Locale.US)
-        val name = "${prefix}_${sdf.format(Date())}"
+        val prefix = RollbackBackups.prefixFor(operation)
+        val name = "$prefix${sdf.format(Date())}"
         val fileName = "$name.${GsmBackupWriter.EXTENSION}"
 
         try {
             val dir = repo.getRollbackBackupsDir()
             if (!dir.exists()) dir.mkdirs()
             val f = File(dir, fileName)
-            f.outputStream().use { out -> writeBackup(out) }
+            f.outputStream().use { out -> writeBackup(out, operation) }
         } catch (_: Exception) {
         }
 
@@ -347,13 +353,13 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * FIX 5.9-db-rollback:
-     * Держим не больше RollbackBackups.MAX_KEEP последних pre_restore_*.
+     * FIX 5.9-db-backups-ops:
+     * Ротация отдельно по каждому префиксу (5 на операцию).
      * Вызывается после успешной замены БД.
      */
-    private suspend fun rotatePreRestore() {
+    private suspend fun rotateAllBackups() {
         try {
-            RollbackBackups.rotate(
+            RollbackBackups.rotateByPrefix(
                 repo.getRollbackBackupsDir(),
                 RollbackBackups.MAX_KEEP
             )
@@ -378,8 +384,9 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         ) ?: throw IllegalStateException("Не удалось создать файл")
 
         try {
-            resolver.openOutputStream(uri)?.use { out -> writeBackup(out) }
-                ?: throw IllegalStateException("Не удалось открыть поток")
+            resolver.openOutputStream(uri)?.use { out ->
+                writeBackup(out, AUTO_BACKUP_OP_EXPORT)
+            } ?: throw IllegalStateException("Не удалось открыть поток")
         } catch (e: Exception) {
             try { resolver.delete(uri, null, null) } catch (_: Exception) {}
             throw e
@@ -387,7 +394,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         return uri
     }
 
-    private suspend fun writeBackup(out: java.io.OutputStream) {
+    /**
+     * FIX 5.9-db-backups-ops:
+     * operation — попадает в манифест.
+     */
+    private suspend fun writeBackup(out: java.io.OutputStream, operation: String) {
         repo.checkpointWal()
         val info = repo.getDbInfo()
         GsmBackupWriter.write(
@@ -402,7 +413,8 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 samples = info.samplesCount,
                 photos = info.photosCount,
                 notes = info.notesCount
-            )
+            ),
+            operation = operation
         )
     }
 
@@ -502,8 +514,10 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        /** FIX 5.9-db-rollback: префиксы авто-бэкапов. */
-        private const val AUTO_BACKUP_PREFIX_RESTORE = "pre_restore"
-        private const val AUTO_BACKUP_PREFIX_ROLLBACK = "pre_rollback"
+        /** FIX 5.9-db-backups-ops: операции авто-бэкапа. */
+        const val AUTO_BACKUP_OP_RESTORE = "restore"
+        const val AUTO_BACKUP_OP_ROLLBACK = "rollback"
+        const val AUTO_BACKUP_OP_CLEAN = "clean"
+        const val AUTO_BACKUP_OP_EXPORT = "export"
     }
 }

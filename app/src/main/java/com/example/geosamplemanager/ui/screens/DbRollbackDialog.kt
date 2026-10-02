@@ -24,8 +24,12 @@ import java.util.Locale
 /**
  * FIX 5.9-db-rollback:
  * Диалог выбора авто-бэкапа для отката.
- *  - список pre_restore_* из filesDir/db_backups/;
+ *  - список pre_*_* из filesDir/db_backups/;
  *  - каждая строка: дата, размер, счётчики из manifest.
+ *
+ * FIX 5.9-db-backups-ops:
+ *  - показываем operation — после какой операции сделан бэкап
+ *    (Импорт / Откат / Очистка).
  */
 @Composable
 fun DbRollbackDialog(
@@ -97,11 +101,26 @@ private fun RollbackBackupRow(
             .clickable(onClick = onClick)
     ) {
         Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                dateFormat.format(Date(backup.createdAt)),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = operationColor(backup.operation),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        operationLabel(backup.operation),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    dateFormat.format(Date(backup.createdAt)),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(Modifier.height(2.dp))
             Text(
                 formatSize(backup.sizeBytes),
                 style = MaterialTheme.typography.bodySmall,
@@ -124,6 +143,21 @@ private fun RollbackBackupRow(
             }
         }
     }
+}
+
+private fun operationLabel(operation: String): String = when (operation) {
+    "restore" -> "Импорт"
+    "rollback" -> "Откат"
+    "clean" -> "Очистка"
+    else -> "Авто"
+}
+
+@Composable
+private fun operationColor(operation: String) = when (operation) {
+    "restore" -> MaterialTheme.colorScheme.primaryContainer
+    "rollback" -> MaterialTheme.colorScheme.tertiaryContainer
+    "clean" -> MaterialTheme.colorScheme.errorContainer
+    else -> MaterialTheme.colorScheme.surfaceVariant
 }
 
 /**
@@ -162,6 +196,7 @@ fun DbRollbackConfirmDialog(
                             dateFormat.format(Date(manifest.createdAt))
                         else "—"
                     )
+                    InfoRow("Операция", operationLabel(manifest.operation))
                     InfoRow("Схема БД", manifest.dbSchemaVersion.toString())
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))

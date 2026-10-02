@@ -7,11 +7,18 @@ import java.io.File
 import java.io.InputStream
 import java.util.zip.ZipInputStream
 
+/**
+ * FIX 5.9-db-backups-ops:
+ *  - BackupManifest.operation — после какой операции сделан бэкап
+ *    ("restore"/"rollback"/"clean"/"export"/"unknown").
+ *  - parseManifest — internal, чтобы покрывать юнит-тестами.
+ */
 data class BackupManifest(
     val formatVersion: Int,
     val createdAt: Long,
     val appVersion: String,
     val dbSchemaVersion: Int,
+    val operation: String,
     val areas: Int,
     val orders: Int,
     val samples: Int,
@@ -74,7 +81,11 @@ object GsmBackupReader {
         return result
     }
 
-    private fun parseManifest(json: String): BackupManifest? {
+    /**
+     * FIX 5.9-db-backups-ops:
+     * internal — чтобы тесты могли вызывать без zip.
+     */
+    internal fun parseManifest(json: String): BackupManifest? {
         return try {
             val obj = JSONObject(json)
             val counts = obj.optJSONObject("counts") ?: JSONObject()
@@ -83,6 +94,7 @@ object GsmBackupReader {
                 createdAt = obj.optLong("created_at", 0L),
                 appVersion = obj.optString("app_version", "?"),
                 dbSchemaVersion = obj.optInt("db_schema_version", -1),
+                operation = obj.optString("operation", GsmBackupWriter.OP_UNKNOWN),
                 areas = counts.optInt("areas", 0),
                 orders = counts.optInt("orders", 0),
                 samples = counts.optInt("samples", 0),
