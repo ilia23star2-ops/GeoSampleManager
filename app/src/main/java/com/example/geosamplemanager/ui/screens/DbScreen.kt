@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,6 +47,23 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * FIX 5.9-db-soft-restart:
+ *  - пересбор поддерева через app.requestRestart;
+ *  - снекбар «Готово. …» после пересборки.
+ *
+ * FIX 5.9-db-import-picker:
+ *  - кнопка «Импорт» → диалог со списком exports + SAF.
+ *
+ * FIX 5.9-db-rollback-public:
+ *  - откат из приватного файла или публичного Uri.
+ *
+ * FIX 5.9-db-backup-manager:
+ *  - кнопка «Бэкапы» → диалог управления.
+ *
+ * FIX 5.9-db-backup-manager (fix):
+ *  - компактная раскладка кнопок: 4 + 3 в двух рядах.
+ */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val context = LocalContext.current
@@ -72,6 +90,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     val publicBackups by viewModel.publicBackups.collectAsState()
     val publicBackupsLoading by viewModel.publicBackupsLoading.collectAsState()
+
+    val managerBackups by viewModel.managerBackups.collectAsState()
+    val managerLoading by viewModel.managerLoading.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -114,6 +135,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     var showCleanDialog by remember { mutableStateOf(false) }
     var showImportPickerDialog by remember { mutableStateOf(false) }
+    var showBackupManagerDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
@@ -129,6 +151,10 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     LaunchedEffect(showImportPickerDialog) {
         if (showImportPickerDialog) viewModel.loadPublicBackups()
+    }
+
+    LaunchedEffect(showBackupManagerDialog) {
+        if (showBackupManagerDialog) viewModel.loadAllBackupsForManager()
     }
 
     LaunchedEffect(lastExportUri) {
@@ -226,23 +252,30 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // FIX 5.9-db-backup-manager (fix): компактная раскладка 4+3.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Button(
                     onClick = { showAddAreaDialog = true },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Участок")
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Участок", maxLines = 1)
                 }
                 OutlinedButton(
                     onClick = { showBackupDialog = true },
                     enabled = !exporting,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     if (exporting) {
@@ -251,54 +284,91 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             strokeWidth = 2.dp
                         )
                     } else {
-                        Icon(Icons.Default.FileUpload, contentDescription = null)
+                        Icon(
+                            Icons.Default.FileUpload,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
-                    Spacer(Modifier.width(4.dp))
-                    Text("Экспорт")
+                    Spacer(Modifier.width(2.dp))
+                    Text("Экспорт", maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = { showImportPickerDialog = true },
+                    enabled = restoreState is RestoreState.Idle,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Default.FileDownload,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Импорт", maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = { showDbInfoDialog = true },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Инфо", maxLines = 1)
                 }
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 OutlinedButton(
-                    onClick = { showImportPickerDialog = true },
-                    enabled = restoreState is RestoreState.Idle,
+                    onClick = { showRollbackDialog = true },
+                    enabled = rollbackState is RestoreState.Idle,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.FileDownload, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Импорт")
+                    Icon(
+                        Icons.Default.Restore,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Откат", maxLines = 1)
                 }
                 OutlinedButton(
-                    onClick = { showDbInfoDialog = true },
+                    onClick = { showBackupManagerDialog = true },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.Info, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Инфо")
+                    Icon(
+                        Icons.Default.Storage,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Бэкапы", maxLines = 1)
                 }
-            }
-            OutlinedButton(
-                onClick = { showRollbackDialog = true },
-                enabled = rollbackState is RestoreState.Idle,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Restore, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Откат")
-            }
-            OutlinedButton(
-                onClick = { showCleanDialog = true },
-                enabled = cleanState is RestoreState.Idle,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                ),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.DeleteSweep, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Очистить БД")
+                OutlinedButton(
+                    onClick = { showCleanDialog = true },
+                    enabled = cleanState is RestoreState.Idle,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        Icons.Default.DeleteSweep,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    Text("Очистить", maxLines = 1)
+                }
             }
 
             HorizontalDivider()
@@ -541,7 +611,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                         )
                     }
                 } else {
-                    // FIX 5.9-db-rollback-public: PublicBackup.uri — строка.
                     pendingImportUri = Uri.parse(backup.uri)
                     pendingManifest = mf
                     pendingImportName = backup.displayName
@@ -632,6 +701,17 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 viewModel.cleanDatabase()
             },
             onDismiss = { showCleanDialog = false }
+        )
+    }
+
+    if (showBackupManagerDialog) {
+        BackupManagerDialog(
+            backups = managerBackups,
+            loading = managerLoading,
+            onDelete = { viewModel.deleteBackup(it) },
+            onDeleteOld = { viewModel.deleteOldBackups() },
+            onDeleteAll = { viewModel.deleteAllBackups() },
+            onDismiss = { showBackupManagerDialog = false }
         )
     }
 }

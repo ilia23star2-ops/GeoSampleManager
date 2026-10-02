@@ -12,8 +12,11 @@ import android.provider.MediaStore
  *
  * FIX 5.9-db-rollback-public:
  *  - rotateAutoBackups() — ротация публичных pre_*;
- *  - PublicBackup.uri теперь String; Uri.parse — только при
- *    работе с ContentResolver.
+ *  - PublicBackup.uri — String.
+ *
+ * FIX 5.9-db-backup-manager:
+ *  - listAllPublic() — все .gsmbackup (pre_* + exports);
+ *  - deleteByUri() — удаление файла из MediaStore.
  */
 object PublicBackupsLister {
 
@@ -28,8 +31,31 @@ object PublicBackupsLister {
         }
 
     /**
+     * FIX 5.9-db-backup-manager:
+     * Все .gsmbackup в Загрузках/GeoSampleManager и подпапках —
+     * для диалога управления бэкапами.
+     */
+    fun listAllPublic(context: Context): List<PublicBackup> =
+        queryAll(context) { true }
+
+    /**
+     * FIX 5.9-db-backup-manager:
+     * Удалить один публичный бэкап через ContentResolver.
+     * На API < 29 возвращает false.
+     */
+    fun deleteByUri(context: Context, uriString: String): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return try {
+            val uri = Uri.parse(uriString)
+            context.contentResolver.delete(uri, null, null) > 0
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Ротация публичных авто-бэкапов: держим N последних на каждую
-     * операцию (restore/rollback/clean), остальные удаляем.
+     * операцию, остальные удаляем.
      */
     fun rotateAutoBackups(
         context: Context,
@@ -52,15 +78,9 @@ object PublicBackupsLister {
 
         if (toDelete.isEmpty()) return 0
 
-        val resolver = context.contentResolver
         var deleted = 0
         for (b in toDelete) {
-            try {
-                val uri = Uri.parse(b.uri)
-                if (resolver.delete(uri, null, null) > 0) deleted++
-            } catch (_: Exception) {
-                // Не критично: файл останется, следующая ротация уберёт.
-            }
+            if (deleteByUri(context, b.uri)) deleted++
         }
         return deleted
     }
@@ -111,7 +131,6 @@ object PublicBackupsLister {
                     val id = c.getLong(idCol)
                     val uri = ContentUris.withAppendedId(collection, id)
                     val size = c.getLong(sizeCol)
-                    // DATE_MODIFIED — секунды, приводим к мс.
                     val dateSec = c.getLong(dateCol)
                     val dateMs = dateSec * 1000L
 
