@@ -36,6 +36,8 @@ import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.ui.navigation.RestartRouter
+import com.example.geosamplemanager.ui.navigation.Screen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -55,7 +57,7 @@ import java.util.Locale
  *    закрытия процесса.
  *
  * FIX 5.9-db-rollback:
- *  - кнопка «Откатиться к авто-бэкапу»;
+ *  - кнопка «Откат»;
  *  - список pre_*_* из filesDir/db_backups/;
  *  - двойное подтверждение + авто-бэкап pre_rollback_*.
  *
@@ -66,6 +68,11 @@ import java.util.Locale
  * FIX 5.9-db-clean:
  *  - кнопка «Очистить БД» с двойным подтверждением;
  *  - авто-бэкап pre_clean_* + перезапуск стека.
+ *
+ * FIX 5.9-db-smooth-restart:
+ *  - перед перезапуском сохраняем вкладку БД в RestartRouter;
+ *  - после startActivity глушим анимацию перехода
+ *    (overridePendingTransition(0,0)).
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -162,6 +169,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-restore-v2-hotfix-2:
     // После успешного импорта — пересоздать весь стек приложения
     // через startActivity(MainActivity) + finish().
+    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
     LaunchedEffect(restoreState) {
         when (val s = restoreState) {
             is RestoreState.Done -> {
@@ -170,6 +178,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 val act = context as? Activity
                 if (act != null) {
                     try {
+                        RestartRouter.scheduleRestart(context, Screen.DB.route)
                         val intent = Intent(context, MainActivity::class.java).apply {
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -177,6 +186,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             )
                         }
                         context.startActivity(intent)
+                        act.overridePendingTransition(0, 0)
                         act.finish()
                     } catch (_: Exception) {
                         try {
@@ -197,6 +207,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     // FIX 5.9-db-rollback:
     // После отката — та же логика перезапуска стека.
+    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
     LaunchedEffect(rollbackState) {
         when (val s = rollbackState) {
             is RestoreState.Done -> {
@@ -205,6 +216,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 val act = context as? Activity
                 if (act != null) {
                     try {
+                        RestartRouter.scheduleRestart(context, Screen.DB.route)
                         val intent = Intent(context, MainActivity::class.java).apply {
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -212,6 +224,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             )
                         }
                         context.startActivity(intent)
+                        act.overridePendingTransition(0, 0)
                         act.finish()
                     } catch (_: Exception) {
                         try {
@@ -232,6 +245,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     // FIX 5.9-db-clean:
     // После очистки — та же логика перезапуска стека.
+    // FIX 5.9-db-smooth-restart: сохраняем вкладку БД и глушим анимацию.
     LaunchedEffect(cleanState) {
         when (val s = cleanState) {
             is RestoreState.Done -> {
@@ -240,6 +254,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 val act = context as? Activity
                 if (act != null) {
                     try {
+                        RestartRouter.scheduleRestart(context, Screen.DB.route)
                         val intent = Intent(context, MainActivity::class.java).apply {
                             addFlags(
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -247,6 +262,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             )
                         }
                         context.startActivity(intent)
+                        act.overridePendingTransition(0, 0)
                         act.finish()
                     } catch (_: Exception) {
                         try {
@@ -352,7 +368,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Инфо")
                 }
             }
-            // FIX 5.9-db-rollback
+            // FIX 5.9-db-rollback (FIX 5.9-db-smooth-restart: имя «Откат»)
             OutlinedButton(
                 onClick = { showRollbackDialog = true },
                 enabled = rollbackState is RestoreState.Idle,
@@ -360,7 +376,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             ) {
                 Icon(Icons.Default.Restore, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
-                Text("Откатиться к авто-бэкапу")
+                Text("Откат")
             }
             // FIX 5.9-db-clean
             OutlinedButton(
