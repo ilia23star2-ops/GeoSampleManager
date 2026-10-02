@@ -2,6 +2,7 @@ package com.example.geosamplemanager.ui.screens
 
 import android.app.Application
 import android.content.ContentValues
+import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -16,6 +17,7 @@ import com.example.geosamplemanager.data.backup.BackupCounts
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
+import com.example.geosamplemanager.data.backup.PublicBackupsMigrator
 import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.backup.RollbackBackups
 import com.example.geosamplemanager.data.entity.AreaEntity
@@ -106,6 +108,54 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
+    // FIX 5.9-db-backups-ops/2: миграция старых публичных бэкапов
+    // ================================================================
+
+    private var publicMigrationStarted = false
+
+    /**
+     * Одноразовая ленивая миграция: переложить старые pre_* из корня
+     * Downloads/GeoSampleManager/ в подпапки pre_restore/ и т.д.
+     *
+     * Вызывается при первом показе вкладки БД. Флаг — в
+     * SharedPreferences, чтобы не гонять после перезапуска процесса.
+     */
+    fun migrateOldPublicBackupsIfNeeded() {
+        if (publicMigrationStarted) return
+        publicMigrationStarted = true
+        if (!shouldMigratePublicBackups()) return
+
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    PublicBackupsMigrator.migrate(getApplication())
+                }
+                markPublicBackupsMigrated()
+            } catch (_: Exception) {
+                // Не критично: миграция — фон.
+            }
+        }
+    }
+
+    private fun shouldMigratePublicBackups(): Boolean {
+        val prefs = getApplication<Application>().getSharedPreferences(
+            PublicBackupsMigrator.PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        return !prefs.getBoolean(PublicBackupsMigrator.KEY_MIGRATED, false)
+    }
+
+    private fun markPublicBackupsMigrated() {
+        val prefs = getApplication<Application>().getSharedPreferences(
+            PublicBackupsMigrator.PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        prefs.edit()
+            .putBoolean(PublicBackupsMigrator.KEY_MIGRATED, true)
+            .apply()
+    }
+
+    // ================================================================
     // Экспорт
     // ================================================================
 
@@ -131,7 +181,10 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 val uri = withContext(Dispatchers.IO) {
-                    writeToPublicDownloads("$name.${GsmBackupWriter.EXTENSION}")
+                    writeToPublicDownloads(
+                        "$name.${GsmBackupWriter.EXTENSION}",
+                        PublicBackupsMigrator.EXPORTS_DIR
+                    )
                 }
                 _lastExportUri.value = uri
                 _message.value = "Сохранено в Загрузки/GeoSampleManager: $name"
@@ -346,7 +399,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                writeToPublicDownloads(fileName)
+                writeToPublicDownloads(fileName, "pre_$operation")
             } catch (_: Exception) {
             }
         }
@@ -367,7 +420,14 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun writeToPublicDownloads(fileName: String): Uri {
+    /**
+     * FIX 5.9-db-backups-ops/2:
+     * subDir — подпапка внутри GeoSampleManager/ в Загрузках.
+     */
+    private suspend fun writeToPublicDownloads(
+        fileName: String,
+        subDir: String
+    ): Uri {
         val ctx = getApplication<Application>()
         val resolver = ctx.contentResolver
         val values = ContentValues().apply {
@@ -375,7 +435,8 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
             put(MediaStore.MediaColumns.MIME_TYPE, "application/octet-stream")
             put(
                 MediaStore.MediaColumns.RELATIVE_PATH,
-                "${Environment.DIRECTORY_DOWNLOADS}/GeoSampleManager"
+                "${Environment.DIRECTORY_DOWNLOADS}/" +
+                        "${PublicBackupsMigrator.ROOT_DIR}/$subDir"
             )
         }
         val uri = resolver.insert(
