@@ -306,6 +306,52 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
+    // FIX 5.9-db-clean: полная очистка БД
+    // ================================================================
+
+    private val _cleanState = MutableStateFlow<RestoreState>(RestoreState.Idle)
+    val cleanState: StateFlow<RestoreState> = _cleanState.asStateFlow()
+
+    fun resetCleanState() {
+        _cleanState.value = RestoreState.Idle
+    }
+
+    /**
+     * Полная очистка БД.
+     *  1) авто-бэкап pre_clean_*;
+     *  2) clearAllTables + удалить фото;
+     *  3) closeAndReset + resetRepository;
+     *  4) ротация pre_*_;
+     *  5) Done (UI перезапустит стек).
+     */
+    fun cleanDatabase() {
+        if (_cleanState.value is RestoreState.InProgress) return
+
+        viewModelScope.launch {
+            try {
+                _cleanState.value = RestoreState.InProgress("Готовим бэкап…")
+                withContext(Dispatchers.IO) { autoBackup(AUTO_BACKUP_OP_CLEAN) }
+
+                _cleanState.value = RestoreState.InProgress("Очищаем БД…")
+                withContext(Dispatchers.IO) { repo.clearAllData() }
+
+                _cleanState.value = RestoreState.InProgress("Закрываем соединение…")
+                withContext(Dispatchers.IO) {
+                    AppDatabase.closeAndReset()
+                }
+                app.resetRepository()
+
+                withContext(Dispatchers.IO) { rotateAllBackups() }
+                _cleanState.value = RestoreState.Done
+            } catch (e: Exception) {
+                _cleanState.value = RestoreState.Error(
+                    e.message ?: "Ошибка очистки"
+                )
+            }
+        }
+    }
+
+    // ================================================================
     // Общая цепочка замены БД (импорт и откат)
     // ================================================================
 
