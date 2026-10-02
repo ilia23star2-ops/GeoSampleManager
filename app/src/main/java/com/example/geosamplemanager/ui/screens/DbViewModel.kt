@@ -15,6 +15,7 @@ import com.example.geosamplemanager.data.DbInfo
 import com.example.geosamplemanager.data.DatabaseRepository
 import com.example.geosamplemanager.data.backup.BackupCounts
 import com.example.geosamplemanager.data.backup.BackupManifest
+import com.example.geosamplemanager.data.backup.BackupSource
 import com.example.geosamplemanager.data.backup.GsmBackupReader
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.backup.PublicBackup
@@ -178,6 +179,166 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
+    // FIX 5.9-db-backup-manager: управление всеми бэкапами
+    // ================================================================
+
+    private val _managerBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())
+    val managerBackups: StateFlow<List<RollbackBackup>> =
+        _managerBackups.asStateFlow()
+
+    private val _managerLoading = MutableStateFlow(false)
+    val managerLoading: StateFlow<Boolean> = _managerLoading.asStateFlow()
+
+    fun loadAllBackupsForManager() {
+        if (_managerLoading.value) return
+        _managerLoading.value = true
+        viewModelScope.launch {
+            try {
+                val dir = repo.getRollbackBackupsDir()
+                val privateList = withContext(Dispatchers.IO) {
+                    RollbackBackups.list(dir) { GsmBackupReader.readManifest(it) }
+                }
+                val publicList = withContext(Dispatchers.IO) {
+                    PublicBackupsLister.listAllPublic(getApplication())
+                        .map { RollbackBackups.fromPublic(it) }
+                }
+                _managerBackups.value = RollbackBackups.merge(
+                    privateList = privateList,
+                    publicList = publicList
+                )
+            } catch (e: Exception) {
+                _message.value = "Ошибка чтения бэкапов: ${e.message}"
+            } finally {
+                _managerLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * FIX 5.9-db-backup-manager (fix):
+     * Удаляем ВСЕ копии бэкапа — и приватную, и публичную.
+     * Иначе после удаления одного места файл всплывал из другого
+     * (дедупликация по имени при следующей загрузке).
+     */
+    fun deleteBackup(backup: RollbackBackup) {
+        viewModelScope.launch {
+            try {
+                val ok = withContext(Dispatchers.IO) {
+                    deleteAllCopies(backup)
+                }
+                _message.value = if (ok) {
+                    "Удалён: ${backup.fileName}"
+                } else {
+                    "Не удалось удалить: ${backup.fileName}"
+                }
+                reloadManagerBackups()
+            } catch (e: Exception) {
+                _message.value = "Ошибка удаления: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Удаляет приватную копию (File.delete) и все публичные
+     * с тем же именем (MediaStore).
+     */
+    private fun deleteAllCopies(backup: RollbackBackup): Boolean {
+        var anyDeleted = false
+
+        // Приватная копия.
+        try {
+            val f = File(repo.getRollbackBackupsDir(), backup.fileName)
+            if (f.exists() && f.delete()) anyDeleted = true
+        } catch (_: Exception) {
+        }
+
+        // Публичные копии с тем же именем.
+        try {
+            val allPublic = PublicBackupsLister.listAllPublic(getApplication())
+            for (pb in allPublic) {
+                if (pb.displayName == backup.fileName) {
+                    if (PublicBackupsLister.deleteByUri(
+                            getApplication(), pb.uri
+                        )
+                    ) {
+                        anyDeleted = true
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        return anyDeleted
+    }
+
+    /**
+     * Ручная ротация — «Удалить старые».
+     * Держим 5 последних на каждую операцию, приватно и публично.
+     */
+    fun deleteOldBackups() {
+        viewModelScope.launch {
+            try {
+                val deleted = withContext(Dispatchers.IO) {
+                    val privateDeleted = RollbackBackups.rotateByPrefix(
+                        repo.getRollbackBackupsDir(),
+                        RollbackBackups.MAX_KEEP
+                    ).size
+                    val publicDeleted = PublicBackupsLister.rotateAutoBackups(
+                        getApplication(),
+                        RollbackBackups.MAX_KEEP
+                    )
+                    privateDeleted + publicDeleted
+                }
+                _message.value = if (deleted > 0) {
+                    "Удалено старых: $deleted"
+                } else {
+                    "Нечего удалять"
+                }
+                reloadManagerBackups()
+            } catch (e: Exception) {
+                _message.value = "Ошибка ротации: ${e.message}"
+            }
+        }
+    }
+
+    fun deleteAllBackups() {
+        viewModelScope.launch {
+            try {
+                val deleted = withContext(Dispatchers.IO) {
+                    var count = 0
+                    val dir = repo.getRollbackBackupsDir()
+                    dir.listFiles()?.forEach { f ->
+                        try {
+                            if (f.isFile && f.delete()) count++
+                        } catch (_: Exception) {
+                        }
+                    }
+                    val allPublic = PublicBackupsLister
+                        .listAllPublic(getApplication())
+                    for (pb in allPublic) {
+                        if (PublicBackupsLister.deleteByUri(
+                                getApplication(), pb.uri
+                            )
+                        ) {
+                            count++
+                        }
+                    }
+                    count
+                }
+                _message.value = "Удалено бэкапов: $deleted"
+                reloadManagerBackups()
+            } catch (e: Exception) {
+                _message.value = "Ошибка удаления: ${e.message}"
+            }
+        }
+    }
+
+    private suspend fun reloadManagerBackups() {
+        _managerLoading.value = false
+        loadAllBackupsForManager()
+    }
+
+    // ================================================================
     // Экспорт
     // ================================================================
 
@@ -287,13 +448,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _rollbackState.value = RestoreState.Idle
     }
 
-    /**
-     * FIX 5.9-db-rollback-public:
-     * Загружает приватные + публичные авто-бэкапы.
-     * Перед этим прогоняет ротацию публичных — чтобы почистить
-     * накопления, если авто-ротация давно не срабатывала.
-     * Дедупликация по имени файла (приоритет приватного).
-     */
     fun loadRollbackBackups() {
         if (_rollbackLoading.value) return
         _rollbackLoading.value = true
@@ -324,9 +478,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Откат к приватному авто-бэкапу (filesDir/db_backups/).
-     */
     fun rollbackFromInternal(file: File) {
         performReplacement(
             stateFlow = _rollbackState,
@@ -342,10 +493,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /**
-     * FIX 5.9-db-rollback-public:
-     * Откат к публичному авто-бэкапу (Загрузки/GeoSampleManager/pre_*).
-     */
     fun rollbackFromPublic(uri: Uri) {
         performReplacement(
             stateFlow = _rollbackState,
@@ -478,10 +625,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-db-rollback-public:
-     * Ротация приватных и публичных pre_* (5 на операцию).
-     */
     private suspend fun rotateAllBackups() {
         try {
             RollbackBackups.rotateByPrefix(
