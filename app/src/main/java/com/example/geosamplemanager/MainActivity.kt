@@ -15,8 +15,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -25,8 +29,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
 import com.example.geosamplemanager.ui.navigation.AppScaffold
+import com.example.geosamplemanager.ui.navigation.Screen
+import com.example.geosamplemanager.ui.navigation.SimpleViewModelStoreOwner
 import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
 class MainActivity : ComponentActivity() {
@@ -83,7 +90,36 @@ private fun AppRoot() {
             message = status,
             showSpinner = true
         )
-        else -> AppScaffold()
+        else -> ReadyContent(app)
+    }
+}
+
+/**
+ * FIX 5.9-db-soft-restart:
+ * Поддерево, которое пересоздаётся при смене restart-tick.
+ *
+ * Ключевое:
+ *  - key(tick) — Compose выбрасывает всё поддерево при смене tick;
+ *  - SimpleViewModelStoreOwner — новый хранилище ViewModel'ей;
+ *  - DisposableEffect.onDispose — старый store очищается,
+ *    ViewModel'и получают onCleared();
+ *  - initialRoute — начальный экран (MAIN на старте, БД после
+ *    очистки/отката/импорта).
+ */
+@Composable
+private fun ReadyContent(app: GeoSampleApp) {
+    val restartRequest by app.restartRequest.collectAsState()
+    val tick = restartRequest?.tick ?: 0
+    val initialRoute = restartRequest?.route ?: Screen.MAIN.route
+
+    key(tick) {
+        val owner = remember { SimpleViewModelStoreOwner() }
+        DisposableEffect(owner) {
+            onDispose { owner.viewModelStore.clear() }
+        }
+        CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+            AppScaffold(initialRoute = initialRoute)
+        }
     }
 }
 
