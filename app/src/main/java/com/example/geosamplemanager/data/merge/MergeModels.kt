@@ -3,18 +3,19 @@ package com.example.geosamplemanager.data.merge
 import com.example.geosamplemanager.data.AppDatabase
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
+import com.example.geosamplemanager.data.entity.OrderWellEntity
+import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import java.io.File
 
 /**
- * FIX 5.9-db-merge-v2/1:
+ * FIX 5.9-db-merge-v2:
  * Модели для движка слияния БД.
  *
- * MergeEngine работает с двумя источниками:
- *   "мои" — текущая БД приложения;
- *   "их"  — содержимое выбранного .gsmbackup.
- *
- * /1 сливает только участки и наряды. Пробы, скважины, заметки,
- * фото — в /2 и /3.
+ * /1 — участки и наряды.
+ * /2 — пробы, скважины, заметки.
+ * /3 — фото (физическое копирование файлов).
+ * /4 — UI.
  */
 
 /** Открытая временная БД архива + путь к её файлу. */
@@ -23,69 +24,135 @@ data class TempDatabaseHandle(
     val file: File
 )
 
-/**
- * Участок из архива, который надо добавить в текущую БД.
- * Храним исходный id — чтобы после вставки получить маппинг.
- */
+// ================================================================
+// Участки (/1)
+// ================================================================
+
 data class AreaToAdd(
     val theirId: Long,
     val entity: AreaEntity
 )
 
-/**
- * План слияния участков.
- *
- *  - existing: theirAreaId -> myAreaId — для совпадений по имени.
- *    При дублях у меня берётся MIN(id) (первый заведённый).
- *  - toAdd: участки без аналога у меня.
- *  - duplicatesInMine: имена, у которых в моей БД больше одной
- *    записи — для предупреждения в UI.
- */
 data class AreaPlan(
     val existing: Map<Long, Long>,
     val toAdd: List<AreaToAdd>,
     val duplicatesInMine: List<String>
 )
 
-/**
- * Наряд из архива, который надо добавить в текущую БД.
- * areaId уже пересчитан на мой.
- */
+// ================================================================
+// Наряды (/1)
+// ================================================================
+
 data class OrderToAdd(
     val theirId: Long,
     val entity: OrderEntity
 )
 
-/**
- * План слияния нарядов.
- *
- *  - existing: theirOrderId -> myOrderId — совпадения по
- *    (area_id, order_number).
- *  - toAdd: наряды без аналога у меня.
- *  - skippedOrphans: наряды, чей area_id не сматчился — пропущены.
- */
 data class OrderPlan(
     val existing: Map<Long, Long>,
     val toAdd: List<OrderToAdd>,
     val skippedOrphans: Int
 )
 
-/** Краткая статистика для UI (будет использоваться в /4). */
+// ================================================================
+// Пробы (/2)
+// ================================================================
+
+/** Решение по конфликту. Пошаговый режим «спросить» — в UI. */
+enum class ConflictResolution {
+    KEEP_MINE,
+    TAKE_THEIRS
+}
+
+data class SampleToAdd(
+    val theirId: Long,
+    val entity: SampleEntity
+)
+
+data class SampleConflict(
+    val theirId: Long,
+    val myId: Long,
+    val sampleNumber: String,
+    val myEntity: SampleEntity,
+    val theirEntity: SampleEntity
+)
+
+data class SamplePlan(
+    val toAdd: List<SampleToAdd>,
+    val conflicts: List<SampleConflict>,
+    val skippedOrphans: Int
+)
+
+// ================================================================
+// Скважины (/2)
+// ================================================================
+
+data class OrderWellToAdd(
+    val myOrderId: Long,
+    val wellNumber: String
+)
+
+data class WellPlan(
+    val toAdd: List<OrderWellToAdd>
+)
+
+// ================================================================
+// Заметки (/2)
+// ================================================================
+
+data class NoteToAdd(
+    val mySampleId: Long,
+    val text: String?
+)
+
+data class NoteConflict(
+    val theirSampleId: Long,
+    val mySampleId: Long,
+    val myText: String?,
+    val theirText: String?
+)
+
+data class NotePlan(
+    val toAdd: List<NoteToAdd>,
+    val conflicts: List<NoteConflict>
+)
+
+// ================================================================
+// Статистика
+// ================================================================
+
 data class MergeStats(
     val areasAdded: Int,
     val areasMatched: Int,
     val ordersAdded: Int,
     val ordersMatched: Int,
-    val ordersSkipped: Int
+    val ordersSkipped: Int,
+    val samplesAdded: Int,
+    val samplesMatched: Int,
+    val samplesSkipped: Int,
+    val wellsAdded: Int,
+    val notesAdded: Int,
+    val notesConflicts: Int
 ) {
     companion object {
-        fun from(areaPlan: AreaPlan, orderPlan: OrderPlan): MergeStats =
-            MergeStats(
-                areasAdded = areaPlan.toAdd.size,
-                areasMatched = areaPlan.existing.size,
-                ordersAdded = orderPlan.toAdd.size,
-                ordersMatched = orderPlan.existing.size,
-                ordersSkipped = orderPlan.skippedOrphans
-            )
+        fun from(
+            areaPlan: AreaPlan,
+            orderPlan: OrderPlan,
+            samplePlan: SamplePlan? = null,
+            wellPlan: WellPlan? = null,
+            notePlan: NotePlan? = null
+        ): MergeStats = MergeStats(
+            areasAdded = areaPlan.toAdd.size,
+            areasMatched = areaPlan.existing.size,
+            ordersAdded = orderPlan.toAdd.size,
+            ordersMatched = orderPlan.existing.size,
+            ordersSkipped = orderPlan.skippedOrphans,
+            samplesAdded = samplePlan?.toAdd?.size ?: 0,
+            samplesMatched = samplePlan?.conflicts?.size ?: 0,
+            samplesSkipped = samplePlan?.skippedOrphans ?: 0,
+            wellsAdded = wellPlan?.toAdd?.size ?: 0,
+            notesAdded = notePlan?.toAdd?.size ?: 0,
+            notesConflicts = notePlan?.conflicts?.size ?: 0
+        )
     }
 }
