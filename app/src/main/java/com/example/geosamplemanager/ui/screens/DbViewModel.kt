@@ -23,6 +23,9 @@ import com.example.geosamplemanager.data.backup.PublicBackupsLister
 import com.example.geosamplemanager.data.backup.PublicBackupsMigrator
 import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.backup.RollbackBackups
+import com.example.geosamplemanager.data.compare.CompareEngine
+import com.example.geosamplemanager.data.compare.CompareResult
+import com.example.geosamplemanager.data.compare.ConflictInfo
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -43,6 +46,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -293,18 +297,12 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-db-backups-fix:
-     * «Удалить всё» — только авто-бэкапы (pre_*).
-     * Экспорты в Загрузках/GeoSampleManager/exports/ НЕ трогаем.
-     */
     fun deleteAllBackups() {
         viewModelScope.launch {
             try {
                 val deleted = withContext(Dispatchers.IO) {
                     var count = 0
 
-                    // Приватная папка: там лежат только авто-бэкапы.
                     val dir = repo.getRollbackBackupsDir()
                     dir.listFiles()?.forEach { f ->
                         try {
@@ -313,7 +311,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    // Публичные: только подпапки pre_*.
                     val allPublic = PublicBackupsLister
                         .listAllPublic(getApplication())
                     for (pb in allPublic) {
@@ -340,6 +337,114 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun reloadManagerBackups() {
         _managerLoading.value = false
         loadAllBackupsForManager()
+    }
+
+    // ================================================================
+    // Сравнение БД
+    // ================================================================
+
+    private val _compareState = MutableStateFlow<CompareResult?>(null)
+    val compareState: StateFlow<CompareResult?> = _compareState.asStateFlow()
+
+    private val _compareLoading = MutableStateFlow(false)
+    val compareLoading: StateFlow<Boolean> = _compareLoading.asStateFlow()
+
+    fun startCompare() {
+        _compareState.value = null
+        _compareLoading.value = true
+    }
+
+    fun resetCompareState() {
+        _compareState.value = null
+        _compareLoading.value = false
+    }
+
+    fun loadCompare(uri: Uri, fileName: String) {
+        _compareLoading.value = true
+        viewModelScope.launch {
+            var handle: TempDatabaseHandle? = null
+            try {
+                val cacheDir = getApplication<Application>().cacheDir
+                handle = withContext(Dispatchers.IO) {
+                    MergeEngine.openArchive(getApplication(), uri, cacheDir)
+                        .getOrThrow()
+                }
+
+                val archive = withContext(Dispatchers.IO) {
+                    MergeRunner.readArchiveData(handle)
+                }
+
+                val myAreas = repo.getAreas()
+                val myOrders = repo.getAllOrders()
+                val mySamples = withContext(Dispatchers.IO) {
+                    repo.getAllSamplesFlow().first()
+                }
+
+                val myWells = HashMap<Long, List<String>>()
+                for (o in myOrders) {
+                    myWells[o.id] = repo.getWellsForOrder(o.id)
+                }
+
+                // Конфликты считаем через MergeEngine (только для полей).
+                val areaPlan = MergeEngine.planAreas(myAreas, archive.areas)
+                val orderPlan = MergeEngine.planOrders(
+                    myOrders = myOrders,
+                    theirOrders = archive.orders,
+                    areaIdMap = areaPlan.existing
+                )
+                val pseudoOrderMap = HashMap(orderPlan.existing)
+                for (add in orderPlan.toAdd) pseudoOrderMap[add.theirId] = -1L
+
+                val mySamplesFiltered = repo.getSamplesForOrders(
+                    (orderPlan.existing.values +
+                            orderPlan.toAdd.map { it.theirId }).toList()
+                ).filter { it.orderId > 0 }
+
+                val samplePlan = MergeEngine.planSamples(
+                    mySamples = mySamplesFiltered,
+                    theirSamples = archive.samples,
+                    orderIdMap = pseudoOrderMap,
+                    myOrders = myOrders,
+                    myAreas = myAreas
+                )
+
+                val conflicts = samplePlan.conflicts.map { c ->
+                    ConflictInfo(
+                        areaName = c.areaName,
+                        orderNumber = c.orderNumber,
+                        sampleNumber = c.sampleNumber,
+                        fieldLabels = c.fieldDiffs.joinToString(", ") {
+                            it.field.label
+                        }
+                    )
+                }
+
+                val result = withContext(Dispatchers.IO) {
+                    CompareEngine.buildResult(
+                        fileName = fileName,
+                        myAreas = myAreas,
+                        theirAreas = archive.areas,
+                        myOrders = myOrders,
+                        theirOrders = archive.orders,
+                        mySamples = mySamples,
+                        theirSamples = archive.samples,
+                        myWellsByOrder = myWells,
+                        theirWellsByOrder = archive.wellsByOrderId,
+                        conflicts = conflicts
+                    )
+                }
+
+                _compareState.value = result
+            } catch (e: Exception) {
+                _message.value = "Ошибка сравнения: ${e.message}"
+                _compareState.value = null
+            } finally {
+                try {
+                    handle?.let { MergeEngine.closeAndClean(it) }
+                } catch (_: Exception) {}
+                _compareLoading.value = false
+            }
+        }
     }
 
     // ================================================================

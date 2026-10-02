@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
@@ -80,6 +81,10 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val managerLoading by viewModel.managerLoading.collectAsState()
 
     val mergeState by viewModel.mergeState.collectAsState()
+
+    // FIX 5.9-db-compare
+    val compareState by viewModel.compareState.collectAsState()
+    val compareLoading by viewModel.compareLoading.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -246,6 +251,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
+    // FIX 5.9-db-compare: лаунчер для сравнения.
+    val compareFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = uri.lastPathSegment?.substringAfterLast('/')
+                ?: "backup.gsmbackup"
+            viewModel.loadCompare(uri, name)
+        } else {
+            viewModel.resetCompareState()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -333,7 +351,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     },
                     enabled = mergeState is MergeWizardState.Idle
                             && restoreState is RestoreState.Idle
-                            && rollbackState is RestoreState.Idle,
+                            && rollbackState is RestoreState.Idle
+                            && !compareLoading,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
@@ -342,18 +361,34 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Слияние", maxLines = 1)
                 }
                 OutlinedButton(
-                    onClick = { showCleanDialog = true },
-                    enabled = cleanState is RestoreState.Idle,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    ),
+                    onClick = {
+                        viewModel.startCompare()
+                        compareFileLauncher.launch(arrayOf("*/*"))
+                    },
+                    enabled = mergeState is MergeWizardState.Idle
+                            && restoreState is RestoreState.Idle
+                            && rollbackState is RestoreState.Idle
+                            && !compareLoading,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
+                    Icon(Icons.Default.Compare, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
-                    Text("Очистить", maxLines = 1)
+                    Text("Сравнить", maxLines = 1)
                 }
+            }
+            OutlinedButton(
+                onClick = { showCleanDialog = true },
+                enabled = cleanState is RestoreState.Idle,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Очистить БД", maxLines = 1)
             }
 
             HorizontalDivider()
@@ -434,6 +469,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
         val cs = cleanState
         if (cs is RestoreState.InProgress) ProgressOverlay(cs.message)
+
+        // FIX 5.9-db-compare
+        if (compareLoading) ProgressOverlay("Читаем архив…")
     }
 
     MergeWizard(
@@ -451,6 +489,14 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         onCancel = { viewModel.cancelMerge() },
         onCloseDone = { viewModel.resetMergeState() }
     )
+
+    // FIX 5.9-db-compare: полноэкранный экран сравнения.
+    compareState?.let { result ->
+        DbCompareScreen(
+            result = result,
+            onClose = { viewModel.resetCompareState() }
+        )
+    }
 
     if (showAddAreaDialog) {
         TextInputDialog(
