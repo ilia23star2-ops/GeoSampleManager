@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
@@ -40,6 +41,7 @@ import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.merge.MergeWizardState
 import com.example.geosamplemanager.ui.navigation.Screen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -47,23 +49,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * FIX 5.9-db-soft-restart:
- *  - пересбор поддерева через app.requestRestart;
- *  - снекбар «Готово. …» после пересборки.
- *
- * FIX 5.9-db-import-picker:
- *  - кнопка «Импорт» → диалог со списком exports + SAF.
- *
- * FIX 5.9-db-rollback-public:
- *  - откат из приватного файла или публичного Uri.
- *
- * FIX 5.9-db-backup-manager:
- *  - кнопка «Бэкапы» → диалог управления.
- *
- * FIX 5.9-db-backup-manager (fix):
- *  - компактная раскладка кнопок: 4 + 3 в двух рядах.
- */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val context = LocalContext.current
@@ -93,6 +78,8 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     val managerBackups by viewModel.managerBackups.collectAsState()
     val managerLoading by viewModel.managerLoading.collectAsState()
+
+    val mergeState by viewModel.mergeState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -247,6 +234,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
+    // FIX 5.9-db-merge-v2/4: выбор архива для слияния.
+    val mergeFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val name = uri.lastPathSegment?.substringAfterLast('/')
+                ?: "backup.gsmbackup"
+            viewModel.loadMergePreview(uri, name)
+        } else {
+            viewModel.resetMergeState()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -254,7 +254,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // FIX 5.9-db-backup-manager (fix): компактная раскладка 4+3.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -264,11 +263,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.Add, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Участок", maxLines = 1)
                 }
@@ -284,11 +279,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             strokeWidth = 2.dp
                         )
                     } else {
-                        Icon(
-                            Icons.Default.FileUpload,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
+                        Icon(Icons.Default.FileUpload, null, Modifier.size(16.dp))
                     }
                     Spacer(Modifier.width(2.dp))
                     Text("Экспорт", maxLines = 1)
@@ -299,11 +290,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.FileDownload,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.FileDownload, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Импорт", maxLines = 1)
                 }
@@ -312,11 +299,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.Info, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Инфо", maxLines = 1)
                 }
@@ -331,11 +314,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.Restore,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.Restore, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Откат", maxLines = 1)
                 }
@@ -344,13 +323,24 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.Storage,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.Storage, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Бэкапы", maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.startMergeWizard()
+                        mergeFileLauncher.launch(arrayOf("*/*"))
+                    },
+                    enabled = mergeState is MergeWizardState.Idle
+                            && restoreState is RestoreState.Idle
+                            && rollbackState is RestoreState.Idle,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Merge, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(2.dp))
+                    Text("Слияние", maxLines = 1)
                 }
                 OutlinedButton(
                     onClick = { showCleanDialog = true },
@@ -361,11 +351,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        Icons.Default.DeleteSweep,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(2.dp))
                     Text("Очистить", maxLines = 1)
                 }
@@ -442,80 +428,25 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
 
         val rs = restoreState
-        if (rs is RestoreState.InProgress) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.5f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Card {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator()
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                rs.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        if (rs is RestoreState.InProgress) ProgressOverlay(rs.message)
 
         val rbs = rollbackState
-        if (rbs is RestoreState.InProgress) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.5f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Card {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator()
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                rbs.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        if (rbs is RestoreState.InProgress) ProgressOverlay(rbs.message)
 
         val cs = cleanState
-        if (cs is RestoreState.InProgress) {
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color.Black.copy(alpha = 0.5f)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Card {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator()
-                            Spacer(Modifier.height(12.dp))
-                            Text(
-                                cs.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-                }
-            }
-        }
+        if (cs is RestoreState.InProgress) ProgressOverlay(cs.message)
     }
+
+    // ---- Диалоги ----
+
+    MergeWizard(
+        state = mergeState,
+        onContinue = { viewModel.continueFromPreview() },
+        onSetConflict = { id, r -> viewModel.setConflictResolution(id, r) },
+        onSetAllConflicts = { r -> viewModel.setAllConflictsResolution(r) },
+        onCancel = { viewModel.cancelMerge() },
+        onCloseDone = { viewModel.resetMergeState() }
+    )
 
     if (showAddAreaDialog) {
         TextInputDialog(
@@ -606,9 +537,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 val mf = backup.manifest
                 if (mf == null) {
                     scope.launch {
-                        snackbarHostState.showSnackbar(
-                            "Не удалось прочитать архив"
-                        )
+                        snackbarHostState.showSnackbar("Не удалось прочитать архив")
                     }
                 } else {
                     pendingImportUri = Uri.parse(backup.uri)
@@ -713,6 +642,31 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             onDeleteAll = { viewModel.deleteAllBackups() },
             onDismiss = { showBackupManagerDialog = false }
         )
+    }
+}
+
+@Composable
+private fun ProgressOverlay(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.Black.copy(alpha = 0.5f)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Card {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
     }
 }
 
