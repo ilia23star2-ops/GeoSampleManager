@@ -9,6 +9,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -17,15 +18,26 @@ import androidx.navigation.compose.rememberNavController
 import com.example.geosamplemanager.ui.screens.*
 import kotlinx.coroutines.launch
 
+/**
+ * FIX 5.9-db-smooth-restart:
+ * startDestination читается из RestartRouter — если перед
+ * перезапуском стек сохранил вкладку, откроется она, а не Главная.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppScaffold() {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.MAIN.route
     val currentScreen = Screen.values().firstOrNull { it.route == currentRoute } ?: Screen.MAIN
+
+    // FIX 5.9-db-smooth-restart: одноразово читаем сохранённый route.
+    val startRoute = remember {
+        RestartRouter.validateRoute(RestartRouter.consumePendingRoute(context))
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -74,7 +86,7 @@ fun AppScaffold() {
         ) { padding ->
             NavHost(
                 navController = navController,
-                startDestination = Screen.MAIN.route,
+                startDestination = startRoute,
                 modifier = Modifier.padding(padding)
             ) {
                 composable(Screen.MAIN.route) { MainScreen() }
