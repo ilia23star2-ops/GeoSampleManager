@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
@@ -61,6 +62,10 @@ import java.util.Locale
  * FIX 5.9-db-backups-ops/2:
  *  - ленивая миграция старых бэкапов из корня GeoSampleManager/
  *    в подпапки — при первом показе экрана.
+ *
+ * FIX 5.9-db-clean:
+ *  - кнопка «Очистить БД» с двойным подтверждением;
+ *  - авто-бэкап pre_clean_* + перезапуск стека.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -83,6 +88,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val rollbackBackups by viewModel.rollbackBackups.collectAsState()
     val rollbackLoading by viewModel.rollbackLoading.collectAsState()
     val rollbackState by viewModel.rollbackState.collectAsState()
+
+    // FIX 5.9-db-clean
+    val cleanState by viewModel.cleanState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -118,6 +126,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var pendingRollbackName by remember { mutableStateOf<String?>(null) }
     var pendingRollbackManifest by remember { mutableStateOf<BackupManifest?>(null) }
 
+    // FIX 5.9-db-clean: диалог очистки.
+    var showCleanDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
@@ -125,6 +136,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-rollback: подгрузка списка при открытии диалога.
     LaunchedEffect(showRollbackDialog) {
         if (showRollbackDialog) viewModel.loadRollbackBackups()
+    }
+
+    // FIX 5.9-db-clean: подгрузка счётчиков при открытии диалога.
+    LaunchedEffect(showCleanDialog) {
+        if (showCleanDialog) viewModel.loadDbInfo()
     }
 
     LaunchedEffect(lastExportUri) {
@@ -209,6 +225,41 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             is RestoreState.Error -> {
                 snackbarHostState.showSnackbar(s.message)
                 viewModel.resetRollbackState()
+            }
+            else -> Unit
+        }
+    }
+
+    // FIX 5.9-db-clean:
+    // После очистки — та же логика перезапуска стека.
+    LaunchedEffect(cleanState) {
+        when (val s = cleanState) {
+            is RestoreState.Done -> {
+                snackbarHostState.showSnackbar("БД очищена. Перезапуск…")
+                delay(700)
+                val act = context as? Activity
+                if (act != null) {
+                    try {
+                        val intent = Intent(context, MainActivity::class.java).apply {
+                            addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+                            )
+                        }
+                        context.startActivity(intent)
+                        act.finish()
+                    } catch (_: Exception) {
+                        try {
+                            android.os.Process.killProcess(
+                                android.os.Process.myPid()
+                            )
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            is RestoreState.Error -> {
+                snackbarHostState.showSnackbar(s.message)
+                viewModel.resetCleanState()
             }
             else -> Unit
         }
@@ -310,6 +361,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 Icon(Icons.Default.Restore, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
                 Text("Откатиться к авто-бэкапу")
+            }
+            // FIX 5.9-db-clean
+            OutlinedButton(
+                onClick = { showCleanDialog = true },
+                enabled = cleanState is RestoreState.Idle,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.DeleteSweep, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text("Очистить БД")
             }
 
             HorizontalDivider()
@@ -424,6 +488,32 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             Spacer(Modifier.height(12.dp))
                             Text(
                                 rbs.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // FIX 5.9-db-clean: модалка прогресса очистки.
+        val cs = cleanState
+        if (cs is RestoreState.InProgress) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black.copy(alpha = 0.5f)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Card {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                cs.message,
                                 style = MaterialTheme.typography.bodyMedium,
                                 textAlign = TextAlign.Center
                             )
@@ -568,6 +658,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 pendingRollbackName = null
                 pendingRollbackManifest = null
             }
+        )
+    }
+
+    // FIX 5.9-db-clean: диалог очистки.
+    if (showCleanDialog) {
+        DbCleanDialog(
+            info = dbInfo,
+            loading = dbInfoLoading,
+            onConfirm = {
+                showCleanDialog = false
+                viewModel.cleanDatabase()
+            },
+            onDismiss = { showCleanDialog = false }
         )
     }
 }

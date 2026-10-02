@@ -26,6 +26,9 @@ import java.io.File
  * FIX 5.9-db-rollback:
  *  - getRollbackBackupsDir() — путь к папке авто-бэкапов
  *    (pre_restore_*, pre_rollback_*).
+ *
+ * FIX 5.9-db-clean:
+ *  - clearAllData() — полная очистка БД + удаление всех фото.
  */
 data class DbInfo(
     val dbPath: String,
@@ -239,7 +242,7 @@ class DatabaseRepository(context: Context) {
 
     /**
      * FIX 5.9-db-rollback:
-     * Папка с авто-бэкапами (pre_restore_*, pre_rollback_*).
+     * Папка с авто-бэкапами (pre_restore_*, pre_rollback_*, pre_clean_*).
      * Создаётся при первом обращении при необходимости.
      */
     fun getRollbackBackupsDir(): File = File(appContext.filesDir, "db_backups")
@@ -282,6 +285,35 @@ class DatabaseRepository(context: Context) {
             photosCount = sampleImageDao.countAll(),
             wellsCount = orderWellDao.countAll()
         )
+    }
+
+    // ============ ОЧИСТКА ============
+
+    /**
+     * FIX 5.9-db-clean:
+     * Полная очистка содержимого БД: все таблицы + все файлы фото.
+     * Схема и миграции не трогаются — Room сам управляет.
+     *
+     * Вызывающий код обязан после этого сбросить соединение
+     * (AppDatabase.closeAndReset) и репозиторий (GeoSampleApp.resetRepository),
+     * чтобы UI подписался заново на пустые Flow.
+     */
+    suspend fun clearAllData() {
+        db.clearAllTables()
+
+        val photosDir = getPhotosDir()
+        if (photosDir.exists() && photosDir.isDirectory) {
+            val files = photosDir.listFiles()
+            if (files != null) {
+                for (f in files) {
+                    try {
+                        if (f.isFile) f.delete()
+                    } catch (_: Exception) {
+                        // Не критично: файл останется, следующая очистка уберёт.
+                    }
+                }
+            }
+        }
     }
 
     // ============ ОЧИСТКА НАРЯДА ============
