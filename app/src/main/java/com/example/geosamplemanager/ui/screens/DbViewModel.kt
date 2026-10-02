@@ -26,6 +26,14 @@ import com.example.geosamplemanager.data.backup.RollbackBackups
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.merge.ArchiveData
+import com.example.geosamplemanager.data.merge.ConflictResolution
+import com.example.geosamplemanager.data.merge.MergeEngine
+import com.example.geosamplemanager.data.merge.MergePreview
+import com.example.geosamplemanager.data.merge.MergeRunner
+import com.example.geosamplemanager.data.merge.MergeStats
+import com.example.geosamplemanager.data.merge.MergeWizardState
+import com.example.geosamplemanager.data.merge.TempDatabaseHandle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -111,7 +119,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-backups-ops/2: миграция старых публичных бэкапов
+    // Миграция старых публичных бэкапов
     // ================================================================
 
     private var publicMigrationStarted = false
@@ -151,7 +159,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-import-picker: список публичных бэкапов (импорт)
+    // Публичные бэкапы (импорт)
     // ================================================================
 
     private val _publicBackups = MutableStateFlow<List<PublicBackup>>(emptyList())
@@ -179,7 +187,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-backup-manager: управление всеми бэкапами
+    // Управление бэкапами
     // ================================================================
 
     private val _managerBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())
@@ -214,12 +222,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-db-backup-manager (fix):
-     * Удаляем ВСЕ копии бэкапа — и приватную, и публичную.
-     * Иначе после удаления одного места файл всплывал из другого
-     * (дедупликация по имени при следующей загрузке).
-     */
     fun deleteBackup(backup: RollbackBackup) {
         viewModelScope.launch {
             try {
@@ -238,21 +240,13 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Удаляет приватную копию (File.delete) и все публичные
-     * с тем же именем (MediaStore).
-     */
     private fun deleteAllCopies(backup: RollbackBackup): Boolean {
         var anyDeleted = false
-
-        // Приватная копия.
         try {
             val f = File(repo.getRollbackBackupsDir(), backup.fileName)
             if (f.exists() && f.delete()) anyDeleted = true
         } catch (_: Exception) {
         }
-
-        // Публичные копии с тем же именем.
         try {
             val allPublic = PublicBackupsLister.listAllPublic(getApplication())
             for (pb in allPublic) {
@@ -267,14 +261,9 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
             }
         } catch (_: Exception) {
         }
-
         return anyDeleted
     }
 
-    /**
-     * Ручная ротация — «Удалить старые».
-     * Держим 5 последних на каждую операцию, приватно и публично.
-     */
     fun deleteOldBackups() {
         viewModelScope.launch {
             try {
@@ -336,6 +325,258 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun reloadManagerBackups() {
         _managerLoading.value = false
         loadAllBackupsForManager()
+    }
+
+    // ================================================================
+    // FIX 5.9-db-merge-v2/4: слияние БД
+    // ================================================================
+
+    private val _mergeState = MutableStateFlow<MergeWizardState>(MergeWizardState.Idle)
+    val mergeState: StateFlow<MergeWizardState> = _mergeState.asStateFlow()
+
+    private var mergeHandle: TempDatabaseHandle? = null
+    private var mergeUri: Uri? = null
+    private var mergeFileName: String? = null
+
+    fun startMergeWizard() {
+        _mergeState.value = MergeWizardState.Loading
+    }
+
+    /**
+     * Пользователь выбрал .gsmbackup для слияния.
+     * Открываем архив, читаем его, строим предварительные планы.
+     */
+    fun loadMergePreview(uri: Uri, fileName: String) {
+        if (_mergeState.value is MergeWizardState.Running) return
+        _mergeState.value = MergeWizardState.Loading
+        mergeUri = uri
+        mergeFileName = fileName
+
+        viewModelScope.launch {
+            try {
+                val cacheDir = getApplication<Application>().cacheDir
+                val handle = withContext(Dispatchers.IO) {
+                    MergeEngine.openArchive(
+                        context = getApplication(),
+                        uri = uri,
+                        cacheDir = cacheDir
+                    ).getOrThrow()
+                }
+                mergeHandle = handle
+
+                val archive = withContext(Dispatchers.IO) {
+                    MergeRunner.readArchiveData(handle)
+                }
+
+                val myAreas = repo.getAreas()
+                val myOrders = repo.getAllOrders()
+
+                val areaPlan = MergeEngine.planAreas(myAreas, archive.areas)
+                val orderPlan = MergeEngine.planOrders(
+                    myOrders = myOrders,
+                    theirOrders = archive.orders,
+                    areaIdMap = areaPlan.existing
+                )
+
+                // Псевдомаппинг для превью: их orderId -> -1 для
+                // новых нарядов. Точное значение получим в Runner.
+                val pseudoOrderMap = HashMap(orderPlan.existing)
+                for (add in orderPlan.toAdd) {
+                    pseudoOrderMap[add.theirId] = -1L
+                }
+
+                val mySamples = repo.getSamplesForOrders(
+                    (orderPlan.existing.values +
+                            orderPlan.toAdd.map { it.theirId }).toList()
+                ).filter { it.orderId > 0 }
+
+                val samplePlan = MergeEngine.planSamples(
+                    mySamples = mySamples,
+                    theirSamples = archive.samples,
+                    orderIdMap = pseudoOrderMap
+                )
+
+                val pseudoSampleMap = HashMap<Long, Long>()
+                for (add in samplePlan.toAdd) {
+                    pseudoSampleMap[add.theirId] = -1L
+                }
+                for (c in samplePlan.conflicts) {
+                    pseudoSampleMap[c.theirId] = c.myId
+                }
+
+                val wellPlan = MergeEngine.planWells(
+                    myWells = emptyMap(),
+                    theirWells = archive.wellsByOrderId,
+                    orderIdMap = pseudoOrderMap
+                )
+
+                val notePlan = MergeEngine.planNotes(
+                    myNotes = emptyMap(),
+                    theirNotes = archive.notesBySampleId,
+                    sampleIdMap = pseudoSampleMap
+                )
+
+                val theirImages = archive.imagesBySampleId.values.flatten()
+                val conflictIds = samplePlan.conflicts.map { it.theirId }.toHashSet()
+                val photoPlan = MergeEngine.planPhotos(
+                    theirImages = theirImages,
+                    sampleIdMap = pseudoSampleMap,
+                    conflictSampleIds = conflictIds,
+                    resolutions = emptyMap()
+                )
+
+                val stats = MergeStats.from(
+                    areaPlan = areaPlan,
+                    orderPlan = orderPlan,
+                    samplePlan = samplePlan,
+                    wellPlan = wellPlan,
+                    notePlan = notePlan,
+                    photoPlan = photoPlan
+                )
+
+                val preview = MergePreview(
+                    fileName = fileName,
+                    archive = archive,
+                    areaPlan = areaPlan,
+                    orderPlan = orderPlan,
+                    samplePlan = samplePlan,
+                    wellPlan = wellPlan,
+                    notePlan = notePlan,
+                    photoPlan = photoPlan,
+                    stats = stats
+                )
+                _mergeState.value = MergeWizardState.Preview(preview)
+            } catch (e: Exception) {
+                cleanupMergeHandle()
+                _mergeState.value = MergeWizardState.Error(
+                    e.message ?: "Не удалось прочитать архив"
+                )
+            }
+        }
+    }
+
+    /**
+     * Продолжить с превью.
+     * Если есть конфликты проб — на шаг разбора конфликтов.
+     * Иначе — сразу на запуск.
+     */
+    fun continueFromPreview() {
+        val state = _mergeState.value
+        if (state !is MergeWizardState.Preview) return
+        val preview = state.preview
+        if (preview.samplePlan.conflicts.isEmpty()) {
+            runMerge(emptyMap())
+        } else {
+            _mergeState.value = MergeWizardState.ConflictStep(preview, 0)
+        }
+    }
+
+    /**
+     * Установить разрешение для текущего конфликта и перейти к
+     * следующему. Если конфликты закончились — запускаем.
+     */
+    fun setConflictResolution(
+        sampleId: Long,
+        resolution: ConflictResolution
+    ) {
+        val state = _mergeState.value
+        if (state !is MergeWizardState.ConflictStep) return
+        val preview = state.preview
+
+        val updated = preview.copy(
+            // пересчёт photoPlan не делаем — он строится в Runner
+        )
+        _conflictResolutions[sampleId] = resolution
+
+        val next = state.currentIndex + 1
+        if (next >= preview.samplePlan.conflicts.size) {
+            val finalResolutions = HashMap<Long, ConflictResolution>(_conflictResolutions)
+            _conflictResolutions.clear()
+            _mergeState.value = MergeWizardState.ConflictStep(updated, next)
+            runMerge(finalResolutions)
+        } else {
+            _mergeState.value = MergeWizardState.ConflictStep(updated, next)
+        }
+    }
+
+    /**
+     * Применить одно разрешение ко всем оставшимся конфликтам
+     * и сразу запустить слияние.
+     */
+    fun setAllConflictsResolution(resolution: ConflictResolution) {
+        val state = _mergeState.value
+        if (state !is MergeWizardState.ConflictStep) return
+        val preview = state.preview
+
+        val resolutions = HashMap<Long, ConflictResolution>()
+        for (i in state.currentIndex until preview.samplePlan.conflicts.size) {
+            val c = preview.samplePlan.conflicts[i]
+            resolutions[c.theirId] = resolution
+        }
+        // Плюс уже выбранные ранее.
+        resolutions.putAll(_conflictResolutions)
+
+        _conflictResolutions.clear()
+        runMerge(resolutions)
+    }
+
+    private val _conflictResolutions = HashMap<Long, ConflictResolution>()
+
+    private fun runMerge(resolutions: Map<Long, ConflictResolution>) {
+        val state = _mergeState.value
+        val preview: MergePreview = when (state) {
+            is MergeWizardState.Preview -> state.preview
+            is MergeWizardState.ConflictStep -> state.preview
+            else -> return
+        }
+        val handle = mergeHandle ?: run {
+            _mergeState.value = MergeWizardState.Error("Потерян архив")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _mergeState.value = MergeWizardState.Running("Сливаем…")
+                val stats = withContext(Dispatchers.IO) {
+                    MergeRunner.run(
+                        context = getApplication(),
+                        repo = repo,
+                        preview = preview,
+                        archivePhotosDir = handle.photosDir,
+                        resolutions = resolutions,
+                        onProgress = { msg ->
+                            _mergeState.value = MergeWizardState.Running(msg)
+                        }
+                    )
+                }
+                cleanupMergeHandle()
+                _mergeState.value = MergeWizardState.Done(stats)
+                _message.value = "Слияние завершено"
+            } catch (e: Exception) {
+                cleanupMergeHandle()
+                _mergeState.value = MergeWizardState.Error(
+                    e.message ?: "Ошибка слияния"
+                )
+            }
+        }
+    }
+
+    fun cancelMerge() {
+        cleanupMergeHandle()
+        _conflictResolutions.clear()
+        _mergeState.value = MergeWizardState.Idle
+    }
+
+    fun resetMergeState() {
+        cleanupMergeHandle()
+        _conflictResolutions.clear()
+        _mergeState.value = MergeWizardState.Idle
+    }
+
+    private fun cleanupMergeHandle() {
+        val h = mergeHandle ?: return
+        mergeHandle = null
+        try { MergeEngine.closeAndClean(h) } catch (_: Exception) {}
     }
 
     // ================================================================
@@ -431,7 +672,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-rollback-public: откат (приватные + публичные)
+    // Откат (приватные + публичные)
     // ================================================================
 
     private val _rollbackBackups = MutableStateFlow<List<RollbackBackup>>(emptyList())
@@ -510,7 +751,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-clean: полная очистка БД
+    // Очистка БД
     // ================================================================
 
     private val _cleanState = MutableStateFlow<RestoreState>(RestoreState.Idle)
@@ -548,7 +789,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Общая цепочка замены БД (импорт и откат)
+    // Общая цепочка замены БД
     // ================================================================
 
     private fun performReplacement(
@@ -600,7 +841,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Внутренние утилиты
+    // Утилиты
     // ================================================================
 
     private suspend fun autoBackup(operation: String) {

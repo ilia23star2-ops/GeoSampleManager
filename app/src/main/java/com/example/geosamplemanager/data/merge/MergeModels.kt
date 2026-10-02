@@ -4,24 +4,14 @@ import com.example.geosamplemanager.data.AppDatabase
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.entity.SampleImageEntity
 import java.io.File
 
 /**
  * FIX 5.9-db-merge-v2:
  * Модели для движка слияния БД.
- *
- * /1 — участки и наряды.
- * /2 — пробы, скважины, заметки.
- * /3 — фото (физическое копирование файлов).
- * /4 — UI.
  */
 
-/**
- * Открытая временная БД архива + пути к распакованным файлам.
- *
- * FIX 5.9-db-merge-v2/3:
- *  - photosDir — папка с распакованными sample_photos/ из архива.
- */
 data class TempDatabaseHandle(
     val db: AppDatabase,
     val file: File,
@@ -29,7 +19,7 @@ data class TempDatabaseHandle(
 )
 
 // ================================================================
-// Участки (/1)
+// /1: участки
 // ================================================================
 
 data class AreaToAdd(
@@ -44,7 +34,7 @@ data class AreaPlan(
 )
 
 // ================================================================
-// Наряды (/1)
+// /1: наряды
 // ================================================================
 
 data class OrderToAdd(
@@ -59,7 +49,7 @@ data class OrderPlan(
 )
 
 // ================================================================
-// Пробы (/2)
+// /2: пробы
 // ================================================================
 
 enum class ConflictResolution {
@@ -87,7 +77,7 @@ data class SamplePlan(
 )
 
 // ================================================================
-// Скважины (/2)
+// /2: скважины
 // ================================================================
 
 data class OrderWellToAdd(
@@ -100,7 +90,7 @@ data class WellPlan(
 )
 
 // ================================================================
-// Заметки (/2)
+// /2: заметки
 // ================================================================
 
 data class NoteToAdd(
@@ -121,16 +111,9 @@ data class NotePlan(
 )
 
 // ================================================================
-// Фото (/3)
+// /3: фото
 // ================================================================
 
-/**
- * FIX 5.9-db-merge-v2/3:
- * Одно фото, которое надо скопировать из архива в мою папку.
- *
- * archiveFileName — имя файла внутри распакованной sample_photos/
- * архива (например, "photo_abc.jpg").
- */
 data class PhotoToAdd(
     val mySampleId: Long,
     val archiveFileName: String
@@ -139,6 +122,59 @@ data class PhotoToAdd(
 data class PhotoPlan(
     val toAdd: List<PhotoToAdd>
 )
+
+// ================================================================
+// /4: сбор данных из архива
+// ================================================================
+
+/**
+ * FIX 5.9-db-merge-v2/4:
+ * Всё содержимое архива, прочитанное из temp-БД.
+ * Хранится в wizard-state, чтобы Runner мог пересчитать планы
+ * с реальными id после apply-фаз.
+ */
+data class ArchiveData(
+    val areas: List<AreaEntity>,
+    val orders: List<OrderEntity>,
+    val samples: List<SampleEntity>,
+    val wellsByOrderId: Map<Long, List<String>>,
+    val notesBySampleId: Map<Long, String?>,
+    val imagesBySampleId: Map<Long, List<SampleImageEntity>>
+)
+
+/**
+ * FIX 5.9-db-merge-v2/4:
+ * Полный предпросмотр перед слиянием.
+ * Планы — предварительные (без пересчёта id), counts корректные.
+ */
+data class MergePreview(
+    val fileName: String,
+    val archive: ArchiveData,
+    val areaPlan: AreaPlan,
+    val orderPlan: OrderPlan,
+    val samplePlan: SamplePlan,
+    val wellPlan: WellPlan,
+    val notePlan: NotePlan,
+    val photoPlan: PhotoPlan,
+    val stats: MergeStats
+)
+
+// ================================================================
+// /4: состояние wizard
+// ================================================================
+
+sealed class MergeWizardState {
+    data object Idle : MergeWizardState()
+    data object Loading : MergeWizardState()
+    data class Preview(val preview: MergePreview) : MergeWizardState()
+    data class ConflictStep(
+        val preview: MergePreview,
+        val currentIndex: Int
+    ) : MergeWizardState()
+    data class Running(val message: String) : MergeWizardState()
+    data class Done(val stats: MergeStats) : MergeWizardState()
+    data class Error(val message: String) : MergeWizardState()
+}
 
 // ================================================================
 // Статистика
