@@ -32,6 +32,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
+import com.example.geosamplemanager.data.backup.PublicBackup
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -66,8 +67,12 @@ import java.util.Locale
  *  - вместо пересоздания Activity — app.requestRestart(route);
  *  - MainActivity пересоберёт поддерево и обнулит ViewModelStore;
  *  - после пересборки показываем одноразовое сообщение
- *    «Готово. …» через app.consumeRestartMessage() — чтобы ОП
- *    было понятно, что операция закончилась.
+ *    «Готово. …» через app.consumeRestartMessage().
+ *
+ * FIX 5.9-db-import-picker:
+ *  - кнопка «Импорт» открывает диалог со списком всех .gsmbackup
+ *    из Загрузок/GeoSampleManager + SAF;
+ *  - выбор из списка → существующий DbRestoreDialog (превью).
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -95,6 +100,10 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-clean
     val cleanState by viewModel.cleanState.collectAsState()
 
+    // FIX 5.9-db-import-picker
+    val publicBackups by viewModel.publicBackups.collectAsState()
+    val publicBackupsLoading by viewModel.publicBackupsLoading.collectAsState()
+
     val snackbarHostState = remember { SnackbarHostState() }
 
     // FIX 5.9-db-backups-ops/2: ленивая миграция старых бэкапов.
@@ -103,7 +112,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     }
 
     // FIX 5.9-db-soft-restart: показать «Готово» после пересборки.
-    // Срабатывает один раз при появлении экрана.
     LaunchedEffect(Unit) {
         val doneMessage = app.consumeRestartMessage()
         if (doneMessage != null) {
@@ -141,6 +149,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-clean: диалог очистки.
     var showCleanDialog by remember { mutableStateOf(false) }
 
+    // FIX 5.9-db-import-picker: диалог импорта.
+    var showImportPickerDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
@@ -153,6 +164,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     // FIX 5.9-db-clean: подгрузка счётчиков при открытии диалога.
     LaunchedEffect(showCleanDialog) {
         if (showCleanDialog) viewModel.loadDbInfo()
+    }
+
+    // FIX 5.9-db-import-picker: подгрузка списка при открытии диалога.
+    LaunchedEffect(showImportPickerDialog) {
+        if (showImportPickerDialog) viewModel.loadPublicBackups()
     }
 
     LaunchedEffect(lastExportUri) {
@@ -171,10 +187,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         viewModel.consumeLastExportUri()
     }
 
-    // FIX 5.9-db-soft-restart:
-    // После успешного импорта — просим приложение пересобрать
-    // поддерево. Activity НЕ пересоздаётся. Сообщение «Готово»
-    // покажется в новом поддереве.
+    // FIX 5.9-db-soft-restart: после импорта — пересобрать поддерево.
     LaunchedEffect(restoreState) {
         when (val s = restoreState) {
             is RestoreState.Done -> {
@@ -291,8 +304,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // FIX 5.9-db-import-picker: открываем диалог, не SAF.
                 OutlinedButton(
-                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                    onClick = { showImportPickerDialog = true },
                     enabled = restoreState is RestoreState.Idle,
                     modifier = Modifier.weight(1f)
                 ) {
@@ -428,7 +442,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             }
         }
 
-        // FIX 5.9-db-rollback: модалка прогресса отката.
         val rbs = rollbackState
         if (rbs is RestoreState.InProgress) {
             Surface(
@@ -454,7 +467,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             }
         }
 
-        // FIX 5.9-db-clean: модалка прогресса очистки.
         val cs = cleanState
         if (cs is RestoreState.InProgress) {
             Surface(
@@ -558,6 +570,34 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 }
             },
             onDismiss = { showBackupDialog = false }
+        )
+    }
+
+    // FIX 5.9-db-import-picker: диалог со списком публичных бэкапов.
+    if (showImportPickerDialog) {
+        DbImportPickerDialog(
+            backups = publicBackups,
+            loading = publicBackupsLoading,
+            onSelect = { backup: PublicBackup ->
+                showImportPickerDialog = false
+                val mf = backup.manifest
+                if (mf == null) {
+                    scope.launch {
+                        snackbarHostState.showSnackbar(
+                            "Не удалось прочитать архив"
+                        )
+                    }
+                } else {
+                    pendingImportUri = backup.uri
+                    pendingManifest = mf
+                    pendingImportName = backup.displayName
+                }
+            },
+            onPickExternal = {
+                showImportPickerDialog = false
+                importLauncher.launch(arrayOf("*/*"))
+            },
+            onDismiss = { showImportPickerDialog = false }
         )
     }
 
