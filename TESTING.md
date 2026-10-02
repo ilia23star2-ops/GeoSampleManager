@@ -17,14 +17,15 @@
 - Логика undo/redo.
 - Отчёты (XLSX, HTML).
 - Чистые функции вкладки Редактирование.
+- Чистая логика БД-бэкапов (`RollbackBackups`).
 - Миграции БД.
 
 UI не тестируем — проверяем руками. I/O, zip, БД — тоже
 device-check.
 
 **Правило (§23 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
-Для вкладки БД — пока исключений нет (там io + Compose + состояние
-Activity — покрываются device-check).
+Для вкладки БД — чистая логика покрывается юнит-тестами,
+io/zip/состояние Activity — device-check.
 
 ---
 
@@ -52,6 +53,12 @@ Activity — покрываются device-check).
 | `VoiceMarkOrdinalFallbackTest.kt` | `hintFor`: 14→4, 40→4, 400→4; 1..3 → null | 27 |
 | `VoiceMarkersTest.kt` | Маркеры, отложение, SORT+pin | 17 |
 | `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman` | 19 |
+
+### `data/backup/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `RollbackBackupsTest.kt` | Парсер имени `pre_restore_*`, фильтр, сортировка, ротация | 12 |
 
 ### `data/reconciliation/`
 
@@ -83,7 +90,7 @@ Activity — покрываются device-check).
 | `EditMultiselectTest.kt` | `applyMultiselectToggle`, `computeSelectionLabel` | 13 |
 | `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
 
-**Всего: ~370 тестов.** Все зелёные.
+**Всего: ~382 теста.** Все зелёные.
 
 ---
 
@@ -115,8 +122,9 @@ Activity — покрываются device-check).
 | `GsmBackupReaderTest.kt` | Чтение манифеста из архива. |
 
 **Заметка:** для БД-пачек (backup, restore) тесты не писались —
-всё покрыто device-check. При желании — можно добавить юнит-тесты
-на парсинг манифеста и сборку zip.
+всё покрыто device-check. С `db-rollback` начали покрывать
+чистую логику: `RollbackBackupsTest`. Io/zip/замена файлов
+остаются под device-check.
 
 ---
 
@@ -192,7 +200,7 @@ CI (`.github/workflows/build.yml`):
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыто: Редактирование. В работе: БД (без тестов, device-check) |
+| 🔴 Сейчас | Закрыто: Редактирование. В работе: БД (тесты на чистую логику + device-check) |
 | 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest`, `ReconciliationStateTest`, `GsmBackup*Test` |
 
@@ -203,6 +211,7 @@ CI (`.github/workflows/build.yml`):
 **Сделано (серия `e4`):** 3 файла, 31 тест + 8 отдельных файлов.
 **Сделано (5.9 Статистика):** 5 файлов XLSX, ~106 тестов + HTML, 43.
 **Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
+**Сделано (5.9 БД):** 1 файл, 12 тестов (`RollbackBackupsTest`).
 
 **Осталось:**
 - `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
