@@ -3,9 +3,7 @@ package com.example.geosamplemanager.data.merge
 import com.example.geosamplemanager.data.AppDatabase
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
-import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
-import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import java.io.File
 
 /**
@@ -18,10 +16,16 @@ import java.io.File
  * /4 — UI.
  */
 
-/** Открытая временная БД архива + путь к её файлу. */
+/**
+ * Открытая временная БД архива + пути к распакованным файлам.
+ *
+ * FIX 5.9-db-merge-v2/3:
+ *  - photosDir — папка с распакованными sample_photos/ из архива.
+ */
 data class TempDatabaseHandle(
     val db: AppDatabase,
-    val file: File
+    val file: File,
+    val photosDir: File
 )
 
 // ================================================================
@@ -58,7 +62,6 @@ data class OrderPlan(
 // Пробы (/2)
 // ================================================================
 
-/** Решение по конфликту. Пошаговый режим «спросить» — в UI. */
 enum class ConflictResolution {
     KEEP_MINE,
     TAKE_THEIRS
@@ -118,6 +121,26 @@ data class NotePlan(
 )
 
 // ================================================================
+// Фото (/3)
+// ================================================================
+
+/**
+ * FIX 5.9-db-merge-v2/3:
+ * Одно фото, которое надо скопировать из архива в мою папку.
+ *
+ * archiveFileName — имя файла внутри распакованной sample_photos/
+ * архива (например, "photo_abc.jpg").
+ */
+data class PhotoToAdd(
+    val mySampleId: Long,
+    val archiveFileName: String
+)
+
+data class PhotoPlan(
+    val toAdd: List<PhotoToAdd>
+)
+
+// ================================================================
 // Статистика
 // ================================================================
 
@@ -132,7 +155,8 @@ data class MergeStats(
     val samplesSkipped: Int,
     val wellsAdded: Int,
     val notesAdded: Int,
-    val notesConflicts: Int
+    val notesConflicts: Int,
+    val photosAdded: Int
 ) {
     companion object {
         fun from(
@@ -140,7 +164,8 @@ data class MergeStats(
             orderPlan: OrderPlan,
             samplePlan: SamplePlan? = null,
             wellPlan: WellPlan? = null,
-            notePlan: NotePlan? = null
+            notePlan: NotePlan? = null,
+            photoPlan: PhotoPlan? = null
         ): MergeStats = MergeStats(
             areasAdded = areaPlan.toAdd.size,
             areasMatched = areaPlan.existing.size,
@@ -152,7 +177,8 @@ data class MergeStats(
             samplesSkipped = samplePlan?.skippedOrphans ?: 0,
             wellsAdded = wellPlan?.toAdd?.size ?: 0,
             notesAdded = notePlan?.toAdd?.size ?: 0,
-            notesConflicts = notePlan?.conflicts?.size ?: 0
+            notesConflicts = notePlan?.conflicts?.size ?: 0,
+            photosAdded = photoPlan?.toAdd?.size ?: 0
         )
     }
 }

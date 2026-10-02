@@ -9,6 +9,7 @@ import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,41 +23,51 @@ import java.util.zip.ZipInputStream
  *
  * /1 — участки, наряды.
  * /2 — пробы, скважины, заметки.
- *
- * Чистые функции (planAreas, planOrders, planSamples, resolveSample,
- * planWells, planNotes) покрыты юнит-тестами. IO-функции
- * (openArchive, apply*) — device-check.
+ * /3 — фото (физическое копирование файлов).
  */
 object MergeEngine {
 
     const val SUPPORTED_SCHEMA_VERSION = 2
     const val DB_ENTRY = "geosamples.db"
+    const val PHOTOS_PREFIX = "sample_photos/"
+
+    private const val PHOTOS_DIR_NAME = "sample_photos"
 
     // ================================================================
     // Открытие / закрытие архива
     // ================================================================
 
+    /**
+     * FIX 5.9-db-merge-v2/3:
+     * Распаковывает и geosamples.db, и sample_photos/ во временные
+     * файлы в cacheDir. Проверяет версию схемы. Открывает Room
+     * на temp-БД.
+     */
     suspend fun openArchive(
         context: Context,
         uri: Uri,
         cacheDir: File
     ): Result<TempDatabaseHandle> = withContext(Dispatchers.IO) {
-        var tempFile: File? = null
+        var tempDbFile: File? = null
+        var tempPhotosDir: File? = null
         try {
             if (!cacheDir.exists()) cacheDir.mkdirs()
-            tempFile = File(cacheDir, "merge_temp_${UUID.randomUUID()}.db")
+            val token = UUID.randomUUID().toString()
+            tempDbFile = File(cacheDir, "merge_temp_$token.db")
+            tempPhotosDir = File(cacheDir, "merge_photos_$token")
+            if (!tempPhotosDir.exists()) tempPhotosDir.mkdirs()
 
-            val extracted = extractDbFromUri(context, uri, tempFile)
+            val extracted = extractFromUri(context, uri, tempDbFile, tempPhotosDir)
             if (!extracted) {
-                tempFile.delete()
+                cleanTemp(tempDbFile, tempPhotosDir)
                 return@withContext Result.failure(
                     IllegalStateException("В архиве нет geosamples.db")
                 )
             }
 
-            val version = readSchemaVersion(tempFile)
+            val version = readSchemaVersion(tempDbFile)
             if (version != SUPPORTED_SCHEMA_VERSION) {
-                tempFile.delete()
+                cleanTemp(tempDbFile, tempPhotosDir)
                 return@withContext Result.failure(
                     IllegalStateException(
                         "Схема БД в архиве: $version, " +
@@ -65,17 +76,28 @@ object MergeEngine {
                 )
             }
 
-            val db = AppDatabase.buildTemp(context, tempFile)
-            Result.success(TempDatabaseHandle(db, tempFile))
+            val db = AppDatabase.buildTemp(context, tempDbFile)
+            Result.success(
+                TempDatabaseHandle(
+                    db = db,
+                    file = tempDbFile,
+                    photosDir = tempPhotosDir
+                )
+            )
         } catch (e: Exception) {
-            try { tempFile?.delete() } catch (_: Exception) {}
+            cleanTemp(tempDbFile, tempPhotosDir)
             Result.failure(e)
         }
     }
 
     fun closeAndClean(handle: TempDatabaseHandle) {
         try { handle.db.close() } catch (_: Exception) {}
-        try { if (handle.file.exists()) handle.file.delete() } catch (_: Exception) {}
+        cleanTemp(handle.file, handle.photosDir)
+    }
+
+    private fun cleanTemp(dbFile: File?, photosDir: File?) {
+        try { if (dbFile != null && dbFile.exists()) dbFile.delete() } catch (_: Exception) {}
+        try { if (photosDir != null && photosDir.exists()) photosDir.deleteRecursively() } catch (_: Exception) {}
     }
 
     // ================================================================
@@ -206,16 +228,6 @@ object MergeEngine {
     // /2: пробы
     // ================================================================
 
-    /**
-     * План слияния проб.
-     *
-     *  - Совпадение — по (myOrderId, sample_number).
-     *  - При совпадении — конфликт, в toAdd не попадает.
-     *  - Если their.order_id не сматчился — skip.
-     *  - При добавлении: обнуляем id, ставим myOrderId.
-     *    has_note / has_photo — из архива, пересчитаем после
-     *    применения заметок и фото.
-     */
     fun planSamples(
         mySamples: List<SampleEntity>,
         theirSamples: List<SampleEntity>,
@@ -265,15 +277,6 @@ object MergeEngine {
         )
     }
 
-    /**
-     * FIX 5.9-db-merge-v2/2:
-     * Разрешить конфликт одной пробы.
-     *
-     * KEEP_MINE — вернуть null (не трогаем).
-     * TAKE_THEIRS — вернуть обновлённый entity моего sample:
-     *    - копируем все изменяемые поля из архива;
-     *    - НЕ трогаем: id, order_id, sample_number, has_photo, has_note.
-     */
     fun resolveSample(
         my: SampleEntity,
         their: SampleEntity,
@@ -297,19 +300,10 @@ object MergeEngine {
             found = their.found,
             weightControl = their.weightControl,
             postponed = their.postponed
-            // hasNote / hasPhoto — не из архива, пересчитаются
-            // после применения заметок и фото.
+            // hasNote / hasPhoto — не из архива, пересчитаются.
         )
     }
 
-    /**
-     * Применить план проб.
-     *
-     * @param resolutions карта theirSampleId -> Resolution. Если для
-     *        конфликта ключа нет — считаем KEEP_MINE (безопасный
-     *        дефолт).
-     * @return Map<theirSampleId, mySampleId> — для новых и существующих.
-     */
     suspend fun applySamplePlan(
         repo: DatabaseRepository,
         plan: SamplePlan,
@@ -343,15 +337,6 @@ object MergeEngine {
     // /2: скважины
     // ================================================================
 
-    /**
-     * План слияния скважин.
-     *
-     * @param myWells Map<myOrderId, List<wellNumber>> — что уже есть.
-     * @param theirWells Map<theirOrderId, List<wellNumber>> — из архива.
-     * @param orderIdMap Map<theirOrderId, myOrderId>.
-     *
-     * Дедупликация по паре (myOrderId, wellNumber).
-     */
     fun planWells(
         myWells: Map<Long, List<String>>,
         theirWells: Map<Long, List<String>>,
@@ -366,7 +351,6 @@ object MergeEngine {
         for ((theirOrderId, theirList) in theirWells) {
             val myOrderId = combined[theirOrderId] ?: continue
             val mine = myWells[myOrderId]?.toHashSet() ?: HashSet()
-            // Локальный набор для отлова дублей внутри самого архива.
             val seen = HashSet<String>()
 
             for (well in theirList) {
@@ -393,19 +377,6 @@ object MergeEngine {
     // /2: заметки
     // ================================================================
 
-    /**
-     * План слияния заметок.
-     *
-     * @param myNotes Map<mySampleId, noteText?>.
-     * @param theirNotes Map<theirSampleId, noteText?>.
-     * @param sampleIdMap Map<theirSampleId, mySampleId>.
-     *
-     *  - Если заметки у меня нет, а у них есть (или наоборот) —
-     *    записываем ту, что непустая.
-     *  - Если у обоих непустые — конфликт, решается по тому же
-     *    их sampleId.
-     *  - Если both пустые — пропускаем.
-     */
     fun planNotes(
         myNotes: Map<Long, String?>,
         theirNotes: Map<Long, String?>,
@@ -422,34 +393,22 @@ object MergeEngine {
             val theirHas = !theirText.isNullOrBlank()
 
             when {
-                myHas && theirHas -> {
-                    conflicts += NoteConflict(
-                        theirSampleId = theirSampleId,
-                        mySampleId = mySampleId,
-                        myText = myText,
-                        theirText = theirText
-                    )
-                }
-                !myHas && theirHas -> {
-                    toAdd += NoteToAdd(
-                        mySampleId = mySampleId,
-                        text = theirText
-                    )
-                }
-                // myHas && !theirHas -> оставляем мою
-                // both пустые -> пропускаем
+                myHas && theirHas -> conflicts += NoteConflict(
+                    theirSampleId = theirSampleId,
+                    mySampleId = mySampleId,
+                    myText = myText,
+                    theirText = theirText
+                )
+                !myHas && theirHas -> toAdd += NoteToAdd(
+                    mySampleId = mySampleId,
+                    text = theirText
+                )
             }
         }
 
         return NotePlan(toAdd = toAdd, conflicts = conflicts)
     }
 
-    /**
-     * Применить план заметок.
-     *
-     * @param resolutions Map<theirSampleId, Resolution>. Дефолт —
-     *        KEEP_MINE (то есть оставляем мою заметку).
-     */
     suspend fun applyNotePlan(
         repo: DatabaseRepository,
         plan: NotePlan,
@@ -483,13 +442,107 @@ object MergeEngine {
     }
 
     // ================================================================
+    // /3: фото
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-merge-v2/3:
+     * Из image_path архива вытащить имя файла.
+     * Например:
+     *   "/data/.../sample_photos/photo_abc.jpg" → "photo_abc.jpg"
+     *   "photo_abc.jpg"                          → "photo_abc.jpg"
+     *   ""                                       → null
+     */
+    fun extractArchivePhotoName(imagePath: String): String? {
+        if (imagePath.isBlank()) return null
+        val name = imagePath.substringAfterLast('/')
+        return name.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * FIX 5.9-db-merge-v2/3:
+     * План слияния фото.
+     *
+     * Правила:
+     *  - Новая проба → все её фото из архива добавляем.
+     *  - Конфликт + TAKE_THEIRS → фото архива добавляем
+     *    (к существующим у меня, ничего не удаляем).
+     *  - Конфликт + KEEP_MINE → фото архива НЕ добавляем.
+     *
+     * @param theirImages все фото из архива.
+     * @param sampleIdMap Map<theirSampleId, mySampleId>.
+     * @param conflictSampleIds Set<theirSampleId> — какие были
+     *        конфликтами (from SamplePlan.conflicts).
+     * @param resolutions Map<theirSampleId, Resolution>.
+     */
+    fun planPhotos(
+        theirImages: List<SampleImageEntity>,
+        sampleIdMap: Map<Long, Long>,
+        conflictSampleIds: Set<Long>,
+        resolutions: Map<Long, ConflictResolution>
+    ): PhotoPlan {
+        val toAdd = mutableListOf<PhotoToAdd>()
+
+        for (img in theirImages) {
+            val mySampleId = sampleIdMap[img.sampleId] ?: continue
+
+            if (img.sampleId in conflictSampleIds) {
+                val r = resolutions[img.sampleId]
+                    ?: ConflictResolution.KEEP_MINE
+                if (r == ConflictResolution.KEEP_MINE) continue
+            }
+
+            val name = extractArchivePhotoName(img.imagePath) ?: continue
+            toAdd += PhotoToAdd(mySampleId = mySampleId, archiveFileName = name)
+        }
+
+        return PhotoPlan(toAdd = toAdd)
+    }
+
+    /**
+     * FIX 5.9-db-merge-v2/3:
+     * Скопировать файлы из archivePhotosDir в
+     * filesDir/sample_photos/ под UUID-именем и записать
+     * в sample_images через addPhoto.
+     *
+     * Если файла в архиве нет — пропускаем (архив мог быть без
+     * части фото). Ошибки отдельного файла не валят весь merge.
+     */
+    suspend fun applyPhotoPlan(
+        context: Context,
+        repo: DatabaseRepository,
+        plan: PhotoPlan,
+        archivePhotosDir: File
+    ) {
+        if (plan.toAdd.isEmpty()) return
+
+        val targetDir = File(context.filesDir, PHOTOS_DIR_NAME)
+        if (!targetDir.exists()) targetDir.mkdirs()
+
+        for (add in plan.toAdd) {
+            val src = File(archivePhotosDir, add.archiveFileName)
+            if (!src.exists()) continue
+
+            val newName = "photo_${UUID.randomUUID()}.jpg"
+            val dst = File(targetDir, newName)
+            try {
+                src.copyTo(dst, overwrite = false)
+                repo.addPhoto(add.mySampleId, dst.absolutePath)
+            } catch (_: Exception) {
+                try { if (dst.exists()) dst.delete() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    // ================================================================
     // Внутреннее
     // ================================================================
 
-    private fun extractDbFromUri(
+    private fun extractFromUri(
         context: Context,
         uri: Uri,
-        target: File
+        targetDb: File,
+        targetPhotosDir: File
     ): Boolean {
         return try {
             val input = context.contentResolver.openInputStream(uri)
@@ -497,17 +550,27 @@ object MergeEngine {
             input.use { stream ->
                 val zip = ZipInputStream(stream)
                 var entry = zip.nextEntry
-                var written = false
+                var dbWritten = false
                 while (entry != null) {
-                    if (entry.name == DB_ENTRY) {
-                        target.outputStream().use { out -> zip.copyTo(out) }
-                        written = true
-                        break
+                    val name = entry.name ?: ""
+                    when {
+                        name == DB_ENTRY -> {
+                            targetDb.outputStream().use { out -> zip.copyTo(out) }
+                            dbWritten = true
+                        }
+                        name.startsWith(PHOTOS_PREFIX) && !entry.isDirectory -> {
+                            val relative = name.removePrefix(PHOTOS_PREFIX)
+                            if (relative.isNotBlank()) {
+                                val f = File(targetPhotosDir, relative)
+                                f.parentFile?.mkdirs()
+                                f.outputStream().use { out -> zip.copyTo(out) }
+                            }
+                        }
                     }
                     entry = zip.nextEntry
                 }
                 try { zip.close() } catch (_: Exception) {}
-                written
+                dbWritten
             }
         } catch (_: Exception) {
             false
