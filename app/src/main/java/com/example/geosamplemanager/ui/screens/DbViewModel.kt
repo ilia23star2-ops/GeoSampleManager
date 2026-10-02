@@ -26,13 +26,14 @@ import com.example.geosamplemanager.data.backup.RollbackBackups
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
-import com.example.geosamplemanager.data.merge.ArchiveData
-import com.example.geosamplemanager.data.merge.ConflictResolution
+import com.example.geosamplemanager.data.merge.FieldOwner
+import com.example.geosamplemanager.data.merge.FieldResolution
 import com.example.geosamplemanager.data.merge.MergeEngine
 import com.example.geosamplemanager.data.merge.MergePreview
 import com.example.geosamplemanager.data.merge.MergeRunner
 import com.example.geosamplemanager.data.merge.MergeStats
 import com.example.geosamplemanager.data.merge.MergeWizardState
+import com.example.geosamplemanager.data.merge.SampleField
 import com.example.geosamplemanager.data.merge.TempDatabaseHandle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -328,39 +329,28 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // FIX 5.9-db-merge-v2/4: слияние БД
+    // FIX 5.9-db-merge-v2/5: слияние — умные конфликты
     // ================================================================
 
     private val _mergeState = MutableStateFlow<MergeWizardState>(MergeWizardState.Idle)
     val mergeState: StateFlow<MergeWizardState> = _mergeState.asStateFlow()
 
     private var mergeHandle: TempDatabaseHandle? = null
-    private var mergeUri: Uri? = null
-    private var mergeFileName: String? = null
 
     fun startMergeWizard() {
         _mergeState.value = MergeWizardState.Loading
     }
 
-    /**
-     * Пользователь выбрал .gsmbackup для слияния.
-     * Открываем архив, читаем его, строим предварительные планы.
-     */
     fun loadMergePreview(uri: Uri, fileName: String) {
         if (_mergeState.value is MergeWizardState.Running) return
         _mergeState.value = MergeWizardState.Loading
-        mergeUri = uri
-        mergeFileName = fileName
 
         viewModelScope.launch {
             try {
                 val cacheDir = getApplication<Application>().cacheDir
                 val handle = withContext(Dispatchers.IO) {
-                    MergeEngine.openArchive(
-                        context = getApplication(),
-                        uri = uri,
-                        cacheDir = cacheDir
-                    ).getOrThrow()
+                    MergeEngine.openArchive(getApplication(), uri, cacheDir)
+                        .getOrThrow()
                 }
                 mergeHandle = handle
 
@@ -378,16 +368,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     areaIdMap = areaPlan.existing
                 )
 
-                // Псевдомаппинг для превью: их orderId -> -1 для
-                // новых нарядов. Точное значение получим в Runner.
                 val pseudoOrderMap = HashMap(orderPlan.existing)
-                for (add in orderPlan.toAdd) {
-                    pseudoOrderMap[add.theirId] = -1L
-                }
+                for (add in orderPlan.toAdd) pseudoOrderMap[add.theirId] = -1L
 
                 val mySamples = repo.getSamplesForOrders(
-                    (orderPlan.existing.values +
-                            orderPlan.toAdd.map { it.theirId }).toList()
+                    (orderPlan.existing.values + orderPlan.toAdd.map { it.theirId }).toList()
                 ).filter { it.orderId > 0 }
 
                 val samplePlan = MergeEngine.planSamples(
@@ -397,12 +382,9 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 val pseudoSampleMap = HashMap<Long, Long>()
-                for (add in samplePlan.toAdd) {
-                    pseudoSampleMap[add.theirId] = -1L
-                }
-                for (c in samplePlan.conflicts) {
-                    pseudoSampleMap[c.theirId] = c.myId
-                }
+                for (add in samplePlan.toAdd) pseudoSampleMap[add.theirId] = -1L
+                for (m in samplePlan.identical) pseudoSampleMap[m.theirId] = m.myId
+                for (c in samplePlan.conflicts) pseudoSampleMap[c.theirId] = c.myId
 
                 val wellPlan = MergeEngine.planWells(
                     myWells = emptyMap(),
@@ -426,12 +408,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 val stats = MergeStats.from(
-                    areaPlan = areaPlan,
-                    orderPlan = orderPlan,
-                    samplePlan = samplePlan,
-                    wellPlan = wellPlan,
-                    notePlan = notePlan,
-                    photoPlan = photoPlan
+                    areaPlan, orderPlan, samplePlan, wellPlan, notePlan, photoPlan
                 )
 
                 val preview = MergePreview(
@@ -455,74 +432,113 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Продолжить с превью.
-     * Если есть конфликты проб — на шаг разбора конфликтов.
-     * Иначе — сразу на запуск.
-     */
     fun continueFromPreview() {
-        val state = _mergeState.value
-        if (state !is MergeWizardState.Preview) return
-        val preview = state.preview
-        if (preview.samplePlan.conflicts.isEmpty()) {
+        val state = _mergeState.value as? MergeWizardState.Preview ?: return
+        val p = state.preview
+        if (p.samplePlan.conflicts.isEmpty()) {
             runMerge(emptyMap())
         } else {
-            _mergeState.value = MergeWizardState.ConflictStep(preview, 0)
+            _mergeState.value = MergeWizardState.ConflictStep(
+                preview = p,
+                resolutions = emptyMap()
+            )
         }
     }
 
     /**
-     * Установить разрешение для текущего конфликта и перейти к
-     * следующему. Если конфликты закончились — запускаем.
+     * FIX 5.9-db-merge-v2/5:
+     * Разрешение по конкретному полю одной пробы.
      */
-    fun setConflictResolution(
-        sampleId: Long,
-        resolution: ConflictResolution
+    fun setFieldResolution(
+        theirSampleId: Long,
+        field: SampleField,
+        owner: FieldOwner
     ) {
-        val state = _mergeState.value
-        if (state !is MergeWizardState.ConflictStep) return
-        val preview = state.preview
-
-        val updated = preview.copy(
-            // пересчёт photoPlan не делаем — он строится в Runner
-        )
-        _conflictResolutions[sampleId] = resolution
-
-        val next = state.currentIndex + 1
-        if (next >= preview.samplePlan.conflicts.size) {
-            val finalResolutions = HashMap<Long, ConflictResolution>(_conflictResolutions)
-            _conflictResolutions.clear()
-            _mergeState.value = MergeWizardState.ConflictStep(updated, next)
-            runMerge(finalResolutions)
-        } else {
-            _mergeState.value = MergeWizardState.ConflictStep(updated, next)
-        }
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val current = state.resolutions[theirSampleId] ?: FieldResolution.Empty
+        val updated = current.with(field, owner)
+        val newMap = state.resolutions + (theirSampleId to updated)
+        _mergeState.value = state.copy(resolutions = newMap)
     }
 
     /**
-     * Применить одно разрешение ко всем оставшимся конфликтам
-     * и сразу запустить слияние.
+     * Разрешение по всем полям одной пробы.
      */
-    fun setAllConflictsResolution(resolution: ConflictResolution) {
-        val state = _mergeState.value
-        if (state !is MergeWizardState.ConflictStep) return
-        val preview = state.preview
-
-        val resolutions = HashMap<Long, ConflictResolution>()
-        for (i in state.currentIndex until preview.samplePlan.conflicts.size) {
-            val c = preview.samplePlan.conflicts[i]
-            resolutions[c.theirId] = resolution
-        }
-        // Плюс уже выбранные ранее.
-        resolutions.putAll(_conflictResolutions)
-
-        _conflictResolutions.clear()
-        runMerge(resolutions)
+    fun setSampleResolution(
+        theirSampleId: Long,
+        owner: FieldOwner
+    ) {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val conflict = state.preview.samplePlan.conflicts
+            .firstOrNull { it.theirId == theirSampleId } ?: return
+        val updated = FieldResolution.all(conflict.fieldDiffs, owner)
+        val newMap = state.resolutions + (theirSampleId to updated)
+        _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    private val _conflictResolutions = HashMap<Long, ConflictResolution>()
+    /**
+     * Массовая стратегия «Мои везде» / «Из архива везде» — для всех.
+     */
+    fun applyMassStrategy(owner: FieldOwner) {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val newMap = HashMap<Long, FieldResolution>()
+        for (c in state.preview.samplePlan.conflicts) {
+            newMap[c.theirId] = FieldResolution.all(c.fieldDiffs, owner)
+        }
+        _mergeState.value = state.copy(resolutions = newMap)
+    }
 
-    private fun runMerge(resolutions: Map<Long, ConflictResolution>) {
+    /**
+     * Массовая стратегия «Заполнить пустые».
+     */
+    fun applyFillEmptyStrategy() {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val newMap = HashMap<Long, FieldResolution>()
+        for (c in state.preview.samplePlan.conflicts) {
+            newMap[c.theirId] = FieldResolution.fillEmpty(c.fieldDiffs)
+        }
+        _mergeState.value = state.copy(resolutions = newMap)
+    }
+
+    /**
+     * Массовая стратегия по одному полю: всем конфликтам, где
+     * расходится данное поле, поставить чьё-то значение.
+     */
+    fun applyStrategyForField(field: SampleField, owner: FieldOwner) {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val newMap = HashMap(state.resolutions)
+        for (c in state.preview.samplePlan.conflicts) {
+            if (c.fieldDiffs.any { it.field == field }) {
+                val cur = newMap[c.theirId] ?: FieldResolution.Empty
+                newMap[c.theirId] = cur.with(field, owner)
+            }
+        }
+        _mergeState.value = state.copy(resolutions = newMap)
+    }
+
+    /** Проверить, все ли конфликты разрешены. */
+    fun allConflictsResolved(): Boolean {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return true
+        return state.preview.samplePlan.allResolved(state.resolutions)
+    }
+
+    /** Подтвердить конфликты и запустить слияние. */
+    fun confirmConflicts() {
+        val state = _mergeState.value as? MergeWizardState.ConflictStep ?: return
+        val finalMap = HashMap<Long, FieldResolution>()
+        for (c in state.preview.samplePlan.conflicts) {
+            val cur = state.resolutions[c.theirId] ?: FieldResolution.Empty
+            val missing = c.fieldDiffs
+                .filter { cur.ownerOf(it.field) == null }
+                .map { it.field }
+            var complete = cur
+            for (f in missing) complete = complete.with(f, FieldOwner.MINE)
+            finalMap[c.theirId] = complete
+        }
+        runMerge(finalMap)
+    }
+
+    private fun runMerge(resolutions: Map<Long, FieldResolution>) {
         val state = _mergeState.value
         val preview: MergePreview = when (state) {
             is MergeWizardState.Preview -> state.preview
@@ -563,13 +579,11 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelMerge() {
         cleanupMergeHandle()
-        _conflictResolutions.clear()
         _mergeState.value = MergeWizardState.Idle
     }
 
     fun resetMergeState() {
         cleanupMergeHandle()
-        _conflictResolutions.clear()
         _mergeState.value = MergeWizardState.Idle
     }
 

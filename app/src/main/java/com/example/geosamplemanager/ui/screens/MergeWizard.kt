@@ -1,10 +1,14 @@
 package com.example.geosamplemanager.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -13,28 +17,32 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.geosamplemanager.data.merge.ConflictResolution
+import com.example.geosamplemanager.data.merge.FieldDiff
+import com.example.geosamplemanager.data.merge.FieldOwner
+import com.example.geosamplemanager.data.merge.FieldResolution
 import com.example.geosamplemanager.data.merge.MergePreview
 import com.example.geosamplemanager.data.merge.MergeStats
 import com.example.geosamplemanager.data.merge.MergeWizardState
 import com.example.geosamplemanager.data.merge.SampleConflict
+import com.example.geosamplemanager.data.merge.SampleField
 
 /**
- * FIX 5.9-db-merge-v2/4:
- * Wizard слияния БД.
+ * FIX 5.9-db-merge-v2/5:
+ * Wizard слияния БД с умными конфликтами.
  *
- * Шаги:
- *  1. Preview — сводка, кнопка «Продолжить».
- *  2. Conflicts — по одному, с общим режимом.
- *  3. Running — overlay с прогрессом.
- *  4. Done — финальный диалог со сводкой.
+ * Конфликты разрешаются по полям. Массовые кнопки + раскрывающиеся
+ * карточки. Всё на русском.
  */
 @Composable
 fun MergeWizard(
     state: MergeWizardState,
     onContinue: () -> Unit,
-    onSetConflict: (sampleId: Long, resolution: ConflictResolution) -> Unit,
-    onSetAllConflicts: (resolution: ConflictResolution) -> Unit,
+    onSetField: (sampleId: Long, field: SampleField, owner: FieldOwner) -> Unit,
+    onSetSample: (sampleId: Long, owner: FieldOwner) -> Unit,
+    onMassAll: (owner: FieldOwner) -> Unit,
+    onMassFillEmpty: () -> Unit,
+    onMassByField: (field: SampleField, owner: FieldOwner) -> Unit,
+    onConfirmConflicts: () -> Unit,
     onCancel: () -> Unit,
     onCloseDone: () -> Unit
 ) {
@@ -42,15 +50,17 @@ fun MergeWizard(
         MergeWizardState.Idle -> Unit
         MergeWizardState.Loading -> LoadingDialog()
         is MergeWizardState.Preview -> PreviewDialog(
-            preview = state.preview,
-            onContinue = onContinue,
-            onCancel = onCancel
+            state.preview, onContinue, onCancel
         )
-        is MergeWizardState.ConflictStep -> ConflictDialog(
+        is MergeWizardState.ConflictStep -> ConflictsDialog(
             preview = state.preview,
-            currentIndex = state.currentIndex,
-            onSetConflict = onSetConflict,
-            onSetAllConflicts = onSetAllConflicts,
+            resolutions = state.resolutions,
+            onSetField = onSetField,
+            onSetSample = onSetSample,
+            onMassAll = onMassAll,
+            onMassFillEmpty = onMassFillEmpty,
+            onMassByField = onMassByField,
+            onConfirm = onConfirmConflicts,
             onCancel = onCancel
         )
         is MergeWizardState.Running -> ProgressDialog(state.message)
@@ -102,28 +112,27 @@ private fun PreviewDialog(
                 )
                 StatRow("Участки", s.areasAdded, s.areasMatched)
                 StatRow("Наряды", s.ordersAdded, s.ordersMatched)
-                StatRow("Пробы", s.samplesAdded, s.samplesMatched)
+                StatRow("Пробы (новые)", s.samplesAdded, 0)
+                StatRow("Пробы (идентичные)", s.samplesIdentical, 0)
                 StatRow("Скважины", s.wellsAdded, 0)
                 StatRow("Заметки", s.notesAdded, s.notesConflicts)
                 StatRow("Фото", s.photosAdded, 0)
 
-                if (s.samplesMatched > 0) {
+                if (s.samplesConflicts > 0) {
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         color = MaterialTheme.colorScheme.tertiaryContainer,
                         shape = MaterialTheme.shapes.small
                     ) {
                         Text(
-                            "Конфликтов по пробам: ${s.samplesMatched}. " +
-                                    "Разрешим пошагово.",
+                            "Конфликтов по пробам: ${s.samplesConflicts}. " +
+                                    "Разрешим по полям.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onTertiaryContainer,
                             modifier = Modifier.padding(8.dp)
                         )
                     }
                 }
-
-                Spacer(Modifier.height(4.dp))
 
                 TextButton(
                     onClick = { expanded = !expanded },
@@ -132,9 +141,7 @@ private fun PreviewDialog(
                     Text(if (expanded) "Свернуть подробности" else "Показать подробнее")
                 }
 
-                if (expanded) {
-                    DetailsBlock(preview)
-                }
+                if (expanded) DetailsBlock(preview)
             }
         },
         confirmButton = {
@@ -148,59 +155,32 @@ private fun PreviewDialog(
 
 @Composable
 private fun DetailsBlock(preview: MergePreview) {
-    val p = preview
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        if (p.areaPlan.toAdd.isNotEmpty()) {
+        if (preview.areaPlan.toAdd.isNotEmpty()) {
             Text(
                 "Новые участки:",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold
             )
-            for (a in p.areaPlan.toAdd) {
-                Text(
-                    "· ${a.entity.areaName}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            for (a in preview.areaPlan.toAdd) Text(
+                "· ${a.entity.areaName}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
-        if (p.orderPlan.toAdd.isNotEmpty()) {
+        if (preview.orderPlan.toAdd.isNotEmpty()) {
             Text(
                 "Новые наряды:",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold
             )
-            for (o in p.orderPlan.toAdd.take(50)) {
-                Text(
-                    "· ${o.entity.orderNumber}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            if (p.orderPlan.toAdd.size > 50) {
-                Text(
-                    "…и ещё ${p.orderPlan.toAdd.size - 50}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-        if (p.samplePlan.conflicts.isNotEmpty()) {
-            Text(
-                "Конфликты проб (${p.samplePlan.conflicts.size}):",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold
+            for (o in preview.orderPlan.toAdd.take(50)) Text(
+                "· ${o.entity.orderNumber}",
+                style = MaterialTheme.typography.bodySmall
             )
-            for (c in p.samplePlan.conflicts.take(50)) {
-                Text(
-                    "· ${c.sampleNumber}",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-            if (p.samplePlan.conflicts.size > 50) {
-                Text(
-                    "…и ещё ${p.samplePlan.conflicts.size - 50}",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            if (preview.orderPlan.toAdd.size > 50) Text(
+                "…и ещё ${preview.orderPlan.toAdd.size - 50}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
     }
 }
@@ -211,11 +191,7 @@ private fun StatRow(label: String, added: Int, matched: Int) {
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Text(
             "+$added",
             style = MaterialTheme.typography.bodyMedium,
@@ -233,100 +209,245 @@ private fun StatRow(label: String, added: Int, matched: Int) {
     }
 }
 
+// ================================================================
+// /5: конфликты
+// ================================================================
+
 @Composable
-private fun ConflictDialog(
+private fun ConflictsDialog(
     preview: MergePreview,
-    currentIndex: Int,
-    onSetConflict: (Long, ConflictResolution) -> Unit,
-    onSetAllConflicts: (ConflictResolution) -> Unit,
+    resolutions: Map<Long, FieldResolution>,
+    onSetField: (Long, SampleField, FieldOwner) -> Unit,
+    onSetSample: (Long, FieldOwner) -> Unit,
+    onMassAll: (FieldOwner) -> Unit,
+    onMassFillEmpty: () -> Unit,
+    onMassByField: (SampleField, FieldOwner) -> Unit,
+    onConfirm: () -> Unit,
     onCancel: () -> Unit
 ) {
     val conflicts = preview.samplePlan.conflicts
-    if (currentIndex >= conflicts.size) {
-        // Переходное состояние — сейчас запустится слияние.
-        return
+    val totalResolved = conflicts.count { c ->
+        resolutions[c.theirId]?.isFullyResolved(c.fieldDiffs) == true
     }
-    val c = conflicts[currentIndex]
+    val fieldCounts = remember(conflicts) { countFieldsByType(conflicts) }
 
     AlertDialog(
         onDismissRequest = onCancel,
-        title = {
-            Text("Конфликт ${currentIndex + 1} из ${conflicts.size}")
-        },
+        title = { Text("Конфликты (${totalResolved} из ${conflicts.size})") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // Массовые кнопки.
                 Text(
-                    "Проба: ${c.sampleNumber}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Medium
+                    "Массово применить:",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.height(4.dp))
-                Surface(
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = MaterialTheme.shapes.small
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(
-                            "Моя",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            "Вес: ${c.myEntity.weight ?: "—"}, " +
-                                    "статус: ${c.myEntity.status}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                    TextButton(
+                        onClick = { onMassAll(FieldOwner.MINE) },
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Мои везде", maxLines = 1) }
+                    TextButton(
+                        onClick = { onMassAll(FieldOwner.THEIRS) },
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Из архива везде", maxLines = 1) }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    TextButton(
+                        onClick = { onMassFillEmpty() },
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Заполнить пустые", maxLines = 1) }
+                }
+
+                // Сводка по типам расхождений.
+                if (fieldCounts.isNotEmpty()) {
+                    Text(
+                        "Различия по полям:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    for ((field, count) in fieldCounts) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${field.label}: $count",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(
+                                onClick = { onMassByField(field, FieldOwner.MINE) },
+                                contentPadding = PaddingValues(horizontal = 6.dp)
+                            ) { Text("Мои", style = MaterialTheme.typography.labelSmall) }
+                            TextButton(
+                                onClick = { onMassByField(field, FieldOwner.THEIRS) },
+                                contentPadding = PaddingValues(horizontal = 6.dp)
+                            ) { Text("Архив", style = MaterialTheme.typography.labelSmall) }
+                        }
                     }
                 }
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = MaterialTheme.shapes.small
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 300.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text(
-                            "Из архива",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            "Вес: ${c.theirEntity.weight ?: "—"}, " +
-                                    "статус: ${c.theirEntity.status}",
-                            style = MaterialTheme.typography.bodySmall
+                    items(conflicts, key = { it.theirId }) { c ->
+                        ConflictRow(
+                            conflict = c,
+                            resolution = resolutions[c.theirId] ?: FieldResolution.Empty,
+                            onSetField = onSetField,
+                            onSetSample = onSetSample
                         )
                     }
                 }
             }
         },
         confirmButton = {
-            Column {
-                TextButton(
-                    onClick = { onSetConflict(c.theirId, ConflictResolution.TAKE_THEIRS) }
-                ) { Text("Из архива") }
-                TextButton(
-                    onClick = { onSetAllConflicts(ConflictResolution.TAKE_THEIRS) },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) { Text("Из архива для всех") }
+            TextButton(
+                enabled = totalResolved > 0,
+                onClick = onConfirm
+            ) {
+                Text(
+                    if (totalResolved == conflicts.size) "Продолжить"
+                    else "Продолжить (остальные — Моя)"
+                )
             }
         },
         dismissButton = {
-            Column {
-                TextButton(
-                    onClick = { onSetConflict(c.theirId, ConflictResolution.KEEP_MINE) }
-                ) { Text("Моя") }
-                TextButton(
-                    onClick = { onSetAllConflicts(ConflictResolution.KEEP_MINE) },
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                ) { Text("Моя для всех") }
-            }
+            TextButton(onClick = onCancel) { Text("Отмена") }
         }
     )
+}
+
+@Composable
+private fun ConflictRow(
+    conflict: SampleConflict,
+    resolution: FieldResolution,
+    onSetField: (Long, SampleField, FieldOwner) -> Unit,
+    onSetSample: (Long, FieldOwner) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val resolved = resolution.isFullyResolved(conflict.fieldDiffs)
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    conflict.sampleNumber,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    if (resolved) "✓" else "—",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (resolved) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess
+                    else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            if (expanded) {
+                Spacer(Modifier.height(6.dp))
+                for (d in conflict.fieldDiffs) {
+                    FieldDiffRow(d, resolution.ownerOf(d.field)) { owner ->
+                        onSetField(conflict.theirId, d.field, owner)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { onSetSample(conflict.theirId, FieldOwner.MINE) },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("Вся — моя", style = MaterialTheme.typography.labelSmall) }
+                    TextButton(
+                        onClick = { onSetSample(conflict.theirId, FieldOwner.THEIRS) },
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) { Text("Вся — из архива", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FieldDiffRow(
+    diff: FieldDiff,
+    currentOwner: FieldOwner?,
+    onPick: (FieldOwner) -> Unit
+) {
+    Column(modifier = Modifier.padding(vertical = 2.dp)) {
+        Text(
+            diff.field.label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Моя: ${diff.myDisplay}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "Архив: ${diff.theirDisplay}",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FilterChip(
+                selected = currentOwner == FieldOwner.MINE,
+                onClick = { onPick(FieldOwner.MINE) },
+                label = { Text("Моя", style = MaterialTheme.typography.labelSmall) }
+            )
+            FilterChip(
+                selected = currentOwner == FieldOwner.THEIRS,
+                onClick = { onPick(FieldOwner.THEIRS) },
+                label = { Text("Из архива", style = MaterialTheme.typography.labelSmall) }
+            )
+        }
+    }
+}
+
+private fun countFieldsByType(
+    conflicts: List<SampleConflict>
+): Map<SampleField, Int> {
+    val m = mutableMapOf<SampleField, Int>()
+    for (c in conflicts) for (d in c.fieldDiffs) {
+        m[d.field] = (m[d.field] ?: 0) + 1
+    }
+    return m
 }
 
 @Composable
@@ -359,9 +480,9 @@ private fun DoneDialog(stats: MergeStats, onClose: () -> Unit) {
                 Text("· скважин: ${stats.wellsAdded}")
                 Text("· заметок: ${stats.notesAdded}")
                 Text("· фото: ${stats.photosAdded}")
-                if (stats.samplesMatched > 0) {
+                if (stats.samplesConflicts > 0) {
                     Spacer(Modifier.height(4.dp))
-                    Text("Разрешено конфликтов: ${stats.samplesMatched}")
+                    Text("Разрешено конфликтов: ${stats.samplesConflicts}")
                 }
             }
         },
@@ -377,8 +498,6 @@ private fun ErrorDialog(message: String, onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Ошибка слияния") },
         text = { Text(message) },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }

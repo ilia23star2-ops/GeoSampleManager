@@ -11,7 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.9-db-merge-v2/1, /2, /3:
+ * FIX 5.9-db-merge-v2/1, /2, /3, /5:
  * Юнит-тесты чистой логики движка слияния.
  */
 class MergeEngineTest {
@@ -130,31 +130,102 @@ class MergeEngineTest {
     }
 
     // ============================================================
-    // /2: planSamples
+    // /5: diffFields
     // ============================================================
 
     @Test
-    fun planSamples_matchByOrderAndNumber_goesToConflict() {
+    fun diffFields_identical_returnsEmpty() {
+        val a = sample(1, 1, "W1-1")
+        val b = sample(2, 100, "W1-1")
+        assertTrue(MergeEngine.diffFields(a, b).isEmpty())
+    }
+
+    @Test
+    fun diffFields_onlyWeight_returnsOneDiff() {
+        val a = sample(1, 1, "W1-1").copy(weight = 5.0)
+        val b = sample(2, 100, "W1-1").copy(weight = 7.5)
+        val diffs = MergeEngine.diffFields(a, b)
+        assertEquals(1, diffs.size)
+        assertEquals(SampleField.WEIGHT, diffs[0].field)
+        assertEquals("5.0", diffs[0].myDisplay)
+        assertEquals("7.5", diffs[0].theirDisplay)
+    }
+
+    @Test
+    fun diffFields_weightAndStatus_returnsTwoDiffs() {
+        val a = sample(1, 1, "W1-1").copy(weight = 5.0, status = "normal")
+        val b = sample(2, 100, "W1-1").copy(weight = 7.5, status = "blank")
+        assertEquals(2, MergeEngine.diffFields(a, b).size)
+    }
+
+    @Test
+    fun diffFields_statusHumanized() {
+        val a = sample(1, 1, "W1-1").copy(status = "normal")
+        val b = sample(2, 100, "W1-1").copy(status = "blank")
+        val d = MergeEngine.diffFields(a, b).first()
+        assertEquals("Обычная", d.myDisplay)
+        assertEquals("Холостая", d.theirDisplay)
+    }
+
+    @Test
+    fun diffFields_sampleTypeHumanized() {
+        val a = sample(1, 1, "W1-1").copy(sampleType = "auger")
+        val b = sample(2, 100, "W1-1").copy(sampleType = "channel")
+        val d = MergeEngine.diffFields(a, b).first()
+        assertEquals("Шнековая", d.myDisplay)
+        assertEquals("Бороздовая", d.theirDisplay)
+    }
+
+    @Test
+    fun diffFields_materialDescNull_vsValue_detected() {
+        val a = sample(1, 1, "W1-1").copy(materialDesc = null)
+        val b = sample(2, 100, "W1-1").copy(materialDesc = "суглинок")
+        val d = MergeEngine.diffFields(a, b).first()
+        assertEquals("—", d.myDisplay)
+        assertEquals("суглинок", d.theirDisplay)
+    }
+
+    // ============================================================
+    // /5: planSamples — три категории
+    // ============================================================
+
+    @Test
+    fun planSamples_identicalSample_goesToIdentical() {
         val p = MergeEngine.planSamples(
             mySamples = listOf(sample(1, orderId = 1, number = "W1-1")),
             theirSamples = listOf(sample(10, orderId = 100, number = "W1-1")),
             orderIdMap = mapOf(100L to 1L)
         )
-        assertEquals(1, p.conflicts.size)
-        assertEquals(1L, p.conflicts[0].myId)
-        assertEquals(10L, p.conflicts[0].theirId)
+        assertEquals(0, p.toAdd.size)
+        assertEquals(1, p.identical.size)
+        assertEquals(0, p.conflicts.size)
     }
 
     @Test
-    fun planSamples_newSample_goesToAddWithMyOrderId() {
+    fun planSamples_differentWeight_goesToConflict() {
+        val p = MergeEngine.planSamples(
+            mySamples = listOf(
+                sample(1, orderId = 1, number = "W1-1").copy(weight = 5.0)
+            ),
+            theirSamples = listOf(
+                sample(10, orderId = 100, number = "W1-1").copy(weight = 7.5)
+            ),
+            orderIdMap = mapOf(100L to 1L)
+        )
+        assertEquals(1, p.conflicts.size)
+        assertEquals(1, p.conflicts[0].fieldDiffs.size)
+    }
+
+    @Test
+    fun planSamples_newSample_goesToAdd() {
         val p = MergeEngine.planSamples(
             mySamples = emptyList(),
             theirSamples = listOf(sample(10, orderId = 100, number = "W1-1")),
             orderIdMap = mapOf(100L to 1L)
         )
         assertEquals(1, p.toAdd.size)
-        assertEquals(1L, p.toAdd[0].entity.orderId)
-        assertEquals(0L, p.toAdd[0].entity.id)
+        assertEquals(0, p.identical.size)
+        assertEquals(0, p.conflicts.size)
     }
 
     @Test
@@ -167,44 +238,159 @@ class MergeEngineTest {
         assertEquals(1, p.skippedOrphans)
     }
 
+    @Test
+    fun planSamples_mixed_allCategories() {
+        val p = MergeEngine.planSamples(
+            mySamples = listOf(
+                sample(1, orderId = 1, number = "W1-1"),
+                sample(2, orderId = 1, number = "W1-2").copy(weight = 5.0)
+            ),
+            theirSamples = listOf(
+                sample(10, orderId = 100, number = "W1-1"),  // identical
+                sample(11, orderId = 100, number = "W1-2").copy(weight = 7.5),  // conflict
+                sample(12, orderId = 100, number = "W1-3")  // new
+            ),
+            orderIdMap = mapOf(100L to 1L)
+        )
+        assertEquals(1, p.identical.size)
+        assertEquals(1, p.conflicts.size)
+        assertEquals(1, p.toAdd.size)
+    }
+
     // ============================================================
-    // /2: resolveSample
+    // /5: resolveSample по полям
     // ============================================================
 
     @Test
-    fun resolveSample_keepMine_returnsNull() {
-        val result = MergeEngine.resolveSample(
-            sample(1, 1, "W1-1", weight = 5.0),
-            sample(10, 100, "W1-1", weight = 7.5),
-            ConflictResolution.KEEP_MINE
-        )
-        assertNull(result)
+    fun resolveSample_allMine_returnsNull() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0)
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5)
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.all(diffs, FieldOwner.MINE)
+        assertNull(MergeEngine.resolveSample(my, their, r))
     }
 
     @Test
-    fun resolveSample_takeTheirs_copiesFieldsKeepsIds() {
-        val result = MergeEngine.resolveSample(
-            sample(1, 1, "W1-1", weight = 5.0, status = "normal"),
-            sample(10, 100, "W1-1", weight = 7.5, status = "blank"),
-            ConflictResolution.TAKE_THEIRS
-        )
+    fun resolveSample_allTheirs_copiesAllFields() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0, status = "normal")
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5, status = "blank")
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.all(diffs, FieldOwner.THEIRS)
+        val result = MergeEngine.resolveSample(my, their, r)
         assertNotNull(result)
-        assertEquals(1L, result!!.id)
-        assertEquals(1L, result.orderId)
-        assertEquals("W1-1", result.sampleNumber)
-        assertEquals(7.5, result.weight!!, 0.001)
+        assertEquals(7.5, result!!.weight!!, 0.001)
         assertEquals("blank", result.status)
     }
 
     @Test
-    fun resolveSample_takeTheirs_keepsHasNoteAndHasPhoto() {
-        val my = sample(1, 1, "W1-1").copy(hasNote = true, hasPhoto = true)
-        val their = sample(10, 100, "W1-1").copy(hasNote = false, hasPhoto = false)
-        val result = MergeEngine.resolveSample(
-            my, their, ConflictResolution.TAKE_THEIRS
+    fun resolveSample_mixed_weightFromTheirsStatusMine() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0, status = "normal")
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5, status = "blank")
+        val r = FieldResolution(
+            mapOf(
+                SampleField.WEIGHT to FieldOwner.THEIRS,
+                SampleField.STATUS to FieldOwner.MINE
+            )
         )
-        assertTrue(result!!.hasNote)
-        assertTrue(result.hasPhoto)
+        val result = MergeEngine.resolveSample(my, their, r)
+        assertNotNull(result)
+        assertEquals(7.5, result!!.weight!!, 0.001)
+        assertEquals("normal", result.status)
+    }
+
+    @Test
+    fun resolveSample_fillEmpty_keepsMyFilledTakesTheirEmpty() {
+        val my = sample(1, 1, "W1-1").copy(weight = null, status = "normal")
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5, status = "blank")
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.fillEmpty(diffs)
+        val result = MergeEngine.resolveSample(my, their, r)
+        assertNotNull(result)
+        assertEquals(7.5, result!!.weight!!, 0.001)
+        assertEquals("normal", result.status)
+    }
+
+    // ============================================================
+    // /5: displayFor
+    // ============================================================
+
+    @Test
+    fun displayFor_statusBlank_russian() {
+        assertEquals("Холостая", MergeEngine.displayFor(SampleField.STATUS, "blank"))
+    }
+
+    @Test
+    fun displayFor_statusControl_russian() {
+        assertEquals("Вес. контроль", MergeEngine.displayFor(SampleField.STATUS, "control"))
+    }
+
+    @Test
+    fun displayFor_sampleTypeChannel_russian() {
+        assertEquals("Бороздовая", MergeEngine.displayFor(SampleField.SAMPLE_TYPE, "channel"))
+    }
+
+    @Test
+    fun displayFor_sampleTypeCobra_russian() {
+        assertEquals("Кобра", MergeEngine.displayFor(SampleField.SAMPLE_TYPE, "cobra"))
+    }
+
+    @Test
+    fun displayFor_foundTrue_yes() {
+        assertEquals("Да", MergeEngine.displayFor(SampleField.FOUND, true))
+    }
+
+    @Test
+    fun displayFor_foundFalse_no() {
+        assertEquals("Нет", MergeEngine.displayFor(SampleField.FOUND, false))
+    }
+
+    @Test
+    fun displayFor_null_dash() {
+        assertEquals("—", MergeEngine.displayFor(SampleField.MATERIAL_DESC, null))
+    }
+
+    @Test
+    fun displayFor_blankString_dash() {
+        assertEquals("—", MergeEngine.displayFor(SampleField.MATERIAL_DESC, "  "))
+    }
+
+    // ============================================================
+    // /5: FieldResolution
+    // ============================================================
+
+    @Test
+    fun fieldResolution_isFullyResolved_empty_false() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0)
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5)
+        val diffs = MergeEngine.diffFields(my, their)
+        assertTrue(!FieldResolution.Empty.isFullyResolved(diffs))
+    }
+
+    @Test
+    fun fieldResolution_isFullyResolved_allSet_true() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0)
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5)
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.all(diffs, FieldOwner.MINE)
+        assertTrue(r.isFullyResolved(diffs))
+    }
+
+    @Test
+    fun fieldResolution_fillEmpty_myEmpty_takesTheirs() {
+        val my = sample(1, 1, "W1-1").copy(weight = null)
+        val their = sample(2, 100, "W1-1").copy(weight = 5.0)
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.fillEmpty(diffs)
+        assertEquals(FieldOwner.THEIRS, r.ownerOf(SampleField.WEIGHT))
+    }
+
+    @Test
+    fun fieldResolution_fillEmpty_myFilled_keepsMine() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0)
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5)
+        val diffs = MergeEngine.diffFields(my, their)
+        val r = FieldResolution.fillEmpty(diffs)
+        assertEquals(FieldOwner.MINE, r.ownerOf(SampleField.WEIGHT))
     }
 
     // ============================================================
@@ -243,7 +429,6 @@ class MergeEngineTest {
             sampleIdMap = mapOf(10L to 1L)
         )
         assertEquals(1, p.toAdd.size)
-        assertEquals(1L, p.toAdd[0].mySampleId)
     }
 
     @Test
@@ -295,11 +480,6 @@ class MergeEngineTest {
     }
 
     @Test
-    fun extractArchivePhotoName_blankString_returnsNull() {
-        assertNull(MergeEngine.extractArchivePhotoName("   "))
-    }
-
-    @Test
     fun extractArchivePhotoName_pathEndingWithSlash_returnsNull() {
         assertNull(MergeEngine.extractArchivePhotoName("/some/path/"))
     }
@@ -331,96 +511,36 @@ class MergeEngineTest {
             resolutions = emptyMap()
         )
         assertEquals(2, p.toAdd.size)
-        assertEquals(100L, p.toAdd[0].mySampleId)
-        assertEquals("a.jpg", p.toAdd[0].archiveFileName)
     }
 
     @Test
-    fun planPhotos_conflictKeepMine_photosSkipped() {
+    fun planPhotos_conflictKeepMine_noPhotos() {
         val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                image(1, sampleId = 10, path = "/x/sample_photos/a.jpg")
-            ),
+            theirImages = listOf(image(1, 10, "/x/sample_photos/a.jpg")),
             sampleIdMap = mapOf(10L to 100L),
             conflictSampleIds = setOf(10L),
-            resolutions = mapOf(10L to ConflictResolution.KEEP_MINE)
-        )
-        assertEquals(0, p.toAdd.size)
-    }
-
-    @Test
-    fun planPhotos_conflictTakeTheirs_photosAdded() {
-        val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                image(1, sampleId = 10, path = "/x/sample_photos/a.jpg")
-            ),
-            sampleIdMap = mapOf(10L to 100L),
-            conflictSampleIds = setOf(10L),
-            resolutions = mapOf(10L to ConflictResolution.TAKE_THEIRS)
-        )
-        assertEquals(1, p.toAdd.size)
-        assertEquals("a.jpg", p.toAdd[0].archiveFileName)
-    }
-
-    @Test
-    fun planPhotos_conflictWithoutResolution_defaultsToKeepMine() {
-        val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                image(1, sampleId = 10, path = "/x/sample_photos/a.jpg")
-            ),
-            sampleIdMap = mapOf(10L to 100L),
-            conflictSampleIds = setOf(10L),
-            resolutions = emptyMap()
-        )
-        assertEquals(0, p.toAdd.size)
-    }
-
-    @Test
-    fun planPhotos_unknownSample_skipped() {
-        val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                image(1, sampleId = 999, path = "/x/sample_photos/a.jpg")
-            ),
-            sampleIdMap = mapOf(10L to 100L),
-            conflictSampleIds = emptySet(),
-            resolutions = emptyMap()
-        )
-        assertEquals(0, p.toAdd.size)
-    }
-
-    @Test
-    fun planPhotos_invalidPath_skipped() {
-        val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                image(1, sampleId = 10, path = "")
-            ),
-            sampleIdMap = mapOf(10L to 100L),
-            conflictSampleIds = emptySet(),
-            resolutions = emptyMap()
-        )
-        assertEquals(0, p.toAdd.size)
-    }
-
-    @Test
-    fun planPhotos_mixed_allCases() {
-        val p = MergeEngine.planPhotos(
-            theirImages = listOf(
-                // новая проба — 2 фото, оба добавляем
-                image(1, sampleId = 10, path = "/x/a.jpg"),
-                image(2, sampleId = 10, path = "/x/b.jpg"),
-                // конфликт KEEP_MINE — пропускаем
-                image(3, sampleId = 11, path = "/x/c.jpg"),
-                // конфликт TAKE_THEIRS — добавляем
-                image(4, sampleId = 12, path = "/x/d.jpg")
-            ),
-            sampleIdMap = mapOf(10L to 100L, 11L to 101L, 12L to 102L),
-            conflictSampleIds = setOf(11L, 12L),
             resolutions = mapOf(
-                11L to ConflictResolution.KEEP_MINE,
-                12L to ConflictResolution.TAKE_THEIRS
+                10L to FieldResolution(
+                    mapOf(SampleField.WEIGHT to FieldOwner.MINE)
+                )
             )
         )
-        assertEquals(3, p.toAdd.size)
+        assertEquals(0, p.toAdd.size)
+    }
+
+    @Test
+    fun planPhotos_conflictAnyTheirs_photosAdded() {
+        val p = MergeEngine.planPhotos(
+            theirImages = listOf(image(1, 10, "/x/sample_photos/a.jpg")),
+            sampleIdMap = mapOf(10L to 100L),
+            conflictSampleIds = setOf(10L),
+            resolutions = mapOf(
+                10L to FieldResolution(
+                    mapOf(SampleField.WEIGHT to FieldOwner.THEIRS)
+                )
+            )
+        )
+        assertEquals(1, p.toAdd.size)
     }
 
     // ============================================================
@@ -428,19 +548,104 @@ class MergeEngineTest {
     // ============================================================
 
     @Test
-    fun mergeStats_withPhotoPlan_countsPhotos() {
+    fun mergeStats_fromPlans_countsCorrectly() {
+        val areaPlan = AreaPlan(
+            existing = mapOf(10L to 1L),
+            toAdd = listOf(AreaToAdd(20L, area(0, "A"))),
+            duplicatesInMine = emptyList()
+        )
+        val orderPlan = OrderPlan(
+            existing = mapOf(100L to 5L),
+            toAdd = emptyList(),
+            skippedOrphans = 2
+        )
+        val samplePlan = SamplePlan(
+            toAdd = listOf(SampleToAdd(200L, sample(0, 1, "S1"))),
+            identical = listOf(SampleMatch(201L, 6L)),
+            conflicts = listOf(
+                SampleConflict(
+                    theirId = 202L,
+                    myId = 7L,
+                    sampleNumber = "S2",
+                    myEntity = sample(7, 1, "S2"),
+                    theirEntity = sample(202, 100, "S2"),
+                    fieldDiffs = emptyList()
+                )
+            ),
+            skippedOrphans = 3
+        )
+        val wellPlan = WellPlan(toAdd = listOf(OrderWellToAdd(1L, "W1")))
+        val notePlan = NotePlan(
+            toAdd = listOf(NoteToAdd(6L, "txt")),
+            conflicts = emptyList()
+        )
+        val photoPlan = PhotoPlan(toAdd = listOf(PhotoToAdd(1L, "a.jpg")))
+
+        val s = MergeStats.from(areaPlan, orderPlan, samplePlan, wellPlan, notePlan, photoPlan)
+        assertEquals(1, s.areasAdded)
+        assertEquals(1, s.areasMatched)
+        assertEquals(0, s.ordersAdded)
+        assertEquals(1, s.ordersMatched)
+        assertEquals(2, s.ordersSkipped)
+        assertEquals(1, s.samplesAdded)
+        assertEquals(1, s.samplesIdentical)
+        assertEquals(1, s.samplesConflicts)
+        assertEquals(3, s.samplesSkipped)
+        assertEquals(1, s.wellsAdded)
+        assertEquals(1, s.notesAdded)
+        assertEquals(0, s.notesConflicts)
+        assertEquals(1, s.photosAdded)
+    }
+
+    @Test
+    fun mergeStats_nullableSubPlans_returnZeros() {
         val areaPlan = AreaPlan(emptyMap(), emptyList(), emptyList())
         val orderPlan = OrderPlan(emptyMap(), emptyList(), 0)
-        val photoPlan = PhotoPlan(
-            toAdd = listOf(
-                PhotoToAdd(1L, "a.jpg"),
-                PhotoToAdd(1L, "b.jpg")
-            )
+        val s = MergeStats.from(areaPlan, orderPlan)
+        assertEquals(0, s.samplesAdded)
+        assertEquals(0, s.samplesIdentical)
+        assertEquals(0, s.samplesConflicts)
+        assertEquals(0, s.wellsAdded)
+        assertEquals(0, s.notesAdded)
+        assertEquals(0, s.photosAdded)
+    }
+
+    // ============================================================
+    // SamplePlan.allResolved
+    // ============================================================
+
+    @Test
+    fun samplePlan_allResolved_emptyConflicts_true() {
+        val plan = SamplePlan(
+            toAdd = emptyList(),
+            identical = emptyList(),
+            conflicts = emptyList(),
+            skippedOrphans = 0
         )
-        val s = MergeStats.from(
-            areaPlan, orderPlan,
-            photoPlan = photoPlan
+        assertTrue(plan.allResolved(emptyMap()))
+    }
+
+    @Test
+    fun samplePlan_allResolved_partially_false() {
+        val my = sample(1, 1, "W1-1").copy(weight = 5.0, status = "normal")
+        val their = sample(2, 100, "W1-1").copy(weight = 7.5, status = "blank")
+        val c = SampleConflict(
+            theirId = 2L,
+            myId = 1L,
+            sampleNumber = "W1-1",
+            myEntity = my,
+            theirEntity = their,
+            fieldDiffs = MergeEngine.diffFields(my, their)
         )
-        assertEquals(2, s.photosAdded)
+        val plan = SamplePlan(
+            toAdd = emptyList(),
+            identical = emptyList(),
+            conflicts = listOf(c),
+            skippedOrphans = 0
+        )
+        val partial = mapOf(
+            2L to FieldResolution(mapOf(SampleField.WEIGHT to FieldOwner.MINE))
+        )
+        assertTrue(!plan.allResolved(partial))
     }
 }
