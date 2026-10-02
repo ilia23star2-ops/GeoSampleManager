@@ -17,6 +17,11 @@ import android.provider.MediaStore
  * FIX 5.9-db-backup-manager:
  *  - listAllPublic() — все .gsmbackup (pre_* + exports);
  *  - deleteByUri() — удаление файла из MediaStore.
+ *
+ * FIX 5.9-db-backups-fix:
+ *  - isAutoBackupSubDir() — предикат «это авто-бэкап, не экспорт»;
+ *  - «Удалить всё» в менеджере бэкапов использует его, чтобы не
+ *    трогать exports/.
  */
 object PublicBackupsLister {
 
@@ -26,9 +31,7 @@ object PublicBackupsLister {
         queryAll(context) { subDir -> subDir == PublicBackupsMigrator.EXPORTS_DIR }
 
     fun listAutoBackups(context: Context): List<PublicBackup> =
-        queryAll(context) { subDir ->
-            RollbackBackups.OPERATIONS.any { op -> subDir == "pre_$op" }
-        }
+        queryAll(context) { subDir -> isAutoBackupSubDir(subDir) }
 
     /**
      * FIX 5.9-db-backup-manager:
@@ -37,6 +40,15 @@ object PublicBackupsLister {
      */
     fun listAllPublic(context: Context): List<PublicBackup> =
         queryAll(context) { true }
+
+    /**
+     * FIX 5.9-db-backups-fix:
+     * true, если подпапка — это папка авто-бэкапов
+     * (pre_restore / pre_rollback / pre_clean), а не exports/.
+     * Чистая функция — покрывается юнит-тестами.
+     */
+    fun isAutoBackupSubDir(subDir: String): Boolean =
+        RollbackBackups.OPERATIONS.any { op -> subDir == "pre_$op" }
 
     /**
      * FIX 5.9-db-backup-manager:

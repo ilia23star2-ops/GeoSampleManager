@@ -27,9 +27,12 @@ import java.util.Locale
  * Диалог управления всеми бэкапами.
  *
  * FIX 5.9-db-backup-manager (fix):
- *  - кнопки «Удалить старые» / «Удалить всё» — компактнее
- *    (TextButton + уменьшенный шрифт, без иконок);
- *  - удаление стирает все копии бэкапа (приватную и публичную).
+ *  - компактные кнопки;
+ *  - удаление одного стирает обе копии.
+ *
+ * FIX 5.9-db-backups-fix:
+ *  - кнопка «Удалить авто» — только авто-бэкапы;
+ *  - экспорты остаются.
  */
 @Composable
 fun BackupManagerDialog(
@@ -86,7 +89,6 @@ fun BackupManagerDialog(
                     }
                 }
 
-                // Компактные кнопки действий.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -118,7 +120,7 @@ fun BackupManagerDialog(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text(
-                            "Удалить всё",
+                            "Удалить авто",
                             fontSize = 12.sp,
                             maxLines = 1
                         )
@@ -216,13 +218,15 @@ fun BackupManagerDialog(
         var confirmed by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showDeleteAll = false },
-            title = { Text("Удалить все бэкапы?") },
+            title = { Text("Удалить все авто-бэкапы?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        "Все авто-бэкапы и экспорты (внутренние и в Загрузках) " +
-                                "будут удалены безвозвратно. Текущая БД " +
-                                "останется нетронутой, но откатиться будет некуда."
+                        "Все авто-бэкапы (внутренние и в Загрузках) будут " +
+                                "удалены безвозвратно. Экспорты останутся — " +
+                                "их можно удалить по одному крестиком. " +
+                                "Текущая БД не тронута, но откатиться будет " +
+                                "некуда."
                     )
                     Row(
                         modifier = Modifier
@@ -236,7 +240,7 @@ fun BackupManagerDialog(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            "Понимаю, что удалю все бэкапы",
+                            "Понимаю, что удалю все авто-бэкапы",
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
@@ -252,7 +256,7 @@ fun BackupManagerDialog(
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
                     )
-                ) { Text("Удалить всё") }
+                ) { Text("Удалить авто") }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteAll = false }) { Text("Отмена") }

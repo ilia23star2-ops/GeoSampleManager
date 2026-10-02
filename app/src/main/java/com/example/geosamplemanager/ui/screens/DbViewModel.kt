@@ -293,11 +293,18 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * FIX 5.9-db-backups-fix:
+     * «Удалить всё» — только авто-бэкапы (pre_*).
+     * Экспорты в Загрузках/GeoSampleManager/exports/ НЕ трогаем.
+     */
     fun deleteAllBackups() {
         viewModelScope.launch {
             try {
                 val deleted = withContext(Dispatchers.IO) {
                     var count = 0
+
+                    // Приватная папка: там лежат только авто-бэкапы.
                     val dir = repo.getRollbackBackupsDir()
                     dir.listFiles()?.forEach { f ->
                         try {
@@ -305,9 +312,14 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                         } catch (_: Exception) {
                         }
                     }
+
+                    // Публичные: только подпапки pre_*.
                     val allPublic = PublicBackupsLister
                         .listAllPublic(getApplication())
                     for (pb in allPublic) {
+                        if (!PublicBackupsLister.isAutoBackupSubDir(pb.subDir)) {
+                            continue
+                        }
                         if (PublicBackupsLister.deleteByUri(
                                 getApplication(), pb.uri
                             )
@@ -317,7 +329,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     count
                 }
-                _message.value = "Удалено бэкапов: $deleted"
+                _message.value = "Удалено авто-бэкапов: $deleted"
                 reloadManagerBackups()
             } catch (e: Exception) {
                 _message.value = "Ошибка удаления: ${e.message}"
@@ -503,10 +515,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _mergeState.value = state.copy(resolutions = newMap)
     }
 
-    /**
-     * FIX 5.9-db-merge-v2/7:
-     * Массовая стратегия для конкретной группы (наряд / скважина).
-     */
     fun applyGroupMass(
         conflicts: List<SampleConflict>,
         strategy: MassStrategy
