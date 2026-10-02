@@ -1,15 +1,23 @@
 package com.example.geosamplemanager.data.backup
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * FIX 5.9-db-import-picker:
  * Юнит-тесты чистой функции PublicBackupsLister.extractSubDir.
- * Сам запрос в MediaStore — device-check.
+ *
+ * FIX 5.9-db-backups-fix:
+ *  - тесты isAutoBackupSubDir — предикат «это авто-бэкап».
  */
 class PublicBackupsListerTest {
+
+    // ============================================================
+    // extractSubDir
+    // ============================================================
 
     @Test
     fun extractSubDir_root_returnsEmpty() {
@@ -108,5 +116,45 @@ class PublicBackupsListerTest {
             "",
             PublicBackupsLister.extractSubDir("Download/Foo/GeoSampleManager/")
         )
+    }
+
+    // ============================================================
+    // isAutoBackupSubDir
+    // ============================================================
+
+    @Test
+    fun isAutoBackupSubDir_preRestore_true() {
+        assertTrue(PublicBackupsLister.isAutoBackupSubDir("pre_restore"))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_preRollback_true() {
+        assertTrue(PublicBackupsLister.isAutoBackupSubDir("pre_rollback"))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_preClean_true() {
+        assertTrue(PublicBackupsLister.isAutoBackupSubDir("pre_clean"))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_exports_false() {
+        assertFalse(PublicBackupsLister.isAutoBackupSubDir("exports"))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_emptyString_false() {
+        assertFalse(PublicBackupsLister.isAutoBackupSubDir(""))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_unknown_returnsFalse() {
+        assertFalse(PublicBackupsLister.isAutoBackupSubDir("pre_unknown"))
+    }
+
+    @Test
+    fun isAutoBackupSubDir_partialMatch_false() {
+        // Не должно сработать по префиксу — только точное совпадение.
+        assertFalse(PublicBackupsLister.isAutoBackupSubDir("pre_restore_backup"))
     }
 }
