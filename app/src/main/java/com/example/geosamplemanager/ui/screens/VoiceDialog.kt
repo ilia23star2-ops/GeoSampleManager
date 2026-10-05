@@ -17,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.util.VoiceController
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceCallback
@@ -121,6 +122,16 @@ fun VoiceDialog(
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
 
+                        // FIX 5.9-logs-4a: пишем голосовое событие в журнал
+                        // сессии. summary — короткая фраза для оператора,
+                        // details — технические данные для отладки.
+                        AppLog.voice("Голос: «$text»")
+                            .detail("raw", text)
+                            .detail("command", cmd.toString())
+                            .detail("mode", viewModel.voiceSession.mode.name)
+                            .detail("result", result.toString())
+                            .write()
+
                         recognizedText = displayRecognized(text, result)
                         resultText = describeResult(result, viewModel)
                         status = "Готово"
@@ -135,6 +146,14 @@ fun VoiceDialog(
                         handleFeedback(result, fb, controller, viewModel)
                     } catch (e: Exception) {
                         Log.e(LOG_TAG, "voiceExecute УПАЛ", e)
+                        AppLog.error(
+                            "Ошибка голосовой команды: ${e.message}",
+                            e
+                        )
+                            .detail("raw", text)
+                            .detail("command", cmd.toString())
+                            .write()
+
                         resultText = "Ошибка: ${e.message}"
                         status = "Ошибка"
                         viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
