@@ -12,6 +12,7 @@ import com.example.geosamplemanager.data.bluetooth.BtProfile
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.voice.SoundLevel
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
 import com.example.geosamplemanager.data.voice.VoiceSettings
@@ -23,6 +24,7 @@ import kotlinx.coroutines.launch
 enum class SettingsCategory(val title: String) {
     IMPORT("Импорт Excel"),
     VOICE("Голос"),
+    SOUND("Звук"),
     BLUETOOTH("Bluetooth"),
     APPEARANCE("Внешний вид"),
     SYSTEM("Система"),
@@ -32,6 +34,7 @@ enum class SettingsCategory(val title: String) {
 /**
  * FIX 5.9-settings: раздел «Голос» наполнен.
  * FIX 5.9-settings-bt: раздел «Bluetooth» наполнен.
+ * FIX 5.9-settings-sound: раздел «Звук» наполнен.
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -206,10 +209,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     // ============ ГОЛОСОВОЙ ПОМОЩНИК ============
 
-    fun setTtsVolume(volume: TtsVolume) {
-        persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
-    }
-
     fun setVoiceMode(mode: VoiceMode) {
         persistVoice(_voiceSettings.value.copy(mode = mode))
     }
@@ -235,12 +234,33 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _message.value = "Настройки голоса сброшены"
     }
 
+    // ============ ЗВУК ============
+
+    fun setTtsVolume(volume: TtsVolume) {
+        persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
+    }
+
+    fun setFeedbackEnabled(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(feedbackEnabled = value))
+    }
+
+    fun setFeedbackVolume(volume: SoundLevel) {
+        persistVoice(_voiceSettings.value.copy(feedbackVolume = volume))
+    }
+
+    fun resetSoundToDefaults() {
+        persistVoice(
+            _voiceSettings.value.copy(
+                ttsVolume = TtsVolume.NORMAL,
+                feedbackEnabled = true,
+                feedbackVolume = SoundLevel.NORMAL
+            )
+        )
+        _message.value = "Настройки звука сброшены"
+    }
+
     // ============ BLUETOOTH ============
 
-    /**
-     * Перечитать состояние Bluetooth: разрешение, адаптер,
-     * список сопряжённых, активное устройство.
-     */
     fun refreshBluetoothState() {
         _btHasPermission.value = btController.hasPermission()
         _btEnabled.value = btController.isBluetoothEnabled()
@@ -256,11 +276,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         persistBt(_btSettings.value.copy(enabled = value))
     }
 
-    /**
-     * Выбор устройства. Если выбран встроенный — записываем
-     * address = null, enabled = false. Если внешний — записываем
-     * address + name, enabled = true.
-     */
     fun setBluetoothDevice(device: BtDevice) {
         if (device.isBuiltIn) {
             persistBt(

@@ -29,6 +29,7 @@ import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceFeedback
 import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import com.example.geosamplemanager.data.voice.WeightQueueKind
@@ -41,15 +42,19 @@ private const val LOG_TAG = "VoiceDialog"
 private const val TIMEOUT_TICK_MS = 250L
 
 /**
- * FIX 5.9-settings-bt:
- * VoiceDialog принимает BluetoothSettings и передаёт их в
- * VoiceController. Это включает SCO-канал (микрофон гарнитуры)
- * при старте ГП.
+ * FIX 5.9-settings-bt: принимает BluetoothSettings и передаёт
+ * их в VoiceController.
+ *
+ * FIX 5.9-settings-sound:
+ *  - принимает VoiceSettings;
+ *  - применяет ttsVolume к VoiceController;
+ *  - применяет feedbackEnabled/feedbackVolume к VoiceFeedback.
  */
 @Composable
 fun VoiceDialog(
     viewModel: ReconciliationViewModel,
     btSettings: BluetoothSettings = BluetoothSettings(),
+    voiceSettings: VoiceSettings = VoiceSettings(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -78,6 +83,8 @@ fun VoiceDialog(
         }
 
         val fb = VoiceFeedback(context)
+        // FIX 5.9-settings-sound: применить настройки к сигналам.
+        fb.applySettings(voiceSettings)
         feedback = fb
 
         val callback = object : VoiceCallback {
@@ -180,7 +187,8 @@ fun VoiceDialog(
             context = context,
             callback = callback,
             btSettings = btSettings,
-            btController = btController
+            btController = btController,
+            ttsVolume = voiceSettings.ttsVolume
         )
         controller = c
         c.startListening()

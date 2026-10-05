@@ -29,6 +29,8 @@ import com.example.geosamplemanager.data.bluetooth.BtDevice
 import com.example.geosamplemanager.data.bluetooth.BtProfile
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.voice.SoundLevel
+import com.example.geosamplemanager.data.voice.SoundTestUtil
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
 
@@ -36,6 +38,7 @@ import com.example.geosamplemanager.data.voice.VoiceMode
  * FIX 5.9-logs-5: журнал открывается поверх Настроек.
  * FIX 5.9-settings: разделы «Голос» и «О приложении» заполнены.
  * FIX 5.9-settings-bt: раздел «Bluetooth» + тест микрофона.
+ * FIX 5.9-settings-sound: раздел «Звук».
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -166,6 +169,7 @@ private fun CategoryContent(
     when (category) {
         SettingsCategory.IMPORT -> ImportSettingsContent(viewModel, modifier)
         SettingsCategory.VOICE -> VoiceSettingsContent(viewModel, modifier)
+        SettingsCategory.SOUND -> SoundSettingsContent(viewModel, modifier)
         SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
         SettingsCategory.APPEARANCE -> StubContent("Внешний вид", "Тема и размеры — в следующих обновлениях.", modifier)
         SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
@@ -174,192 +178,125 @@ private fun CategoryContent(
 }
 
 // ============================================================
-// РАЗДЕЛ «BLUETOOTH»
+// РАЗДЕЛ «ЗВУК»
 // ============================================================
 
+/**
+ * FIX 5.9-settings-sound:
+ * Раздел «Звук». Громкость TTS + сигналы + тесты.
+ */
 @Composable
-private fun BluetoothSettingsContent(
+private fun SoundSettingsContent(
     viewModel: SettingsViewModel,
     modifier: Modifier = Modifier
 ) {
-    val bs by viewModel.btSettings.collectAsState()
-    val devices by viewModel.pairedDevices.collectAsState()
-    val enabled by viewModel.btEnabled.collectAsState()
-    val hasPermission by viewModel.btHasPermission.collectAsState()
-    val activeDevice by viewModel.btActiveDevice.collectAsState()
-
-    var showMicTest by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val vs by viewModel.voiceSettings.collectAsState()
 
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            "Bluetooth",
+            "Звук",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold
         )
 
-        // Состояние
+        // Озвучка TTS
         InfoCard(
-            title = "Состояние",
-            help = "Голосовой помощник может использовать микрофон " +
-                    "Bluetooth-гарнитуры вместо встроенного."
+            title = "Озвучка ответов",
+            help = "Голосовой помощник произносит ответы через синтезатор речи. " +
+                    "«Выкл» — полное молчание."
+        ) {
+            Text("Громкость", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    TtsVolume.OFF to "Выкл",
+                    TtsVolume.QUIET to "Тихая",
+                    TtsVolume.NORMAL to "Обычная",
+                    TtsVolume.LOUD to "Громкая"
+                ),
+                selected = vs.ttsVolume,
+                onSelect = { viewModel.setTtsVolume(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    SoundTestUtil.speakTest(context, vs.ttsVolume)
+                },
+                enabled = vs.ttsVolume != TtsVolume.OFF,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Проверить озвучку")
+            }
+        }
+
+        // Сигналы
+        InfoCard(
+            title = "Звуковые сигналы",
+            help = "Короткие бипы-подтверждения: успех, внимание, ошибка. " +
+                    "Не зависят от озвучки ответов."
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.feedbackEnabled,
+                    onCheckedChange = { viewModel.setFeedbackEnabled(it) }
+                )
                 Text(
-                    if (enabled) "Bluetooth включён" else "Bluetooth выключен",
+                    "Включить звуковые сигналы",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
-            val active = activeDevice
-            if (active != null) {
+
+            if (vs.feedbackEnabled) {
+                Spacer(Modifier.height(8.dp))
+                Text("Громкость", style = MaterialTheme.typography.bodyMedium)
+                ChoiceRow(
+                    options = listOf(
+                        SoundLevel.QUIET to "Тихая",
+                        SoundLevel.NORMAL to "Обычная",
+                        SoundLevel.LOUD to "Громкая"
+                    ),
+                    selected = vs.feedbackVolume,
+                    onSelect = { viewModel.setFeedbackVolume(it) }
+                )
+
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.playAllSignals(context, vs)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Проверить сигналы")
+                }
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "Подключено: ${active.name}",
+                    "Прозвучит три сигнала: успех, внимание, ошибка.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (!hasPermission) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "Нет разрешения на доступ к Bluetooth. Разрешите " +
-                            "в системных настройках.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = { viewModel.openBluetoothSystemSettings() },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Открыть настройки Android")
-            }
         }
 
-        if (!enabled || !hasPermission) {
-            // Пока Bluetooth не активен — остальное не показываем.
-            return@Column
-        }
-
-        // Использовать гарнитуру
-        InfoCard(
-            title = "Использовать гарнитуру",
-            help = "Если выключено — голосовой помощник работает через " +
-                    "встроенный микрофон."
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = bs.enabled,
-                    onCheckedChange = { viewModel.setBluetoothEnabled(it) }
-                )
-                Text(
-                    "Работать через Bluetooth-гарнитуру",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-
-        // Список устройств
-        InfoCard(
-            title = "Устройство",
-            help = "Выберите гарнитуру для голосового помощника. " +
-                    "«Встроенный микрофон» — микрофон планшета."
-        ) {
-            val allDevices = devices + BtDevice.BUILT_IN
-            allDevices.forEach { dev ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { viewModel.setBluetoothDevice(dev) }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = if (dev.isBuiltIn) {
-                            !bs.enabled || bs.deviceAddress == null
-                        } else {
-                            bs.deviceAddress == dev.address
-                        },
-                        onClick = { viewModel.setBluetoothDevice(dev) }
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        dev.name,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-        }
-
-        // Профиль
-        InfoCard(
-            title = "Профиль",
-            help = "SCO — для разговора, ниже задержка. A2DP — для музыки, " +
-                    "выше качество. Для голосового помощника лучше SCO."
-        ) {
-            ChoiceRow(
-                options = listOf(
-                    BtProfile.SCO to "SCO (разговор)",
-                    BtProfile.A2DP to "A2DP (медиа)"
-                ),
-                selected = bs.profile,
-                onSelect = { viewModel.setBtProfile(it) }
-            )
-        }
-
-        // Fallback
-        InfoCard(
-            title = "Если устройство отключилось",
-            help = "Что делать, если гарнитура вне зоны. По умолчанию — " +
-                    "переходим на встроенный микрофон, чтобы работа не " +
-                    "прерывалась."
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = bs.fallbackToBuiltIn,
-                    onCheckedChange = { viewModel.setFallbackToBuiltIn(it) }
-                )
-                Text(
-                    "Переключаться на встроенный микрофон",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-
-        // Тест
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    "Проверка",
+                    "Сброс",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Скажите что-нибудь и проверьте, что микрофон " +
-                            "распознаёт текст.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
                 Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { showMicTest = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Проверить микрофон")
-                }
+                OutlinedButton(
+                    onClick = { viewModel.resetSoundToDefaults() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Сбросить настройки звука") }
             }
         }
-    }
-
-    if (showMicTest) {
-        MicrophoneTestDialog(
-            btSettings = bs,
-            onDismiss = { showMicTest = false }
-        )
     }
 }
 
@@ -385,22 +322,9 @@ private fun VoiceSettingsContent(
         )
 
         InfoCard(
-            title = "Озвучка",
-            help = "Голосовой помощник произносит ответы через синтезатор речи. " +
-                    "Здесь можно настроить громкость и что показывать в списке проб."
+            title = "Отображение",
+            help = "Настройки вида списка проб при работе со сверкой."
         ) {
-            Text("Громкость", style = MaterialTheme.typography.bodyMedium)
-            ChoiceRow(
-                options = listOf(
-                    TtsVolume.OFF to "Выкл",
-                    TtsVolume.QUIET to "Тихая",
-                    TtsVolume.NORMAL to "Обычная",
-                    TtsVolume.LOUD to "Громкая"
-                ),
-                selected = vs.ttsVolume,
-                onSelect = { viewModel.setTtsVolume(it) }
-            )
-            Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(
                     checked = vs.showCharacteristic,
@@ -493,6 +417,187 @@ private fun VoiceSettingsContent(
                 ) { Text("Сбросить настройки голоса") }
             }
         }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «BLUETOOTH»
+// ============================================================
+
+@Composable
+private fun BluetoothSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val bs by viewModel.btSettings.collectAsState()
+    val devices by viewModel.pairedDevices.collectAsState()
+    val enabled by viewModel.btEnabled.collectAsState()
+    val hasPermission by viewModel.btHasPermission.collectAsState()
+    val activeDevice by viewModel.btActiveDevice.collectAsState()
+
+    var showMicTest by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Bluetooth",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Состояние",
+            help = "Голосовой помощник может использовать микрофон " +
+                    "Bluetooth-гарнитуры вместо встроенного."
+        ) {
+            Text(
+                if (enabled) "Bluetooth включён" else "Bluetooth выключен",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            val active = activeDevice
+            if (active != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Подключено: ${active.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (!hasPermission) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Нет разрешения на доступ к Bluetooth. Разрешите " +
+                            "в системных настройках.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { viewModel.openBluetoothSystemSettings() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Открыть настройки Android")
+            }
+        }
+
+        if (!enabled || !hasPermission) {
+            return@Column
+        }
+
+        InfoCard(
+            title = "Использовать гарнитуру",
+            help = "Если выключено — голосовой помощник работает через " +
+                    "встроенный микрофон."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = bs.enabled,
+                    onCheckedChange = { viewModel.setBluetoothEnabled(it) }
+                )
+                Text(
+                    "Работать через Bluetooth-гарнитуру",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        InfoCard(
+            title = "Устройство",
+            help = "Выберите гарнитуру для голосового помощника. " +
+                    "«Встроенный микрофон» — микрофон планшета."
+        ) {
+            val allDevices = devices + BtDevice.BUILT_IN
+            allDevices.forEach { dev ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.setBluetoothDevice(dev) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = if (dev.isBuiltIn) {
+                            !bs.enabled || bs.deviceAddress == null
+                        } else {
+                            bs.deviceAddress == dev.address
+                        },
+                        onClick = { viewModel.setBluetoothDevice(dev) }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        dev.name,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        InfoCard(
+            title = "Профиль",
+            help = "SCO — для разговора, ниже задержка. A2DP — для музыки, " +
+                    "выше качество. Для голосового помощника лучше SCO."
+        ) {
+            ChoiceRow(
+                options = listOf(
+                    BtProfile.SCO to "SCO (разговор)",
+                    BtProfile.A2DP to "A2DP (медиа)"
+                ),
+                selected = bs.profile,
+                onSelect = { viewModel.setBtProfile(it) }
+            )
+        }
+
+        InfoCard(
+            title = "Если устройство отключилось",
+            help = "Что делать, если гарнитура вне зоны. По умолчанию — " +
+                    "переходим на встроенный микрофон, чтобы работа не " +
+                    "прерывалась."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = bs.fallbackToBuiltIn,
+                    onCheckedChange = { viewModel.setFallbackToBuiltIn(it) }
+                )
+                Text(
+                    "Переключаться на встроенный микрофон",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Проверка",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Скажите что-нибудь и проверьте, что микрофон " +
+                            "распознаёт текст.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { showMicTest = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Проверить микрофон")
+                }
+            }
+        }
+    }
+
+    if (showMicTest) {
+        MicrophoneTestDialog(
+            btSettings = bs,
+            onDismiss = { showMicTest = false }
+        )
     }
 }
 
@@ -869,7 +974,7 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
         }
         HeaderKeywordsDialog(
             title = "Слова для типов проб",
-            help = "Значения из колонки «Тип проб», которые надо отнести к определённому типу. " +
+            help = "Значения из колонки «Тип пробы», которые надо отнести к определённому типу. " +
                     "Например, если в файле пишут «керновая» — добавьте это в шнековую.",
             sections = sections,
             onAdd = { code, word -> viewModel.addUserTypeKeyword(code, word) },
