@@ -1,8 +1,12 @@
 package com.example.geosamplemanager
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -29,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
@@ -39,14 +44,23 @@ import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
 /**
  * FIX 5.9-logs-3:
- * Логируем onResume / onPause — «Приложение свёрнуто» /
- * «Приложение развёрнуто». Это объясняет паузы в логе, когда
- * оператор работал с другими приложениями.
+ * Логируем onResume / onPause.
+ *
+ * FIX 5.9-settings-bt:
+ * При входе в приложение запрашиваем BLUETOOTH_CONNECT (API 31+).
+ * Разрешение нужно для чтения списка сопряжённых устройств.
  */
 class MainActivity : ComponentActivity() {
 
+    private val requestBluetoothPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* результат не нужен — раздел Bluetooth сам покажет статус */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestBluetoothIfNeeded()
+
         setContent {
             GeoSampleManagerTheme {
                 Surface(
@@ -67,6 +81,22 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         Log.app("Приложение свёрнуто").write()
         super.onPause()
+    }
+
+    /**
+     * FIX 5.9-settings-bt:
+     * Запросить BLUETOOTH_CONNECT один раз при входе.
+     * На API < 31 — не нужно, разрешение не требуется.
+     */
+    private fun requestBluetoothIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            requestBluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
     }
 }
 
@@ -115,14 +145,6 @@ private fun AppRoot() {
 /**
  * FIX 5.9-db-soft-restart:
  * Поддерево, которое пересоздаётся при смене restart-tick.
- *
- * Ключевое:
- *  - key(tick) — Compose выбрасывает всё поддерево при смене tick;
- *  - SimpleViewModelStoreOwner — новый хранилище ViewModel'ей;
- *  - DisposableEffect.onDispose — старый store очищается,
- *    ViewModel'и получают onCleared();
- *  - initialRoute — начальный экран (MAIN на старте, БД после
- *    очистки/отката/импорта).
  */
 @Composable
 private fun ReadyContent(app: GeoSampleApp) {

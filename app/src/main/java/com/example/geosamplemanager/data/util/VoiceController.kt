@@ -7,6 +7,8 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.bluetooth.BluetoothController
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.voice.VoiceCallback
 import com.example.geosamplemanager.data.voice.VoiceGrammar
 import org.json.JSONObject
@@ -21,31 +23,24 @@ import java.util.Locale
  *
  * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
  *
- * FIX 5.8.6-2:
- * - скорость TTS 1.10;
- * - увеличена задержка возобновления Vosk после речи до 800 мс;
- * - добавлено окно подавления эха.
+ * FIX 5.8.6-2: скорость TTS 1.10, увеличенная задержка возобновления.
+ * FIX 5.8.6-5c: time-based debounce 600 мс для дубликатов.
+ * FIX 5.8.11-voice-24-debounce: буфер + динамический таймер для
+ *   склейки фраз при обрыве Vosk по короткой паузе.
+ * FIX 5.8.11-e4-fix-2: RESUME_DELAY_MS уменьшен до 250 мс.
  *
- * FIX 5.8.6-5c:
- * - вечный игнор одинаковых фраз заменён на time-based debounce 600 мс;
- * - теперь можно сказать «отмена» несколько раз подряд;
- * - дубликат в пределах 600 мс всё ещё подавляется.
- *
- * FIX 5.8.11-voice-24-debounce (И-24):
- * - Vosk срабатывает endpoint по короткой паузе и отдаёт промежуточный
- *   onResult до конца фразы. Юзер не успевает договорить длинный номер
- *   «13 66 и 109 00 31» — команда исполняется на «13 66».
- * - Решение: буфер + динамический таймер.
- *   - Мгновенные команды (см. instantCommands) — отдаём сразу, без задержки.
- *   - Всё остальное — копим в буфере, склеиваем через пробел.
- *   - Таймер 800 мс перезапускается на каждый onPartial (юзер продолжает)
- *     и на каждый новый onResult (склеиваем с предыдущим).
- *   - Если 800 мс тишины — отдаём накопленное.
- *   - onFinalResult — flush сразу (Vosk сам сказал финал).
+ * FIX 5.9-settings-bt:
+ *  - принимает BluetoothSettings и BluetoothController;
+ *  - при startListening с включённым BT переключает звук в SCO;
+ *  - метод applyBluetoothSettings() — смена на лету, пересоздаёт
+ *    SpeechService, чтобы AudioRecord взял новый канал;
+ *  - в destroy() выключает SCO.
  */
 class VoiceController(
     private val context: Context,
-    private val callback: VoiceCallback
+    private val callback: VoiceCallback,
+    private var btSettings: BluetoothSettings = BluetoothSettings(),
+    private val btController: BluetoothController? = null
 ) {
 
     private val app = context.applicationContext as GeoSampleApp
@@ -59,21 +54,10 @@ class VoiceController(
     private var lastFinalText: String = ""
     private var lastFinalAt: Long = 0L
 
-    /**
-     * Время, до которого результаты Vosk считаются эхом TTS.
-     */
     private var suppressUntil: Long = 0L
 
-    /**
-     * FIX 5.8.11-voice-24-debounce: буфер накопленного текста.
-     * Сюда копим onResult и onFinalResult, пока юзер продолжает говорить.
-     */
     private var pendingText: String? = null
 
-    /**
-     * FIX 5.8.11-voice-24-debounce: таймер отложенного flush.
-     * Перезапускается на каждом onPartial/onResult.
-     */
     private var pendingRunnable: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
 
@@ -194,9 +178,12 @@ class VoiceController(
             lastFinalText = ""
             lastFinalAt = 0L
             suppressUntil = 0L
-            // FIX 5.8.11-voice-24-debounce: чистим буфер и таймер.
             pendingText = null
             cancelPendingTimer()
+
+            // FIX 5.9-settings-bt: перед стартом — включить SCO,
+            // если выбрана BT-гарнитура.
+            applyBluetoothAtStart()
 
             val service = speechService ?: createService(model)
 
@@ -205,7 +192,8 @@ class VoiceController(
 
             service.startListening(listener)
 
-            Log.e(TAG, "startListening: старт (грамматика=${app.voiceUseGrammar})")
+            Log.e(TAG, "startListening: старт (грамматика=${app.voiceUseGrammar}, " +
+                    "bt=${btSettings.enabled && btSettings.deviceAddress != null})")
         } catch (e: Exception) {
             listening = false
             Log.e(TAG, "startListening: ИСКЛЮЧЕНИЕ", e)
@@ -236,6 +224,28 @@ class VoiceController(
         return service
     }
 
+    /**
+     * FIX 5.9-settings-bt:
+     * Полная пересборка SpeechService — нужна, когда меняется
+     * источник микрофона (BT ↔ встроенный). AudioRecord
+     * внутри Vosk создаётся один раз и не подхватывает смену
+     * канала на лету.
+     */
+    private fun recreateSpeechService() {
+        try {
+            speechService?.stop()
+            speechService?.shutdown()
+            recognizer?.close()
+        } catch (_: Exception) {
+        }
+        speechService = null
+        recognizer = null
+        listening = false
+
+        // Запускаем заново — теперь с новым микрофоном.
+        startListening()
+    }
+
     fun stopListening() {
         if (!listening) return
 
@@ -245,11 +255,50 @@ class VoiceController(
             Log.w(TAG, "stopListening ошибка", e)
         }
 
-        // FIX 5.8.11-voice-24-debounce: не отдаём pending после остановки.
         pendingText = null
         cancelPendingTimer()
 
         listening = false
+    }
+
+    // ================================================================
+    // FIX 5.9-settings-bt: Bluetooth
+    // ================================================================
+
+    /**
+     * Включить SCO, если в настройках выбрана BT-гарнитура.
+     */
+    private fun applyBluetoothAtStart() {
+        val useBt = btSettings.enabled && btSettings.deviceAddress != null
+        if (!useBt) {
+            btController?.stopSco()
+            return
+        }
+        btController?.startSco()
+    }
+
+    /**
+     * Сменить BT-настройки на лету. Если активно слушаем и
+     * источник микрофона изменился — пересоздаём SpeechService.
+     */
+    fun applyBluetoothSettings(newSettings: BluetoothSettings) {
+        if (newSettings == btSettings) return
+
+        val prevUseBt = btSettings.enabled && btSettings.deviceAddress != null
+        val newUseBt = newSettings.enabled && newSettings.deviceAddress != null
+        val sameDevice = btSettings.deviceAddress == newSettings.deviceAddress
+
+        btSettings = newSettings
+
+        if (prevUseBt == newUseBt && sameDevice) return
+
+        // Переключаем SCO.
+        if (newUseBt) btController?.startSco() else btController?.stopSco()
+
+        // Пересоздаём микрофонный канал, если активно слушаем.
+        if (listening) {
+            recreateSpeechService()
+        }
     }
 
     private val listener = object : RecognitionListener {
@@ -258,8 +307,6 @@ class VoiceController(
             val text = extractText(hypothesis, "partial")
             if (text.isEmpty()) return
 
-            // FIX 5.8.11-voice-24-debounce: юзер продолжает говорить —
-            // перезапускаем таймер, чтобы не отдать буфер раньше времени.
             if (!pendingText.isNullOrBlank()) {
                 restartPendingTimer()
             }
@@ -272,15 +319,12 @@ class VoiceController(
             if (text.isEmpty()) return
 
             if (isEcho(text)) return
-
             if (isDuplicate(text)) return
 
             acceptFinal(text)
 
             Log.e(TAG, "RESULT: «$text»")
 
-            // FIX 5.8.11-voice-24-debounce:
-            // Мгновенные команды — отдаём сразу, без склейки.
             if (isInstantCommand(text)) {
                 Log.e(TAG, "RESULT: мгновенная команда → flush сразу")
                 pendingText = null
@@ -289,7 +333,6 @@ class VoiceController(
                 return
             }
 
-            // Иначе — в буфер со склейкой.
             val merged = if (pendingText.isNullOrBlank()) text
             else "${pendingText} $text"
             pendingText = merged
@@ -302,15 +345,12 @@ class VoiceController(
             if (text.isEmpty()) return
 
             if (isEcho(text)) return
-
             if (isDuplicate(text)) return
 
             acceptFinal(text)
 
             Log.e(TAG, "FINAL: «$text»")
 
-            // FIX 5.8.11-voice-24-debounce: Vosk сам сказал финал —
-            // склеиваем с буфером и отдаём немедленно.
             val merged = if (pendingText.isNullOrBlank()) text
             else "${pendingText} $text"
             pendingText = merged
@@ -335,7 +375,7 @@ class VoiceController(
     }
 
     // ================================================================
-    // FIX 5.8.11-voice-24-debounce: буфер + таймер
+    // Буфер + таймер
     // ================================================================
 
     private fun isInstantCommand(text: String): Boolean {
@@ -380,24 +420,16 @@ class VoiceController(
 
     private fun isEcho(text: String): Boolean {
         if (System.currentTimeMillis() >= suppressUntil) return false
-
         Log.e(TAG, "VOSK echo suppressed: «$text»")
         return true
     }
 
-    /**
-     * FIX 5.8.6-5c:
-     * Дубликат игнорируется только в коротком окне.
-     * Повтор команды через 600+ мс принимается.
-     */
     private fun isDuplicate(text: String): Boolean {
         val now = System.currentTimeMillis()
-
         if (text == lastFinalText && now - lastFinalAt < DUPLICATE_WINDOW_MS) {
             Log.e(TAG, "VOSK duplicate suppressed: «$text»")
             return true
         }
-
         return false
     }
 
@@ -433,6 +465,12 @@ class VoiceController(
         pendingText = null
         cancelPendingTimer()
 
+        // FIX 5.9-settings-bt: выключить SCO при закрытии диалога.
+        try {
+            btController?.stopSco()
+        } catch (_: Exception) {
+        }
+
         try {
             tts?.stop()
             tts?.shutdown()
@@ -445,7 +483,6 @@ class VoiceController(
 
     private fun extractText(json: String?, field: String): String {
         if (json.isNullOrEmpty()) return ""
-
         return try {
             JSONObject(json).optString(field, "").trim()
         } catch (_: Exception) {
@@ -458,122 +495,39 @@ class VoiceController(
         private const val SAMPLE_RATE = 16000.0f
 
         private const val DEFAULT_SPEECH_RATE = 1.10f
-        // FIX 5.8.11-e4-fix-2: было 800 мс — пользователь не успевал
-        // сказать сразу после ответа ГП. Уменьшено до 250 мс.
-        // Эхо TTS отсекается suppressUntil (см. speak()).
         private const val RESUME_DELAY_MS = 250L
 
         private const val SPEECH_BASE_MS = 600L
         private const val SPEECH_CHAR_MS = 70L
 
-        // FIX 5.8.6-5c: окно подавления дубликатов.
         private const val DUPLICATE_WINDOW_MS = 600L
-
-        // FIX 5.8.11-voice-24-debounce: таймер склейки фраз.
         private const val DEBOUNCE_MS = 1200L
 
-        /**
-         * FIX 5.8.11-voice-24-debounce:
-         * Команды, которые отдаются мгновенно — без задержки склейки.
-         * Всё, что не в этом списке, буферизуется и склеивается
-         * с debounce DEBOUNCE_MS.
-         */
         private val INSTANT_COMMANDS: Set<String> = setOf(
-            // ----------------------------------------------------------
-            // Управление сессией
-            // ----------------------------------------------------------
-            "стоп",
-            "хатит",
-            "хватит",
-            "пауза",
-            "паузу",
-            "продолжить",
-            "продолжай",
-            "отмена",
-            "отменить",
-            "назад",
-            "верни",
-            "вперёд",
-            "вперед",
-            "следующая",
-            "далее",
-            "следующую",
-            "следующий",
-            "дальше",
-
-            // ----------------------------------------------------------
-            // Режим
-            // ----------------------------------------------------------
-            "поиск",
-            "режим поиск",
-            "сортировка",
-            "режим сортировка",
+            "стоп", "хатит", "хватит", "пауза", "паузу",
+            "продолжить", "продолжай",
+            "отмена", "отменить", "назад", "верни", "вперёд", "вперед",
+            "следующая", "далее", "следующую", "следующий", "дальше",
+            "поиск", "режим поиск", "сортировка", "режим сортировка",
             "режим сортировки",
-
-            // ----------------------------------------------------------
-            // Информация
-            // ----------------------------------------------------------
-            "помощь",
-            "команды",
-            "команда",
+            "помощь", "команды", "команда",
             "сколько осталось",
-            "показать отложенные",
-            "отложенные",
-            "показать найденные",
-            "найденные",
-
-            // ----------------------------------------------------------
-            // Массовые
-            // ----------------------------------------------------------
-            "снять все",
-            "сбросить все",
-            "очистить все",
-            "все",
-            "отметь все",
-            "отметить все",
-            "отметьте все",
-            "снять последнюю",
-            "последнюю снять",
-            "снять отложенную",
-            "снять отложенную пробу",
-
-            // ----------------------------------------------------------
-            // Маркеры намерения (ждут продолжения, но команда уже
-            // распознана — её не надо склеивать с ответом)
-            // ----------------------------------------------------------
-            "отметь",
-            "отметить",
-            "отметьте",
-            "снять",
-            "сними",
-            "убрать",
-            "убери",
-            "удали",
-            "удалить",
-            "отложить",
-            "отложи",
-            "перенести",
-            "перенеси",
-
-            // ----------------------------------------------------------
-            // Подтверждение / выбор
-            // ----------------------------------------------------------
-            "подтверждаю",
-            "подтвердить",
-            "отменяю",
-            "пропустить",
-            "пропусти",
-            "эту",
-            "ее",
-            "её",
-            "найденную",
-            "найденное",
-            "отметь эту",
-            "отметить эту",
-            "отметь ее",
-            "отметить ее",
-            "отметь её",
-            "отметить её"
+            "показать отложенные", "отложенные",
+            "показать найденные", "найденные",
+            "снять все", "сбросить все", "очистить все", "все",
+            "отметь все", "отметить все", "отметьте все",
+            "снять последнюю", "последнюю снять",
+            "снять отложенную", "снять отложенную пробу",
+            "отметь", "отметить", "отметьте",
+            "снять", "сними", "убрать", "убери",
+            "удали", "удалить",
+            "отложить", "отложи", "перенести", "перенеси",
+            "подтверждаю", "подтвердить",
+            "отменяю", "пропустить", "пропусти",
+            "эту", "ее", "её", "найденную", "найденное",
+            "отметь эту", "отметить эту",
+            "отметь ее", "отметить ее",
+            "отметь её", "отметить её"
         )
     }
 }
