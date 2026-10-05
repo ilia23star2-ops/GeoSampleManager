@@ -30,6 +30,11 @@ import java.util.UUID
  * sessionId генерируется один раз при загрузке класса (то есть
  * живёт до перезапуска процесса). Все записи сессии помечены им —
  * это позволяет восстановить ход одной сессии в UI.
+ *
+ * FIX 5.9-logs-6:
+ * Параллельно с записью в logs.db каждая запись уходит в
+ * LogFileWriter (файловый архив в Загрузках). Ошибки файла
+ * не влияют на основную запись.
  */
 object LogWriter {
 
@@ -112,7 +117,7 @@ object LogWriter {
             if (entry != null) {
                 buffer += entry
                 if (buffer.size >= BATCH_SIZE) {
-                    writtenSinceTrim += flush(dao, buffer)
+                    writtenSinceTrim += flush(ctx, dao, buffer)
                     if (writtenSinceTrim >= TRIM_AFTER_WRITES) {
                         try {
                             dao.trimToMaxEntries(MAX_ENTRIES)
@@ -124,21 +129,40 @@ object LogWriter {
             } else {
                 // Тайм-аут — сбрасываем то, что успело накопиться.
                 if (buffer.isNotEmpty()) {
-                    writtenSinceTrim += flush(dao, buffer)
+                    writtenSinceTrim += flush(ctx, dao, buffer)
                 }
             }
         }
     }
 
-    private suspend fun flush(dao: LogDao, buffer: MutableList<LogEntry>): Int {
+    /**
+     * FIX 5.9-logs-6:
+     * Батч уходит одновременно в logs.db и в файл (по дням).
+     * Сначала — БД, потом — файл. Ошибка файла не влияет на
+     * результат возврата (считаем записанным то, что в БД).
+     */
+    private suspend fun flush(
+        ctx: Context,
+        dao: LogDao,
+        buffer: MutableList<LogEntry>
+    ): Int {
         if (buffer.isEmpty()) return 0
         val batch = buffer.toList()
         buffer.clear()
-        return try {
+
+        val written = try {
             dao.insertAll(batch)
             batch.size
         } catch (_: Exception) {
             0
         }
+
+        // Файл — после БД. Ошибки глотаются внутри LogFileWriter.
+        try {
+            LogFileWriter.appendBatch(ctx, batch)
+        } catch (_: Exception) {
+        }
+
+        return written
     }
 }

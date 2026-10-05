@@ -38,6 +38,11 @@ import java.util.Locale
  * Тап на запись с details раскрывает технические данные.
  * Для ошибок — level=error, красный текст, полный stacktrace
  * в раскрытии.
+ *
+ * FIX 5.9-logs-6:
+ * Очистка — двойной диалог с чек-боксом подтверждения.
+ * О файлах в Загрузках ничего не упоминаем — они не удаляются
+ * из UI.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,7 +63,9 @@ fun LogsScreen(
         }
     }
 
-    var showClearConfirm by remember { mutableStateOf(false) }
+    // FIX 5.9-logs-6: двойное подтверждение очистки.
+    var showClearStep1 by remember { mutableStateOf(false) }
+    var showClearStep2 by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -71,7 +78,7 @@ fun LogsScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { showClearConfirm = true },
+                        onClick = { showClearStep1 = true },
                         enabled = records.isNotEmpty()
                     ) {
                         Icon(
@@ -143,21 +150,62 @@ fun LogsScreen(
         }
     }
 
-    if (showClearConfirm) {
+    // FIX 5.9-logs-6: первый диалог.
+    if (showClearStep1) {
         AlertDialog(
-            onDismissRequest = { showClearConfirm = false },
+            onDismissRequest = { showClearStep1 = false },
             title = { Text("Очистить журнал?") },
             text = {
                 Text(
-                    "Все записи журнала будут удалены безвозвратно. " +
+                    "Вы потеряете всю историю событий в приложении. " +
                             "Данные проб, нарядов и фото не пострадают."
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
+                        showClearStep1 = false
+                        showClearStep2 = true
+                    }
+                ) { Text("Продолжить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearStep1 = false }) { Text("Отмена") }
+            }
+        )
+    }
+
+    // FIX 5.9-logs-6: второй диалог — с чек-боксом.
+    if (showClearStep2) {
+        var confirmed by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showClearStep2 = false },
+            title = { Text("Последнее подтверждение") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "Записи журнала будут удалены безвозвратно. " +
+                                "Действие необратимо."
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = confirmed,
+                            onCheckedChange = { confirmed = !confirmed }
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Понимаю, что удалю все записи журнала",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = confirmed,
+                    onClick = {
+                        showClearStep2 = false
                         viewModel.clearAll()
-                        showClearConfirm = false
                     },
                     colors = ButtonDefaults.textButtonColors(
                         contentColor = MaterialTheme.colorScheme.error
@@ -165,7 +213,7 @@ fun LogsScreen(
                 ) { Text("Очистить") }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) { Text("Отмена") }
+                TextButton(onClick = { showClearStep2 = false }) { Text("Отмена") }
             }
         )
     }
