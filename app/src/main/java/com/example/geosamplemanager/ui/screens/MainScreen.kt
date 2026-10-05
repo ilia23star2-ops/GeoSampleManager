@@ -7,6 +7,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.PlayArrow
@@ -15,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -27,24 +29,23 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.9-main:
- * Вкладка «Главная» — сводка, продолжить, незавершённые, проблемы.
+ * FIX 5.9-main / 5.9-main-fix: сводка, продолжить, незавершённые, проблемы.
  *
- * FIX 5.9-main-fix:
- *  - убран вложенный Scaffold. Внешний Scaffold в AppScaffold
- *    уже есть, а вложенный вызывает ArrayIndexOutOfBoundsException
- *    в Compose Runtime (внутри AnimatedContent у Material3 Scaffold);
- *  - убран `return@Column` из SummaryCard: заменён на if/else if/else;
- *  - DbStatusBadge без деструктуризации Triple.
+ * FIX 5.9-main-b:
+ *  - кнопка «Сделать отчёт» в карточке сводки;
+ *  - диалог выбора наряда (ReportPickerDialog) с фильтром «готовые»;
+ *  - onOpenReport(orderId) — колбэк в NavGraph для перехода в Статистику.
  */
 @Composable
 fun MainScreen(
     onNavigate: (Screen) -> Unit,
     onOpenOrder: (orderId: Long, areaTitle: String, orderTitle: String) -> Unit,
+    onOpenReport: (orderId: Long) -> Unit,
     viewModel: MainViewModel = viewModel()
 ) {
     val info by viewModel.info.collectAsState()
     val unfinished by viewModel.unfinished.collectAsState()
+    val allOrders by viewModel.allOrders.collectAsState()
     val continueInfo by viewModel.continueInfo.collectAsState()
     val problems by viewModel.problems.collectAsState()
     val loading by viewModel.loading.collectAsState()
@@ -62,6 +63,7 @@ fun MainScreen(
     }
 
     var showAllUnfinished by remember { mutableStateOf(false) }
+    var showReportPicker by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -75,7 +77,14 @@ fun MainScreen(
                 info = info,
                 problems = problems,
                 loading = loading,
-                onRefresh = { viewModel.reload() }
+                onRefresh = { viewModel.reload() },
+                onMakeReport = {
+                    if (allOrders.isEmpty()) {
+                        // Нечего выбирать — молча ничего не делаем.
+                    } else {
+                        showReportPicker = true
+                    }
+                }
             )
 
             val ci = continueInfo
@@ -114,6 +123,18 @@ fun MainScreen(
                 .padding(16.dp)
         )
     }
+
+    if (showReportPicker) {
+        ReportPickerDialog(
+            orders = allOrders,
+            initialReadyOnly = true,
+            onPick = { orderId ->
+                showReportPicker = false
+                onOpenReport(orderId)
+            },
+            onDismiss = { showReportPicker = false }
+        )
+    }
 }
 
 // ============================================================
@@ -125,7 +146,8 @@ private fun SummaryCard(
     info: MainInfo?,
     problems: DbProblems?,
     loading: Boolean,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onMakeReport: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -211,7 +233,39 @@ private fun SummaryCard(
                     Spacer(Modifier.height(12.dp))
                     SummaryNumbers(info)
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
+
+                    // FIX 5.9-main-b: кнопка «Сделать отчёт».
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable { onMakeReport() }
+                            .padding(vertical = 8.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Filled.Description,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Сделать отчёт",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "Выбрать наряд →",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(Modifier.height(6.dp))
                     Text(
                         "Изменена ${formatTimestamp(info.lastModified)} · " +
                                 "${formatSize(info.dbSizeBytes)} · " +

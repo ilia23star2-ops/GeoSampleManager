@@ -14,13 +14,11 @@ import kotlinx.coroutines.withContext
 
 /**
  * FIX 5.9-main-a:
- * ViewModel вкладки «Главная».
+ * ViewModel вкладки «Главная» — сводка, «Продолжить», незавершённые,
+ * проблемы БД (лёгкая проверка сирот).
  *
- * Сводка по базе, блок «Продолжить работу» (последний наряд
- * из SessionState), список незавершённых нарядов, проблемы БД
- * (лёгкая проверка — сироты).
- *
- * Полная диагностика (фото, ссылки) — по кнопке в БД.
+ * FIX 5.9-main-b:
+ *  - добавлен allOrders — полный список нарядов для диалога отчёта.
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -33,6 +31,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _unfinished = MutableStateFlow<List<UnfinishedOrder>>(emptyList())
     val unfinished: StateFlow<List<UnfinishedOrder>> = _unfinished.asStateFlow()
+
+    /**
+     * FIX 5.9-main-b:
+     * Полный список нарядов (с непустыми пробами). Для диалога отчёта.
+     */
+    private val _allOrders = MutableStateFlow<List<OrderPickerItem>>(emptyList())
+    val allOrders: StateFlow<List<OrderPickerItem>> = _allOrders.asStateFlow()
 
     private val _continueInfo = MutableStateFlow<ContinueInfo?>(null)
     val continueInfo: StateFlow<ContinueInfo?> = _continueInfo.asStateFlow()
@@ -79,21 +84,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val samplesByOrder = allSamples.groupBy { it.orderId }
 
         val unfinishedList = mutableListOf<UnfinishedOrder>()
+        val pickerList = mutableListOf<OrderPickerItem>()
         var readyCount = 0
 
         allOrders.forEach { order ->
             val samples = samplesByOrder[order.id].orEmpty()
             val total = samples.size
+            if (total == 0) return@forEach
             val found = samples.count { it.found }
-            if (total == 0) return@forEach  // пустой наряд — не показываем
+            val areaTitle = areaNameById[order.areaId] ?: "—"
+            val orderTitle = "Наряд №${order.orderNumber}"
+
+            pickerList.add(
+                OrderPickerItem(
+                    orderId = order.id,
+                    orderTitle = orderTitle,
+                    areaTitle = areaTitle,
+                    total = total,
+                    found = found
+                )
+            )
+
             if (found == total) {
                 readyCount++
             } else {
                 unfinishedList.add(
                     UnfinishedOrder(
                         orderId = order.id,
-                        orderTitle = "Наряд №${order.orderNumber}",
-                        areaTitle = areaNameById[order.areaId] ?: "—",
+                        orderTitle = orderTitle,
+                        areaTitle = areaTitle,
                         total = total,
                         found = found
                     )
@@ -101,8 +120,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Сортировка: по % (сначала близкие к готовности), потом по названию.
-        val sorted = unfinishedList.sortedWith(
+        val sortedUnfinished = unfinishedList.sortedWith(
             compareByDescending<UnfinishedOrder> { it.percent }
                 .thenBy { it.orderTitle }
         )
@@ -154,16 +172,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             lastModified = dbInfo.lastModified,
             freeBytes = freeBytes
         )
-        _unfinished.value = sorted
+        _unfinished.value = sortedUnfinished
+        _allOrders.value = pickerList.sortedWith(
+            compareByDescending<OrderPickerItem> { it.isReady }
+                .thenByDescending { it.percent }
+                .thenBy { it.orderTitle }
+        )
         _continueInfo.value = continueInfo
         _problems.value = problems
     }
 }
 
-/**
- * FIX 5.9-main-a:
- * Сводка для Главной. Чистая модель — тестируется в JVM.
- */
 data class MainInfo(
     val areas: Int,
     val orders: Int,
@@ -191,10 +210,6 @@ data class MainInfo(
     val isEmpty: Boolean get() = areas == 0 && orders == 0 && samples == 0
 }
 
-/**
- * FIX 5.9-main-a:
- * Один незавершённый наряд для списка на Главной.
- */
 data class UnfinishedOrder(
     val orderId: Long,
     val orderTitle: String,
@@ -210,9 +225,22 @@ data class UnfinishedOrder(
 }
 
 /**
- * FIX 5.9-main-a:
- * Данные блока «Продолжить работу».
+ * FIX 5.9-main-b:
+ * Элемент диалога выбора наряда для отчёта.
  */
+data class OrderPickerItem(
+    val orderId: Long,
+    val orderTitle: String,
+    val areaTitle: String,
+    val total: Int,
+    val found: Int
+) {
+    val isReady: Boolean get() = total > 0 && found == total
+
+    val percent: Int
+        get() = if (total <= 0) 0 else (found * 100 / total).coerceIn(0, 100)
+}
+
 data class ContinueInfo(
     val orderId: Long,
     val orderTitle: String,
@@ -228,11 +256,6 @@ data class ContinueInfo(
         get() = if (total <= 0) 0f else (found.toFloat() / total).coerceIn(0f, 1f)
 }
 
-/**
- * FIX 5.9-main-a:
- * Проблемы БД. Лёгкая проверка — только SQL-сироты.
- * Полная — по кнопке в БД.
- */
 data class DbProblems(
     val orphanOrders: Int,
     val orphanSamples: Int,

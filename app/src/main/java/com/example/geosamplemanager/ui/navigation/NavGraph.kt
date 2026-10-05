@@ -20,14 +20,11 @@ import com.example.geosamplemanager.ui.screens.*
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.9-db-soft-restart: startDestination из initialRoute.
- * FIX 5.9-logs-3: логирование переходов.
- * FIX 5.9-main: onNavigate для быстрых действий.
+ * FIX 5.9-main-a: onOpenOrder — переход в Сверку с нарядом.
  *
- * FIX 5.9-main-a:
- *  - onOpenOrder — переход на Сверку с конкретным нарядом;
- *  - запрос сохраняется в GeoSampleApp.pendingSearchRequest,
- *    ReconciliationViewModel читает его в init.
+ * FIX 5.9-main-b:
+ *  - onOpenReport — переход в Статистику с открытием диалога формата
+ *    для выбранного наряда. Через app.requestReportFor(orderId).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,6 +117,10 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                         onOpenOrder = { orderId, areaTitle, orderTitle ->
                             app.requestSearchForOrder(orderId, areaTitle, orderTitle)
                             navigateTo(Screen.SEARCH)
+                        },
+                        onOpenReport = { orderId ->
+                            app.requestReportFor(orderId)
+                            navigateTo(Screen.STATS)
                         }
                     )
                 }
