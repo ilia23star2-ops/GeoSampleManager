@@ -13,6 +13,7 @@ import com.example.geosamplemanager.data.session.SessionStateRepository
 import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.AppearanceSettingsRepository
 import com.example.geosamplemanager.data.settings.SettingsRepository
+import com.example.geosamplemanager.data.stats.SessionTracker
 import com.example.geosamplemanager.data.stats.StatsDatabase
 import com.example.geosamplemanager.data.voice.VoiceSettingsRepository
 import com.example.geosamplemanager.data.voice.VoiceTtsHolder
@@ -34,13 +35,11 @@ import org.vosk.Model
  * FIX 5.9-settings-theme: тема в AppearanceSettings.
  * FIX 5.9-main-a: sessionStateRepository, pendingSearchRequest.
  * FIX 5.9-main-b: pendingReportRequest.
+ * FIX 5.10-stat-model: statsDatabase (ленивая).
  *
- * FIX 5.10-stat-model:
- *  - statsDatabase — ленивая инициализация StatsDatabase.
- *    Создаётся при первом обращении, не в onCreate, чтобы не
- *    тормозить старт.
- *  - в onTerminate — закрытие StatsDatabase для симметрии
- *    с LogsDatabase.
+ * FIX 5.10-stat-session:
+ *  - SessionTracker.init(this) и SessionTracker.onAppStart() в onCreate.
+ *    Открывает новую сессию (перед этим закрывает висящую как crash).
  */
 data class RestartRequest(val tick: Int, val route: String)
 
@@ -77,10 +76,6 @@ class GeoSampleApp : Application() {
     lateinit var sessionStateRepository: SessionStateRepository
         private set
 
-    /**
-     * FIX 5.10-stat-model:
-     * Ленивая инициализация — БД создаётся при первом обращении.
-     */
     val statsDatabase: StatsDatabase by lazy {
         StatsDatabase.getInstance(this)
     }
@@ -119,6 +114,10 @@ class GeoSampleApp : Application() {
         _appearance.value = appearanceSettingsRepository.load()
 
         sessionStateRepository = SessionStateRepository(this)
+
+        // FIX 5.10-stat-session: трекер сессии.
+        SessionTracker.init(this)
+        SessionTracker.onAppStart()
 
         VoiceTtsHolder.init(this)
 
