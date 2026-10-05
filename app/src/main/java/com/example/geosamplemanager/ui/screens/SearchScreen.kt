@@ -49,27 +49,16 @@ import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * FIX 5.9-table-responsive: горизонтальный скролл таблицы на телефоне.
- *
- * FIX 5.9-row-highlight: тап по строке — выделяет, повторный — снимает.
- *
- * FIX 5.9-edit-search-save-fix:
- *  - «Редактировать» в меню пробы → EditSampleDialog;
- *  - onSave → viewModel.saveEditedRow(updated), изменения сохраняются.
- *
- * FIX 5.9-edit-save-guard:
- *  - EditSampleDialog получает findConflict по БД — занятость №
- *    другой пробой в этом же наряде.
- *
- * FIX 5.9-settings-bt-3:
- *  - при открытии VoiceDialog подгружаются BluetoothSettings из
- *    GeoSampleApp.bluetoothSettingsRepository и передаются в диалог,
- *    чтобы ГП слушал через выбранную BT-гарнитуру.
+ * FIX 5.9-settings-sound-3-fix:
+ *  - openVoiceDialog и micPermissionLauncher стоят ДО requestMic —
+ *    Kotlin требует локальные функции определять до использования;
+ *  - настройки грузятся ДО открытия диалога.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -149,14 +138,9 @@ fun SearchScreen(
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
 
-    // FIX 5.9-settings-bt-3: BT-настройки читаются при открытии ГП.
     val app = context.applicationContext as GeoSampleApp
     var btSettings by remember { mutableStateOf(BluetoothSettings()) }
-    LaunchedEffect(voiceDialogOpen) {
-        if (voiceDialogOpen) {
-            btSettings = app.bluetoothSettingsRepository.load()
-        }
-    }
+    var voiceSettings by remember { mutableStateOf(VoiceSettings()) }
 
     var noteText by remember { mutableStateOf("") }
     var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
@@ -184,6 +168,25 @@ fun SearchScreen(
     fun hasCamera(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
+
+    // FIX 5.9-settings-sound-3-fix:
+    // Грузим настройки из репозиториев ДО открытия диалога.
+    fun openVoiceDialog() {
+        scope.launch {
+            btSettings = app.bluetoothSettingsRepository.load()
+            voiceSettings = app.voiceSettingsRepository.load()
+            voiceDialogOpen = true
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) openVoiceDialog()
+        else scope.launch {
+            snackbarHostState.showSnackbar("Без разрешения микрофона голос не работает")
+        }
+    }
 
     val takePictureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
@@ -225,15 +228,6 @@ fun SearchScreen(
         }
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) voiceDialogOpen = true
-        else scope.launch {
-            snackbarHostState.showSnackbar("Без разрешения микрофона голос не работает")
-        }
-    }
-
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -253,7 +247,7 @@ fun SearchScreen(
     }
 
     fun requestMic() {
-        if (hasMic()) voiceDialogOpen = true
+        if (hasMic()) openVoiceDialog()
         else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
@@ -567,11 +561,11 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.9-settings-bt-3: передаём btSettings в VoiceDialog.
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
                 btSettings = btSettings,
+                voiceSettings = voiceSettings,
                 onDismiss = { voiceDialogOpen = false }
             )
         }

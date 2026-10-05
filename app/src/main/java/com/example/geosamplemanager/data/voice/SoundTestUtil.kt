@@ -6,13 +6,13 @@ import android.util.Log
 import java.util.Locale
 
 /**
- * FIX 5.9-settings-sound:
- * Утилита для теста TTS из настроек — «Проверить TTS».
+ * FIX 5.9-settings-sound / -3-fix-2:
+ * Утилита для теста TTS из настроек — «Проверить озвучку».
  *
- * Играет короткую фразу с указанной громкостью. Не трогает
- * основной VoiceController (не глушит микрофон, не работает
- * с Vosk). Отдельный TextToSpeech, создаётся и уничтожается
- * по запросу.
+ * Играет короткую фразу с указанной громкостью и скоростью.
+ * Не трогает основной VoiceController (не глушит микрофон, не
+ * работает с Vosk). Отдельный TextToSpeech, создаётся и
+ * уничтожается по запросу.
  */
 object SoundTestUtil {
 
@@ -24,6 +24,7 @@ object SoundTestUtil {
     fun speakTest(
         context: Context,
         volume: TtsVolume,
+        speed: Float = VoiceSettings.DEFAULT_TTS_SPEED,
         onDone: (() -> Unit)? = null
     ) {
         if (volume == TtsVolume.OFF) {
@@ -42,7 +43,7 @@ object SoundTestUtil {
 
             try {
                 tts?.language = Locale("ru", "RU")
-                tts?.setSpeechRate(1.10f)
+                tts?.setSpeechRate(speed)
 
                 val params = android.os.Bundle().apply {
                     putFloat(
@@ -84,18 +85,9 @@ object SoundTestUtil {
         }
     }
 
-    /**
-     * Проигрывает по очереди три сигнала (OK, ATTENTION, ERROR),
-     * чтобы пользователь услышал, как звучит каждый.
-     * Между сигналами — пауза, чтобы гвардия от серии не глушила
-     * повторы.
-     */
     fun playAllSignals(context: Context, settings: VoiceSettings) {
         val feedback = VoiceFeedback(context)
         feedback.applySettings(settings)
-        // Гвардия от серии не сработает, если типы разные.
-        // OK → пауза 350 мс → ATTENTION → 2100 мс → ERROR.
-        // Проще: играем в три приёма через Handler.
         feedback.soundOk()
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             feedback.soundAttention()
@@ -103,7 +95,6 @@ object SoundTestUtil {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             feedback.soundError()
         }, 2500L)
-        // Освобождение — через 4 сек, когда всё отыграно.
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             feedback.release()
         }, 4000L)

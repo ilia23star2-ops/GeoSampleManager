@@ -24,25 +24,23 @@ import java.util.Locale
 /**
  * Обёртка над Vosk + TTS.
  *
- * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
- *
- * FIX 5.8.6-2: скорость TTS 1.10, увеличенная задержка возобновления.
- * FIX 5.8.6-5c: time-based debounce 600 мс.
- * FIX 5.8.11-voice-24-debounce: буфер + таймер склейки.
- * FIX 5.8.11-e4-fix-2: RESUME_DELAY_MS до 250 мс.
+ * FIX 5.8.6-2, 5.8.6-5c, 5.8.11-voice-24-debounce, 5.8.11-e4-fix-2.
  * FIX 5.9-settings-bt: BluetoothSettings + SCO.
+ * FIX 5.9-settings-sound: ttsVolume.
  *
- * FIX 5.9-settings-sound:
- *  - ttsVolume применяется реально: OFF — молчание,
- *    QUIET/NORMAL/LOUD — разная громкость через KEY_PARAM_VOLUME;
- *  - applyVoiceSettings(settings) — сменить настройки на лету.
+ * FIX 5.9-settings-sound-3-fix-2:
+ *  - ttsSpeed: Float вместо enum;
+ *  - setSpeechRate применяется перед каждым speak() — некоторые
+ *    движки TTS сбрасывают скорость при внутренних реинициализациях;
+ *  - оценка длительности фразы делится на скорость.
  */
 class VoiceController(
     private val context: Context,
     private val callback: VoiceCallback,
     private var btSettings: BluetoothSettings = BluetoothSettings(),
     private val btController: BluetoothController? = null,
-    private var ttsVolume: TtsVolume = TtsVolume.NORMAL
+    private var ttsVolume: TtsVolume = TtsVolume.NORMAL,
+    private var ttsSpeed: Float = VoiceSettings.DEFAULT_TTS_SPEED
 ) {
 
     private val app = context.applicationContext as GeoSampleApp
@@ -76,11 +74,10 @@ class VoiceController(
             if (status == TextToSpeech.SUCCESS) {
                 try {
                     tts?.language = Locale("ru", "RU")
-                    tts?.setSpeechRate(DEFAULT_SPEECH_RATE)
+                    tts?.setSpeechRate(ttsSpeed)
 
                     ttsReady = true
-                    Log.e(TAG, "TTS готов, скорость=$DEFAULT_SPEECH_RATE, " +
-                            "громкость=$ttsVolume")
+                    Log.e(TAG, "TTS готов, скорость=$ttsSpeed, громкость=$ttsVolume")
                 } catch (e: Exception) {
                     Log.e(TAG, "TTS: ошибка языка", e)
                 }
@@ -114,7 +111,6 @@ class VoiceController(
             Log.d(TAG, "speak: TTS не готов, пропускаю")
             return
         }
-        // FIX 5.9-settings-sound: OFF — полное молчание.
         if (ttsVolume == TtsVolume.OFF) {
             Log.d(TAG, "speak: TTS выключен (OFF), пропускаю")
             return
@@ -126,6 +122,12 @@ class VoiceController(
         suppressUntil = System.currentTimeMillis() + estimateSpeechMs(clean)
 
         try {
+            // FIX 5.9-settings-sound-3-fix-2:
+            // ставим скорость перед каждым произнесением — так изменение
+            // ползунка срабатывает со следующей же фразы, даже если
+            // движок TTS сбросил настройку сам.
+            tts?.setSpeechRate(ttsSpeed)
+
             val params = Bundle().apply {
                 putFloat(
                     TextToSpeech.Engine.KEY_PARAM_VOLUME,
@@ -143,16 +145,24 @@ class VoiceController(
         }
     }
 
-    /**
-     * FIX 5.9-settings-sound:
-     * Сменить голосовые настройки на лету.
-     */
     fun applyVoiceSettings(settings: VoiceSettings) {
         ttsVolume = settings.ttsVolume
+        val newSpeed = settings.ttsSpeedValue
+        if (newSpeed != ttsSpeed) {
+            ttsSpeed = newSpeed
+            try {
+                tts?.setSpeechRate(ttsSpeed)
+                Log.i(TAG, "applyVoiceSettings: скорость=$ttsSpeed")
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun estimateSpeechMs(text: String): Long {
-        return SPEECH_BASE_MS + text.length * SPEECH_CHAR_MS
+        // Оценка длительности с учётом скорости (rate > 1 → короче).
+        val base = SPEECH_BASE_MS + text.length * SPEECH_CHAR_MS
+        val rate = if (ttsSpeed > 0f) ttsSpeed else 1.0f
+        return (base / rate).toLong()
     }
 
     private fun pauseVosk() {
@@ -343,10 +353,6 @@ class VoiceController(
         }
     }
 
-    // ================================================================
-    // Буфер + таймер
-    // ================================================================
-
     private fun isInstantCommand(text: String): Boolean {
         val norm = text.lowercase()
             .trim('.', ',', '!', '?', ';', ':')
@@ -442,7 +448,6 @@ class VoiceController(
         private const val TAG = "VoiceController"
         private const val SAMPLE_RATE = 16000.0f
 
-        private const val DEFAULT_SPEECH_RATE = 1.10f
         private const val RESUME_DELAY_MS = 250L
 
         private const val SPEECH_BASE_MS = 600L
@@ -451,10 +456,6 @@ class VoiceController(
         private const val DUPLICATE_WINDOW_MS = 600L
         private const val DEBOUNCE_MS = 1200L
 
-        /**
-         * FIX 5.9-settings-sound:
-         * Громкость TTS: KEY_PARAM_VOLUME — float от 0.0 до 1.0.
-         */
         private fun ttsVolumeFloat(volume: TtsVolume): Float = when (volume) {
             TtsVolume.OFF -> 0.0f
             TtsVolume.QUIET -> 0.4f
