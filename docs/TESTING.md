@@ -1,7 +1,7 @@
 # TESTING.md — что и как тестировать
 
 > JUnit 4.13.2. Тесты в `app/src/test/java/com/example/geosamplemanager/`.
-> Имена тестов — **только латиница** (backtick-кириллица ломает Gradle).
+> Имена тестов — **только латиница**.
 
 ---
 
@@ -9,23 +9,11 @@
 
 **Тестируем критичное, что легко сломать молча.**
 
-- Парсеры (Excel, голос, числа, запросы).
-- Поиск (уровни `UnifiedSearch`, fuzzy).
-- Доменные решения (`MarkDecision`, `analyzeMark`).
-- Маппинг результатов (`ResponseMapper`).
-- Логика undo/redo.
-- Отчёты (XLSX, HTML).
-- Чистые функции вкладки Редактирование.
-- Чистая логика БД-бэкапов, слияния, сравнения, диагностики
-  (`RollbackBackups`, `PublicBackupsLister`, `BackupManifest`,
-  `CleanConfirmState`, `BackupManagerStats`, `MergeEngine`,
-  `CompareEngine`, `DbDiagnosticsEngine`).
-- Формат журнала (`LogFileWriter`, `LogFormatter`, `LogsFilter`,
-  `SampleRowDiff`, `CrashRecord`).
-- Миграции БД.
+Парсеры, поиск, доменные решения, чистые функции отчётов,
+чистую логику БД-операций (бэкапы, merge, compare, diagnostics),
+формат журнала, миграции БД.
 
-UI не тестируем — проверяем руками. I/O, zip, MediaStore, БД —
-device-check.
+UI, I/O, Vosk, TTS, MediaStore, реальная БД — device-check.
 
 **Правило (§21 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
 
@@ -33,101 +21,63 @@ device-check.
 
 ## Что уже есть
 
-### `data/voice/`
+### `data/voice/` — ГП
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `VoiceNumberParserTest.kt` | «сто двадцать четыре» → 124 | 12 |
-| `VoicePrefixResolverTest.kt` | «капэдэ» → KPD, «энвэ» → NV | 7 |
-| `VoiceCommandParserTest.kt` | «первая» → `MarkOrdinal(1)` | 12 |
-| `WeightVoiceParserTest.kt` | «два и шесть» → 2.6 | 19 |
-| `UnifiedSearchTest.kt` | Уровни поиска | 18 |
-| `AnswerStateTest.kt` | `AnswerState` из `AnswerReason` | 22 |
-| `VoiceCommandParserFindTest.kt` | «найди X» | 8 |
-| `VoiceCommandParserPausedTest.kt` | PAUSED | 6 |
-| `VoiceCommandParserPin3Test.kt` | pin: «дальше», «следующая X» | 10 |
-| `VoiceCommandParserPin4Test.kt` | pin: склейка числительных | 7 |
-| `VoiceCommandParserPinnedTest.kt` | `FOUND_PINNED` | 8 |
-| `VoiceCommandParserQueueTest.kt` | Очередь | 6 |
-| `VoiceCommandParserWeightsTest.kt` | Вес | 17 |
-| `VoiceMarkOrdinalFallbackTest.kt` | `hintFor` | 27 |
-| `VoiceMarkersTest.kt` | Маркеры, отложение | 17 |
-| `VoiceSpeakerTest.kt` | `spellMimicry`, `splitLikeHuman` | 19 |
+`VoiceNumberParserTest`, `VoicePrefixResolverTest`,
+`VoiceCommandParserTest`, `WeightVoiceParserTest`,
+`UnifiedSearchTest`, `AnswerStateTest`, `VoiceSpeakerTest`,
+`VoiceNumberParserSortTest` (новый, 5.9-sort-normalize),
++ серия pin/markers/queue/paused/weights/fallback — все зелёные.
 
 ### `data/backup/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `RollbackBackupsTest.kt` | Парсер имени, фильтр, сортировка, ротация, merge, fromPublic | 30 |
-| `PublicBackupsListerTest.kt` | `extractSubDir`, `isAutoBackupSubDir` | 19 |
-| `PublicBackupsMigratorTest.kt` | `subdirFor` | 10 |
-| `BackupManifestTest.kt` | Парсер `manifest.json`, `operation` | 6 |
-| `BackupManagerStatsTest.kt` | `summarize`, `formatSize` | 11 |
+`RollbackBackupsTest`, `PublicBackupsListerTest`,
+`PublicBackupsMigratorTest`, `BackupManifestTest`,
+`BackupManagerStatsTest`.
 
 ### `data/merge/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `MergeEngineTest.kt` | `planAreas` / `planOrders` / `planSamples` / `planWells` / `planNotes` / `planPhotos`, `diffFields`, `resolveSample`, `displayFor`, `FieldResolution`, `buildConflictTree`, `extractArchivePhotoName`, `MergeStats` | ~80 |
+`MergeEngineTest` — ~80 тестов.
 
 ### `data/compare/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `CompareEngineTest.kt` | `buildResult` — 4 дерева, ключи сопоставления, конфликты | 11 |
+`CompareEngineTest` — 11.
 
 ### `data/diagnostics/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `DbDiagnosticsEngineTest.kt` | `detect` — сироты, битые ссылки, флаг `has_photo` | 14 |
+`DbDiagnosticsEngineTest` — 14.
 
 ### `data/logs/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `LogCategoryTest.kt` | Коды, русские метки, маппинг | 4 |
-| `LogLevelTest.kt` | Уровни, метки, маппинг | 3 |
-| `LogFormatterTest.kt` | Формат даты и времени | 5 |
-| `DetailsJsonTest.kt` | Кодирование и декодирование JSON | 8 |
-| `LogEntryBuilderTest.kt` | Fluent-API builder'а | 11 |
-| `CrashRecordTest.kt` | Round-trip записи о крэше | 6 |
-| `LogsFilterTest.kt` | Фильтр журнала, метки | 6 |
-| `LogFileWriterTest.kt` | Формат строки файла, Unicode-маркеры, шапка дня | 11 |
-| `SampleRowDiffTest.kt` | Diff между старой и новой пробой | 11 |
+`LogCategoryTest`, `LogLevelTest`, `LogFormatterTest`,
+`DetailsJsonTest`, `LogEntryBuilderTest`, `CrashRecordTest`,
+`LogsFilterTest`, `LogFileWriterTest`, `SampleRowDiffTest` — ~65.
 
 ### `data/reconciliation/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `MarkDecisionTest.kt` | `analyzeMark` | 27 |
+`MarkDecisionTest` — 27.
 
 ### `data/report/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `MultiHtmlReportGeneratorTest.kt` | Мультинарядный HTML | 17 |
-| `ReportHtmlGeneratorTest.kt` | Одиночный HTML | 26 |
-| `XlsxMultiReportBuilderTest.kt` | Мульти XLSX | 20 |
-| `XlsxReportBuilderTest.kt` | Одиночный XLSX | 27 |
-| `XlsxWriterTest.kt` | Низкоуровневый zip/XML | 32 |
+`XlsxWriterTest`, `XlsxReportBuilderTest`,
+`XlsxMultiReportBuilderTest`, `ReportHtmlGeneratorTest`,
+`MultiHtmlReportGeneratorTest` — ~120.
+
+### `data/settings/` (5.9-settings)
+
+- `UiScaleTest` — 7.
+- `AppThemeTest` — 7.
 
 ### `ui/screens/`
 
-| Файл | Что проверяет | Тестов |
-|---|---|---|
-| `AnalyzeMatchTest.kt` | `analyzeMatch` | 18 |
-| `ReconciliationWeightQueueTest.kt` | `buildWeightQueue` | 11 |
-| `SearchScrollTopTest.kt` | `shouldShowScrollTop` | 5 |
-| `EditViewModelTest.kt` | `buildEditTree` | 17 |
-| `EditScreenTreeItemsTest.kt` | `buildTreeItems` | 8 |
-| `EditSearchFilterTest.kt` | `applyEditFilters` | 18 |
-| `EditAddSampleTest.kt` | `planInsertPosition` и др. | 21 |
-| `EditMultiselectTest.kt` | `applyMultiselectToggle` | 13 |
-| `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
-| `CleanConfirmStateTest.kt` | `CleanConfirmState` | 6 |
+`AnalyzeMatchTest`, `ReconciliationWeightQueueTest`,
+`SearchScrollTopTest`, `EditViewModelTest`, `EditScreenTreeItemsTest`,
+`EditSearchFilterTest`, `EditAddSampleTest`, `EditMultiselectTest`,
+`EditMassOpsTest`, `CleanConfirmStateTest`,
+`HelpTopicTest` (новый, 5.9-settings-help-1),
+`MainInfoTest` (новый, 5.9-main).
 
-**Всего: ~630 тестов.** Все зелёные.
+**Всего: ~700 тестов.** Все зелёные.
 
 ---
 
@@ -135,59 +85,49 @@ device-check.
 
 ### Приоритет 1
 
-- `QueryTokenizerTest.kt`, `QueryNormalizerTest.kt`.
-- `DigitGrouperTest.kt`, `GroupToCandidatesTest.kt`.
-- `SearchServiceTest.kt`, `VoiceSessionStateTest.kt`.
+- `AppDatabaseTest` — миграции (device-check).
+- `GsmBackupWriterTest`, `GsmBackupReaderTest` — если решим.
 
-### Приоритет 3
+### Приоритет 2 (5.10)
 
-- `AppDatabaseTest.kt` — миграции. Только device-check.
-- `GsmBackupWriterTest.kt`, `GsmBackupReaderTest.kt` — если решим.
+- Тесты теневой статистики — см. `docs/SHADOW_STATS.md` (черновик).
+- `SessionStateRepositoryTest`.
 
 ---
 
 ## Что НЕ покрываем тестами
 
 - **Vosk** — галлюцинации, распознавание. Device-check.
-- **TTS** — произношение, кулдаун.
+- **TTS** — произношение, кулдаун, скорость.
 - **Compose UI** — отдельная тема.
 - **Реальная БД** — только миграции.
-- **`ReconciliationViewModel`, `EditViewModel`, `DbViewModel`** —
-  связаны с Application. Device-check.
-- **Backup/restore, merge, compare, diagnostics** — io + zip +
-  замена файлов. Device-check.
-- **MediaStore** — реальные запросы. Device-check.
-- **`LogWriter`, `LogFileWriter` (I/O), `CrashHandler`** — I/O,
-  MediaStore, Application. Device-check.
+- **ViewModel'и с Application** — device-check.
+- **Backup/restore, merge, compare, diagnostics** — io + zip.
+- **MediaStore.**
+- **`LogWriter`, `LogFileWriter` (I/O), `CrashHandler`.**
+- **`ExitBackupWriter`** — I/O + zip, device-check.
 
 ---
 
 ## Как запускать
 
-### В Android Studio
-
+### Android Studio
 ПКМ по `app/src/test/` → **Run 'Tests in …'**.
 
-### В терминале
-./gradlew testDebugUnitTest
+### Терминал
+./gradlew testDebugUnitTest --no-daemon --max-workers=1
 
 text
-
 Отчёт: `app/build/reports/tests/testDebugUnitTest/index.html`.
 
 ### Автоматически на PR
-
 CI (`.github/workflows/build.yml`):
 - Job **`unit-tests`** — на каждый PR в `main` и `feature/*`.
 - Блокирует merge при красном.
 
 ### Вручную (Actions)
-
 Actions → **Build & Test** → **Run workflow**.
-
-Артефакты:
-- `test-report` — HTML.
-- `app-debug` — APK (если `build_apk`).
+Артефакты: `test-report` (HTML), `app-debug` (APK).
 
 ---
 
@@ -198,22 +138,20 @@ Actions → **Build & Test** → **Run workflow**.
 3. **Один тест — одна проверка.**
 4. **Не тестировать UI.**
 5. **Не тестировать БД целиком.** Только миграции.
-6. **Тест должен проходить за <100 мс.**
-7. **Комментарии в тестах — на русском.**
+6. **Тест < 100 мс.**
+7. **Комментарии — на русском.**
 
 ---
 
 ## Что делать при падении теста
 
-1. **Не удалять тест.** Найти причину.
+1. **Не удалять тест.**
 2. Тест — контракт.
 3. Если тест прав, а код неправ — откатить правку.
 4. Если тест устарел — обновить с пояснением.
 
 **Замечание:** `android.net.Uri.parse()` в JVM-тестах возвращает
-`null` (`returnDefaultValues = true`). Если модель зависит от
-Android — тест упадёт. Решение: не тащить `Uri` в data-модели,
-хранить строкой (`PublicBackup.uri`, `RollbackBackup.publicUri`).
+`null`. Модели не должны зависеть от `Uri` — хранить строкой.
 
 ---
 
@@ -221,23 +159,26 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыты: Редактирование, БД, журнал |
-| 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
-| 🟢 Потом | `AppDatabaseTest`, `GsmBackup*Test` |
+| 🔴 Сейчас | Закрыты все вкладки 5.9 |
+| 🟡 После 5.10 | Теневая статистика |
+| 🟢 Потом | `AppDatabaseTest`, `GsmBackup*Test`, `ExitBackupWriterTest` |
 
 ---
 
 ## Долг — сводка
 
-**Сделано (серия `e4`):** ~370 тестов.
-**Сделано (5.9 Статистика):** XLSX, ~106 + HTML, 43.
-**Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
-**Сделано (5.9 БД):** `data/backup/` (5 файлов, ~76),
-`data/merge/` (1 файл, ~80), `data/compare/` (1 файл, 11),
-`data/diagnostics/` (1 файл, 14), `CleanConfirmStateTest` (6).
-**Сделано (5.9 logs):** `data/logs/` (9 файлов, ~65 тестов).
+**Сделано:**
+- `data/voice/` — ~250 тестов.
+- `data/report/` — ~120.
+- `data/backup/` — ~76.
+- `data/merge/` — ~80.
+- `data/compare/` — 11.
+- `data/diagnostics/` — 14.
+- `data/logs/` — ~65.
+- `data/reconciliation/` — 27.
+- `data/settings/` — 14 (UiScale + AppTheme).
+- `ui/screens/` — ~155.
 
 **Осталось:**
-- `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
 - `AppDatabaseTest` — миграции.
-- `GsmBackupWriterTest`, `GsmBackupReaderTest` — если решим покрывать.
+- `ExitBackupWriterTest` — если решим покрывать.
