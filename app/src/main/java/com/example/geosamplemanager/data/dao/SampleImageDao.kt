@@ -44,4 +44,16 @@ interface SampleImageDao {
 
     @Query("DELETE FROM sample_images WHERE sample_id = :sampleId")
     suspend fun deleteBySampleId(sampleId: Long)
+
+    // ================================================================
+    // Диагностика (5.9-db-diagnostics)
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Все записи о фото — для проверки существования файлов
+     * на диске (движок диагностики).
+     */
+    @Query("SELECT * FROM sample_images ORDER BY id")
+    suspend fun getAllImages(): List<SampleImageEntity>
 }

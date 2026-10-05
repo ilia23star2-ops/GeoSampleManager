@@ -57,4 +57,28 @@ interface OrderDao {
      */
     @Query("SELECT * FROM orders ORDER BY order_number")
     fun getAllOrdersFlow(): Flow<List<OrderEntity>>
+
+    // ================================================================
+    // Диагностика (5.9-db-diagnostics)
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Наряды, чей area_id не существует в areas.
+     *
+     * FK с CASCADE обычно это предотвращает, но при прямой
+     * правке SQLite-файла или восстановлении из повреждённого
+     * бэкапа такая ситуация возможна. Движок диагностики
+     * предлагает удалить такие наряды (каскад уберёт пробы
+     * и скважины).
+     */
+    @Query(
+        """
+        SELECT o.* FROM orders o
+        LEFT JOIN areas a ON a.id = o.area_id
+        WHERE a.id IS NULL
+        ORDER BY o.id
+        """
+    )
+    suspend fun findOrphanOrders(): List<OrderEntity>
 }
