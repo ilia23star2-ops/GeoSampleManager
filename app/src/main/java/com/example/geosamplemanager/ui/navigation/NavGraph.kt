@@ -8,24 +8,26 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.ui.screens.*
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.9-db-soft-restart:
- * startDestination берётся из параметра initialRoute — MainActivity
- * передаёт MAIN на первом старте и БД — после пересоздания ViewModel'ей.
+ * FIX 5.9-db-soft-restart: startDestination из initialRoute.
+ * FIX 5.9-logs-3: логирование переходов.
+ * FIX 5.9-main: onNavigate для быстрых действий.
  *
- * FIX 5.9-logs-3:
- * Переходы на вкладки пишутся в журнал. Запись делается в
- * observe-блоке на смену currentScreen — так ловится и клик в
- * drawer, и программная навигация.
+ * FIX 5.9-main-a:
+ *  - onOpenOrder — переход на Сверку с конкретным нарядом;
+ *  - запрос сохраняется в GeoSampleApp.pendingSearchRequest,
+ *    ReconciliationViewModel читает его в init.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,14 +35,13 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
     val navController = rememberNavController()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val app = context.applicationContext as GeoSampleApp
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: initialRoute
     val currentScreen = Screen.values().firstOrNull { it.route == currentRoute }
         ?: Screen.MAIN
 
-    // FIX 5.9-logs-3: логируем смену активной вкладки. Первый
-    // вызов LaunchedEffect срабатывает при появлении экрана —
-    // не пишем его, чтобы не дублировать app_start.
     var firstNav by remember { mutableStateOf(true) }
     LaunchedEffect(currentScreen) {
         if (firstNav) {
@@ -50,6 +51,14 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
         Log.nav("Открыта вкладка «${currentScreen.title}»")
             .detail("route", currentScreen.route)
             .write()
+    }
+
+    fun navigateTo(screen: Screen) {
+        navController.navigate(screen.route) {
+            popUpTo(Screen.MAIN.route) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
     }
 
     ModalNavigationDrawer(
@@ -73,11 +82,7 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                             label = { Text(screen.title) },
                             selected = currentRoute == screen.route,
                             onClick = {
-                                navController.navigate(screen.route) {
-                                    popUpTo(Screen.MAIN.route) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
+                                navigateTo(screen)
                                 scope.launch { drawerState.close() }
                             },
                             modifier = Modifier.padding(
@@ -109,7 +114,15 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                 startDestination = initialRoute,
                 modifier = Modifier.padding(padding)
             ) {
-                composable(Screen.MAIN.route) { MainScreen() }
+                composable(Screen.MAIN.route) {
+                    MainScreen(
+                        onNavigate = { screen -> navigateTo(screen) },
+                        onOpenOrder = { orderId, areaTitle, orderTitle ->
+                            app.requestSearchForOrder(orderId, areaTitle, orderTitle)
+                            navigateTo(Screen.SEARCH)
+                        }
+                    )
+                }
                 composable(Screen.ADD.route) { AddScreen() }
                 composable(Screen.SEARCH.route) { SearchScreen() }
                 composable(Screen.STATS.route) { StatsScreen() }
