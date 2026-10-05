@@ -1,6 +1,8 @@
 package com.example.geosamplemanager.data.voice
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import java.util.Locale
@@ -13,6 +15,12 @@ import java.util.Locale
  * Не трогает основной VoiceController (не глушит микрофон, не
  * работает с Vosk). Отдельный TextToSpeech, создаётся и
  * уничтожается по запросу.
+ *
+ * FIX 5.9-tts-audio-mode:
+ *  - setAudioAttributes(USAGE_MEDIA, CONTENT_TYPE_SPEECH);
+ *  - KEY_PARAM_STREAM = STREAM_MUSIC.
+ *  Это выравнивает поведение с VoiceController и делает тест
+ *  «Проверить» консистентным с работой ГП в сверке.
  */
 object SoundTestUtil {
 
@@ -32,8 +40,12 @@ object SoundTestUtil {
             return
         }
 
+        val appContext = context.applicationContext
+        val audioManager =
+            appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
         var tts: TextToSpeech? = null
-        tts = TextToSpeech(context.applicationContext) { status ->
+        tts = TextToSpeech(appContext) { status ->
             if (status != TextToSpeech.SUCCESS) {
                 Log.w(TAG, "speakTest: init failed status=$status")
                 try { tts?.shutdown() } catch (_: Exception) {}
@@ -43,6 +55,15 @@ object SoundTestUtil {
 
             try {
                 tts?.language = Locale("ru", "RU")
+
+                // FIX 5.9-tts-audio-mode: явные audio-атрибуты.
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .setLegacyStreamType(AudioManager.STREAM_MUSIC)
+                    .build()
+                tts?.setAudioAttributes(attrs)
+
                 tts?.setSpeechRate(speed)
 
                 val params = android.os.Bundle().apply {
@@ -50,7 +71,18 @@ object SoundTestUtil {
                         TextToSpeech.Engine.KEY_PARAM_VOLUME,
                         ttsVolumeFloat(volume)
                     )
+                    putInt(
+                        TextToSpeech.Engine.KEY_PARAM_STREAM,
+                        AudioManager.STREAM_MUSIC
+                    )
                 }
+
+                Log.e(
+                    TAG,
+                    "speakTest: vol=$volume (x${ttsVolumeFloat(volume)}), " +
+                            "rate=$speed, audioMode=${audioManager.mode}, " +
+                            "streamVol=${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}"
+                )
 
                 tts?.setOnUtteranceProgressListener(
                     object : android.speech.tts.UtteranceProgressListener() {
