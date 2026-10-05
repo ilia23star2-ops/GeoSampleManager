@@ -2,7 +2,7 @@
 
 Android-приложение для управления геохимическими пробами в горнодобывающей
 промышленности. Учёт нарядов, импорт описей проб из Excel, сверка фактического
-наличия, весовой контроль, заметки и фото, голосовой помощник.
+наличия, весовой контроль, заметки и фото, голосовой помощник, журнал аудита.
 
 ---
 
@@ -15,7 +15,7 @@ Android-приложение для управления геохимическ�
 
 1. **`docs/AI_RULES.md`** — как работать. **Обязательно первым.**
 2. **`docs/CONTEXT_BRIEF.md`** — где мы сейчас (одна страница).
-3. **`docs/README.md`** — этот файл (в корне).
+3. **`README.md`** — этот файл (в корне).
 4. **`docs/PROGRESS.md`** — полная история.
 5. **`docs/NEXT_STEPS.md`** — текущий заход.
 6. **`docs/DECISIONS.md`** — все решения по UI и логике.
@@ -40,12 +40,13 @@ Android-приложение для управления геохимическ�
 ## Технологии
 
 - **Kotlin**, **Jetpack Compose** (Material 3)
-- **Room** (SQLite), KSP — **version = 2**
+- **Room** (SQLite), KSP — **основная версия = 2**,
+  отдельная `logs.db` (version = 1)
 - **Navigation Compose**
 - **Kotlin Coroutines + Flow**
 - **Vosk** — офлайн-распознавание речи
 - **Свой парсер `.xlsx`** (без Apache POI)
-- **Gson** — настройки и история импорта
+- **Gson** — настройки, история импорта, details журнала
 
 Версии: AGP 8.1.4, Kotlin 1.9.20, compileSdk 34, minSdk 24, Java 17.
 
@@ -161,14 +162,14 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 ### Точка входа
 | Файл | Назначение |
 |---|---|
-| `MainActivity.kt` | Activity. `ReadyContent` — пересбор поддерева через `key(tick)` + `SimpleViewModelStoreOwner`. |
-| `GeoSampleApp.kt` | Application. Репозитории, `resetRepository()`, `requestRestart()`. |
+| `MainActivity.kt` | Activity. `ReadyContent` — пересбор поддерева через `key(tick)` + `SimpleViewModelStoreOwner`. Логирование lifecycle (`onResume` / `onPause`). |
+| `GeoSampleApp.kt` | Application. Репозитории, `resetRepository()`, `requestRestart()`, `LogWriter.init()`, `CrashHandler.install()`. |
 
 ### `data/` — слой данных
 | Файл | Назначение |
 |---|---|
-| `AppDatabase.kt` | Room-БД. **version = 2**, 6 сущностей, миграция 1→2. `closeAndReset()`, `buildTemp()`. |
-| `DatabaseRepository.kt` | Обёртка над DAO. `checkpointWal()`, `clearAllData()`, `getDbInfo()`. |
+| `AppDatabase.kt` | Основная Room-БД. **version = 2**, 6 сущностей, миграция 1→2. `closeAndReset()`, `buildTemp()`. |
+| `DatabaseRepository.kt` | Обёртка над DAO. `checkpointWal()`, `clearAllData()`, `getDbInfo()`, `runDiagnostics()`, `applyDiagnosticsFixes()`. |
 
 #### `data/entity/`
 `AreaEntity`, `OrderEntity`, `OrderWellEntity`, `SampleEntity`,
@@ -202,7 +203,7 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 |---|---|
 | `GsmBackupReader.kt` | Чтение `.gsmbackup`. |
 | `GsmBackupWriter.kt` | Запись `.gsmbackup`. |
-| `RollbackBackups.kt` | Парсер `pre_*`, ротация, merge. |
+| `RollbackBackups.kt` | Парсер `pre_*`, ротация, merge. Четыре операции: restore / rollback / clean / diagnostics. |
 | `PublicBackupsLister.kt` | Листинг публичных бэкапов. |
 | `PublicBackupsMigrator.kt` | Ленивая миграция старых бэкапов. |
 | `BackupManagerStats.kt` | Сводка по бэкапам. |
@@ -220,8 +221,37 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 | `CompareModels.kt` | Дерево сравнения. |
 | `CompareEngine.kt` | `buildResult()` — 4 дерева. |
 
+#### `data/diagnostics/` — диагностика БД
+| Файл | Назначение |
+|---|---|
+| `DbIssue.kt` | Sealed-класс проблем: `OrphanOrder`, `OrphanSample`, `BrokenPhotoLink`, `PhotoFlagMismatch`. |
+| `DbDiagnosticsEngine.kt` | Чистая логика поиска проблем. |
+| `DiagnosticsModels.kt` | `DbDiagnosticsState`. |
+
+#### `data/logs/` — журнал аудита
+| Файл | Назначение |
+|---|---|
+| `LogCategory.kt` | Категории с русскими метками. |
+| `LogLevel.kt` | Уровни (info / warn / error). |
+| `LogEntry.kt` | Entity для `logs.db`. |
+| `LogDao.kt` | DAO журнала. |
+| `LogsDatabase.kt` | Отдельная Room-БД. |
+| `LogFormatter.kt` | Формат даты и времени. |
+| `LogWriter.kt` | Канал + батчи + запись в БД и файл. |
+| `LogEntryBuilder.kt` | Fluent-API. |
+| `DetailsJson.kt` | Gson-обёртка для details. |
+| `Log.kt` | Точка входа (`Log.app`, `Log.db`, …). |
+| `AppLog.kt` | `typealias` для использования рядом с `android.util.Log`. |
+| `LogFileWriter.kt` | Файловый архив `.logs/YYYY-MM-DD.log`. |
+| `LogsFilter.kt` | Фильтр UI журнала. |
+| `DeviceInfo.kt` | Снимок устройства для app_start. |
+| `CrashRecord.kt` | Запись о крэше (файл `pending_crash.json`). |
+| `CrashHandler.kt` | Глобальный перехват исключений. |
+| `SampleRowDiff.kt` | Diff между старой и новой пробой. |
+
 ### `ui/navigation/`
-`NavGraph.kt`, `Screen.kt`, `SimpleViewModelStoreOwner.kt`.
+`NavGraph.kt` (переходы на вкладки логируются), `Screen.kt`,
+`SimpleViewModelStoreOwner.kt`.
 
 ### `ui/screens/`
 Основные экраны: `MainScreen`, `AddScreen` + `AddViewModel`,
@@ -238,13 +268,17 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 `SamplesTable`.
 
 **Диалоги вкладки БД:**
-`DbBackupDialog`, `DbRestoreDialog`, `DbInfoDialog`, `DbRollbackDialog`,
-`DbCleanDialog`, `DbImportPickerDialog`, `BackupManagerDialog`.
+`DbBackupDialog`, `DbRestoreDialog`, `DbRollbackDialog`,
+`DbCleanDialog`, `DbImportPickerDialog`, `BackupManagerDialog`,
+`DbDiagnosticsDialog`.
 
 **Экраны БД:**
 `MergeWizard`, `MergeConflictsScreen`, `DbCompareScreen`.
 
 **Модели вкладки БД:** `CleanConfirmState`.
+
+**Экран журнала:** `LogsScreen` + `LogsViewModel`
+(открывается из Настройки → Система).
 
 ### `ui/theme/`
 `Color.kt`, `Theme.kt`, `Type.kt`.
@@ -257,11 +291,15 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 2. `AppRoot` ждёт загрузки Vosk-модели → `ReadyContent(app)`.
 3. `ReadyContent` — `key(tick)` + `SimpleViewModelStoreOwner` +
    `AppScaffold(initialRoute)`.
-4. `GeoSampleApp.onCreate` создаёт:
-   - `DatabaseRepository`
-   - `SettingsRepository`
-   - `ImportHistoryRepository`
-   - `VoiceSettingsRepository`
+4. `GeoSampleApp.onCreate`:
+   - `LogWriter.init(this)` — старт журнала;
+   - `CrashHandler.install(this)` — перехват падений;
+   - создаёт репозитории:
+      - `DatabaseRepository`
+      - `SettingsRepository`
+      - `ImportHistoryRepository`
+      - `VoiceSettingsRepository`;
+   - записывает `app_start` со снимком устройства и счётчиков БД.
 5. ViewModel'и берут репозиторий через `(application as GeoSampleApp).repository`.
 
 **После замены БД** (импорт/откат/слияние/очистка) — `requestRestart()`
@@ -279,6 +317,8 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 - **Бэкапы и авто-бэкапы** → `data/backup/*`.
 - **Слияние двух БД** → `data/merge/*` + `MergeWizard` + `MergeConflictsScreen`.
 - **Сравнение двух БД** → `data/compare/*` + `DbCompareScreen`.
+- **Диагностика БД** → `data/diagnostics/*` + `DbDiagnosticsDialog`.
+- **Журнал аудита** → `data/logs/*` + `LogsScreen` (Настройки → Система).
 - **Настройки** → `SettingsScreen` + `SettingsRepository`.
 - **Голосовой помощник** → `docs/VOICE.md` + `data/voice/*`.
 
@@ -298,6 +338,9 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 | Бэкап/восстановление | `data/backup/*` + `DbViewModel` |
 | Слияние БД | `data/merge/*` + `MergeWizard` + `MergeConflictsScreen` |
 | Сравнение БД | `data/compare/*` + `DbCompareScreen` |
+| Диагностика БД | `data/diagnostics/*` + `DbDiagnosticsDialog` |
+| Журнал | `data/logs/*` + `LogsScreen` |
+| Создание/удаление участков и нарядов | `EditScreen.kt`, `EditViewModel.kt` |
 | Термин — что значит | `docs/GLOSSARY.md` |
 | Что тестировать | `docs/TESTING.md` |
 | Открытые проблемы | `docs/ISSUES.md` |

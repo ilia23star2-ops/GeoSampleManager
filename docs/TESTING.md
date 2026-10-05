@@ -16,16 +16,18 @@
 - Логика undo/redo.
 - Отчёты (XLSX, HTML).
 - Чистые функции вкладки Редактирование.
-- Чистая логика БД-бэкапов, слияния и сравнения
+- Чистая логика БД-бэкапов, слияния, сравнения, диагностики
   (`RollbackBackups`, `PublicBackupsLister`, `BackupManifest`,
   `CleanConfirmState`, `BackupManagerStats`, `MergeEngine`,
-  `CompareEngine`).
+  `CompareEngine`, `DbDiagnosticsEngine`).
+- Формат журнала (`LogFileWriter`, `LogFormatter`, `LogsFilter`,
+  `SampleRowDiff`, `CrashRecord`).
 - Миграции БД.
 
 UI не тестируем — проверяем руками. I/O, zip, MediaStore, БД —
 device-check.
 
-**Правило (§23 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
+**Правило (§21 `AI_RULES.md`):** каждый заход с новым кодом → тесты.
 
 ---
 
@@ -74,6 +76,26 @@ device-check.
 |---|---|---|
 | `CompareEngineTest.kt` | `buildResult` — 4 дерева, ключи сопоставления, конфликты | 11 |
 
+### `data/diagnostics/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `DbDiagnosticsEngineTest.kt` | `detect` — сироты, битые ссылки, флаг `has_photo` | 14 |
+
+### `data/logs/`
+
+| Файл | Что проверяет | Тестов |
+|---|---|---|
+| `LogCategoryTest.kt` | Коды, русские метки, маппинг | 4 |
+| `LogLevelTest.kt` | Уровни, метки, маппинг | 3 |
+| `LogFormatterTest.kt` | Формат даты и времени | 5 |
+| `DetailsJsonTest.kt` | Кодирование и декодирование JSON | 8 |
+| `LogEntryBuilderTest.kt` | Fluent-API builder'а | 11 |
+| `CrashRecordTest.kt` | Round-trip записи о крэше | 6 |
+| `LogsFilterTest.kt` | Фильтр журнала, метки | 6 |
+| `LogFileWriterTest.kt` | Формат строки файла, Unicode-маркеры, шапка дня | 11 |
+| `SampleRowDiffTest.kt` | Diff между старой и новой пробой | 11 |
+
 ### `data/reconciliation/`
 
 | Файл | Что проверяет | Тестов |
@@ -105,13 +127,13 @@ device-check.
 | `EditMassOpsTest.kt` | `applyMassEditToRow` | 14 |
 | `CleanConfirmStateTest.kt` | `CleanConfirmState` | 6 |
 
-**Всего: ~510+ тестов.** Все зелёные.
+**Всего: ~630 тестов.** Все зелёные.
 
 ---
 
 ## Что ещё нужно
 
-### Приоритет 1 (закладки `5.8.11-b/c`)
+### Приоритет 1
 
 - `QueryTokenizerTest.kt`, `QueryNormalizerTest.kt`.
 - `DigitGrouperTest.kt`, `GroupToCandidatesTest.kt`.
@@ -132,9 +154,11 @@ device-check.
 - **Реальная БД** — только миграции.
 - **`ReconciliationViewModel`, `EditViewModel`, `DbViewModel`** —
   связаны с Application. Device-check.
-- **Backup/restore, merge, compare** — io + zip + замена файлов.
-  Device-check.
+- **Backup/restore, merge, compare, diagnostics** — io + zip +
+  замена файлов. Device-check.
 - **MediaStore** — реальные запросы. Device-check.
+- **`LogWriter`, `LogFileWriter` (I/O), `CrashHandler`** — I/O,
+  MediaStore, Application. Device-check.
 
 ---
 
@@ -146,6 +170,8 @@ device-check.
 
 ### В терминале
 ./gradlew testDebugUnitTest
+
+text
 
 Отчёт: `app/build/reports/tests/testDebugUnitTest/index.html`.
 
@@ -195,7 +221,7 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 
 | Приоритет | Что |
 |---|---|
-| 🔴 Сейчас | Закрыты: Редактирование, большая часть БД |
+| 🔴 Сейчас | Закрыты: Редактирование, БД, журнал |
 | 🟡 После `e4-dicts` | `QueryTokenizer`, `DigitGrouper`, `SearchService` |
 | 🟢 Потом | `AppDatabaseTest`, `GsmBackup*Test` |
 
@@ -208,7 +234,8 @@ Android — тест упадёт. Решение: не тащить `Uri` в da
 **Сделано (5.9 Редактирование):** 6 файлов, 91 тест.
 **Сделано (5.9 БД):** `data/backup/` (5 файлов, ~76),
 `data/merge/` (1 файл, ~80), `data/compare/` (1 файл, 11),
-`CleanConfirmStateTest` (6).
+`data/diagnostics/` (1 файл, 14), `CleanConfirmStateTest` (6).
+**Сделано (5.9 logs):** `data/logs/` (9 файлов, ~65 тестов).
 
 **Осталось:**
 - `QueryTokenizerTest`, `DigitGrouperTest`, `SearchServiceTest` — после `e4-dicts`.
