@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.bluetooth.BtDevice
 import com.example.geosamplemanager.data.bluetooth.BtProfile
+import com.example.geosamplemanager.data.settings.AppTheme
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
 import com.example.geosamplemanager.data.settings.UiScale
@@ -39,11 +40,9 @@ import com.example.geosamplemanager.data.voice.VoiceSettings
 import kotlin.math.roundToInt
 
 /**
- * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок 0.5..2.0.
- * FIX 5.9-settings-scale: раздел «Внешний вид» — масштаб интерфейса.
- * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле,
- * дерево категорий — в вертикальном. Иначе при крупном масштабе
- * кнопки уходят за край экрана.
+ * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок.
+ * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле.
+ * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -206,6 +205,26 @@ private fun AppearanceSettingsContent(
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold
         )
+
+        // FIX 5.9-settings-theme:
+        // выбор темы — светлая / тёмная / системная.
+        InfoCard(
+            title = "Тема",
+            help = "«Системная» — как в настройках Android " +
+                    "(тёмная ночью, светлая днём). «Светлая» и «Тёмная» — " +
+                    "фиксированные, независимо от системы."
+        ) {
+            Text(
+                "Оформление приложения",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            ChoiceRow(
+                options = AppTheme.values().map { it to it.title },
+                selected = ap.theme,
+                onSelect = { viewModel.setTheme(it) }
+            )
+        }
 
         InfoCard(
             title = "Размер интерфейса",
@@ -1029,7 +1048,6 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
         )
     }
 
-    // === Диалог слов для заголовков ===
     if (showHeadersDialog) {
         val sections = listOf(
             "serial" to "Серийный №",
@@ -1059,7 +1077,6 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
         )
     }
 
-    // === Диалог слов для типов проб ===
     if (showTypesDialog) {
         val sections = listOf(
             "hollow" to "Холостая",

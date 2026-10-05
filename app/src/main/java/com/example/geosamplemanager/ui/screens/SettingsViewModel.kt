@@ -9,6 +9,7 @@ import com.example.geosamplemanager.data.bluetooth.BluetoothController
 import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.bluetooth.BtDevice
 import com.example.geosamplemanager.data.bluetooth.BtProfile
+import com.example.geosamplemanager.data.settings.AppTheme
 import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.OrderNumberRule
@@ -35,8 +36,8 @@ enum class SettingsCategory(val title: String) {
 
 /**
  * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
- *
  * FIX 5.9-settings-scale: стейт внешнего вида + setUiScale.
+ * FIX 5.9-settings-theme: setTheme(AppTheme).
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -69,12 +70,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _btActiveDevice = MutableStateFlow<BtDevice?>(null)
     val btActiveDevice: StateFlow<BtDevice?> = _btActiveDevice.asStateFlow()
 
-    /**
-     * FIX 5.9-settings-scale:
-     * Внешний вид. Источник — GeoSampleApp.appearance (единый
-     * StateFlow на всё приложение), чтобы изменения сразу
-     * применялись в ReadyContent.
-     */
     private val _appearanceSettings = MutableStateFlow(app.appearance.value)
     val appearanceSettings: StateFlow<AppearanceSettings> = _appearanceSettings.asStateFlow()
 
@@ -253,10 +248,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
     }
 
-    /**
-     * FIX 5.9-settings-sound-3-fix-2: значение приходит со слайдера.
-     * Ограничиваем допустимым диапазоном.
-     */
     fun setTtsSpeed(speed: Float) {
         val clamped = speed.coerceIn(
             VoiceSettings.MIN_TTS_SPEED,
@@ -289,12 +280,21 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     /**
      * FIX 5.9-settings-scale:
-     * Смена масштаба интерфейса. Обновляет StateFlow вьюмодели
-     * и через GeoSampleApp — глобальный appearance, чтобы
-     * ReadyContent применил новую density сразу.
+     * Смена масштаба интерфейса.
      */
     fun setUiScale(scale: UiScale) {
         val updated = _appearanceSettings.value.copy(scale = scale)
+        _appearanceSettings.value = updated
+        app.updateAppearance(updated)
+    }
+
+    /**
+     * FIX 5.9-settings-theme:
+     * Смена темы. Обновляет StateFlow вьюмодели и GeoSampleApp.appearance —
+     * MainActivity перерисует с новым darkTheme.
+     */
+    fun setTheme(theme: AppTheme) {
+        val updated = _appearanceSettings.value.copy(theme = theme)
         _appearanceSettings.value = updated
         app.updateAppearance(updated)
     }
