@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +33,9 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val message by viewModel.message.collectAsState()
     val selected by viewModel.selectedCategory.collectAsState()
 
+    // FIX 5.9-logs-5: журнал открывается поверх Настроек.
+    var openedLogs by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) { viewModel.reload() }
 
     LaunchedEffect(message) {
@@ -39,6 +43,12 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearMessage()
         }
+    }
+
+    // FIX 5.9-logs-5
+    if (openedLogs) {
+        LogsScreen(onClose = { openedLogs = false })
+        return
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -56,6 +66,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
+                    onOpenLogs = { openedLogs = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
             }
@@ -66,6 +77,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
+                    onOpenLogs = { openedLogs = true },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -140,14 +152,63 @@ private fun CategoryChipsRow(
 private fun CategoryContent(
     category: SettingsCategory,
     viewModel: SettingsViewModel,
+    onOpenLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (category) {
         SettingsCategory.IMPORT -> ImportSettingsContent(viewModel, modifier)
         SettingsCategory.VOICE -> StubContent("Голос", "Настройки голосового помощника будут здесь.", modifier)
         SettingsCategory.APPEARANCE -> StubContent("Внешний вид", "Тема и размеры — в следующих обновлениях.", modifier)
-        SettingsCategory.SYSTEM -> StubContent("Система", "Служебные настройки — позже.", modifier)
+        SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
         SettingsCategory.ABOUT -> StubContent("О приложении", "GeoSample Manager, версия 1.0", modifier)
+    }
+}
+
+/**
+ * FIX 5.9-logs-5:
+ * Раздел «Система». Содержит кнопку «Открыть журнал событий».
+ */
+@Composable
+private fun SystemSettingsContent(
+    modifier: Modifier = Modifier,
+    onOpenLogs: () -> Unit
+) {
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Система",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Журнал событий",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "История действий в приложении: запуск, навигация, поиск, " +
+                            "отметки, операции с базой данных. Помогает понять, " +
+                            "что происходило в сессии, и разобрать ошибки.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenLogs,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.List, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Открыть журнал событий")
+                }
+            }
+        }
     }
 }
 
@@ -373,8 +434,6 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
 
     // === Диалог слов для заголовков ===
     if (showHeadersDialog) {
-        // Формируем sections из актуального settings.
-        // Передаём список данных, а не лямбду — Compose будет перерисовывать.
         val sections = listOf(
             "serial" to "Серийный №",
             "well" to "Скважина / Выработка",
