@@ -1,6 +1,8 @@
 package com.example.geosamplemanager.data.util
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -27,12 +29,18 @@ import java.util.Locale
  * FIX 5.8.6-2, 5.8.6-5c, 5.8.11-voice-24-debounce, 5.8.11-e4-fix-2.
  * FIX 5.9-settings-bt: BluetoothSettings + SCO.
  * FIX 5.9-settings-sound: ttsVolume.
+ * FIX 5.9-settings-sound-3-fix-2: ttsSpeed: Float; setSpeechRate перед каждым speak.
+ * FIX 5.9-tts-audio-mode-diagnostics: setAudioAttributes + KEY_PARAM_STREAM.
  *
- * FIX 5.9-settings-sound-3-fix-2:
- *  - ttsSpeed: Float вместо enum;
- *  - setSpeechRate применяется перед каждым speak() — некоторые
- *    движки TTS сбрасывают скорость при внутренних реинициализациях;
- *  - оценка длительности фразы делится на скорость.
+ * FIX 5.9-tts-audio-mode-fix-normal:
+ *  - перед каждым speak() аудио-режим принудительно переводится
+ *    в MODE_NORMAL на время речи и восстанавливается после;
+ *  - причина: BluetoothController.startSco() при отсутствии реальной
+ *    SCO-гарнитуры оставляет MODE_IN_COMMUNICATION. В этом режиме
+ *    TTS маршрутизируется в голосовой канал с пониженной громкостью,
+ *    а STREAM_MUSIC игнорируется;
+ *  - TTS играет во время pauseVosk — переключение безопасно;
+ *  - на NORMAL/LOUD множитель 1.0 (0.8 давало «тихо»).
  */
 class VoiceController(
     private val context: Context,
@@ -44,6 +52,8 @@ class VoiceController(
 ) {
 
     private val app = context.applicationContext as GeoSampleApp
+    private val audioManager =
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private var speechService: SpeechService? = null
     private var recognizer: Recognizer? = null
@@ -61,6 +71,13 @@ class VoiceController(
     private var pendingRunnable: Runnable? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    /**
+     * FIX 5.9-tts-audio-mode-fix-normal:
+     * Запоминаем аудио-режим на время речи, чтобы вернуть после.
+     * -1 = ничего не сохранено.
+     */
+    private var savedAudioMode: Int = -1
+
     init {
         initTts()
     }
@@ -69,17 +86,33 @@ class VoiceController(
     // TTS
     // ================================================================
 
+    private fun buildAudioAttributes(): AudioAttributes =
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setLegacyStreamType(AudioManager.STREAM_MUSIC)
+            .build()
+
     private fun initTts() {
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 try {
                     tts?.language = Locale("ru", "RU")
+                    tts?.setAudioAttributes(buildAudioAttributes())
                     tts?.setSpeechRate(ttsSpeed)
 
                     ttsReady = true
-                    Log.e(TAG, "TTS готов, скорость=$ttsSpeed, громкость=$ttsVolume")
+                    Log.e(
+                        TAG,
+                        "TTS готов: скорость=$ttsSpeed, громкость=$ttsVolume, " +
+                                "audioMode=${audioManager.mode}, " +
+                                "musicVol=${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}/" +
+                                "${audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, " +
+                                "voiceCallVol=${audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}, " +
+                                "sco=${audioManager.isBluetoothScoOn}"
+                    )
                 } catch (e: Exception) {
-                    Log.e(TAG, "TTS: ошибка языка", e)
+                    Log.e(TAG, "TTS: ошибка языка/атрибутов", e)
                 }
 
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -88,15 +121,18 @@ class VoiceController(
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        restoreAudioMode()
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        restoreAudioMode()
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
+                        restoreAudioMode()
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
                 })
@@ -122,18 +158,38 @@ class VoiceController(
         suppressUntil = System.currentTimeMillis() + estimateSpeechMs(clean)
 
         try {
-            // FIX 5.9-settings-sound-3-fix-2:
-            // ставим скорость перед каждым произнесением — так изменение
-            // ползунка срабатывает со следующей же фразы, даже если
-            // движок TTS сбросил настройку сам.
+            val attrResult = tts?.setAudioAttributes(buildAudioAttributes())
             tts?.setSpeechRate(ttsSpeed)
+
+            // FIX 5.9-tts-audio-mode-fix-normal:
+            // принудительно MODE_NORMAL на время речи.
+            // Иначе TTS уходит в голосовой канал с пониженной громкостью.
+            saveAndSetAudioModeNormal()
 
             val params = Bundle().apply {
                 putFloat(
                     TextToSpeech.Engine.KEY_PARAM_VOLUME,
                     ttsVolumeFloat(ttsVolume)
                 )
+                putInt(
+                    TextToSpeech.Engine.KEY_PARAM_STREAM,
+                    AudioManager.STREAM_MUSIC
+                )
             }
+
+            Log.e(
+                TAG,
+                "speak: «${clean.take(40)}…» vol=$ttsVolume " +
+                        "(x${ttsVolumeFloat(ttsVolume)}), rate=$ttsSpeed, " +
+                        "attr=$attrResult, modeBefore=${savedAudioMode}, " +
+                        "modeNow=${audioManager.mode}, " +
+                        "musicVol=${audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)}/" +
+                        "${audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)}, " +
+                        "voiceCallVol=${audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}, " +
+                        "sco=${audioManager.isBluetoothScoOn}, " +
+                        "speakerphone=${audioManager.isSpeakerphoneOn}"
+            )
+
             tts?.speak(
                 clean,
                 TextToSpeech.QUEUE_FLUSH,
@@ -142,24 +198,68 @@ class VoiceController(
             )
         } catch (e: Exception) {
             Log.w(TAG, "speak failed", e)
+            restoreAudioMode()
+        }
+    }
+
+    /**
+     * FIX 5.9-tts-audio-mode-fix-normal:
+     * Запомнить текущий mode и поставить MODE_NORMAL.
+     * Если mode уже NORMAL — ничего не делаем.
+     */
+    private fun saveAndSetAudioModeNormal() {
+        try {
+            val current = audioManager.mode
+            if (current == AudioManager.MODE_NORMAL) {
+                savedAudioMode = -1
+                return
+            }
+            savedAudioMode = current
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            Log.w(TAG, "не удалось перевести mode в NORMAL", e)
+            savedAudioMode = -1
+        }
+    }
+
+    /**
+     * Вернуть mode, который был до speak(). Если ничего не сохраняли —
+     * ничего не делаем.
+     */
+    private fun restoreAudioMode() {
+        val saved = savedAudioMode
+        savedAudioMode = -1
+        if (saved < 0) return
+        try {
+            audioManager.mode = saved
+            Log.e(TAG, "restoreAudioMode: mode → $saved")
+        } catch (e: Exception) {
+            Log.w(TAG, "не удалось вернуть mode=$saved", e)
         }
     }
 
     fun applyVoiceSettings(settings: VoiceSettings) {
+        val oldVolume = ttsVolume
         ttsVolume = settings.ttsVolume
         val newSpeed = settings.ttsSpeedValue
+
         if (newSpeed != ttsSpeed) {
             ttsSpeed = newSpeed
             try {
                 tts?.setSpeechRate(ttsSpeed)
-                Log.i(TAG, "applyVoiceSettings: скорость=$ttsSpeed")
             } catch (_: Exception) {
             }
+        }
+
+        if (oldVolume != ttsVolume) {
+            Log.e(TAG, "applyVoiceSettings: громкость $oldVolume → $ttsVolume")
+        }
+        if (newSpeed != ttsSpeed) {
+            Log.i(TAG, "applyVoiceSettings: скорость=$ttsSpeed")
         }
     }
 
     private fun estimateSpeechMs(text: String): Long {
-        // Оценка длительности с учётом скорости (rate > 1 → короче).
         val base = SPEECH_BASE_MS + text.length * SPEECH_CHAR_MS
         val rate = if (ttsSpeed > 0f) ttsSpeed else 1.0f
         return (base / rate).toLong()
@@ -213,7 +313,8 @@ class VoiceController(
             service.startListening(listener)
 
             Log.e(TAG, "startListening: старт (грамматика=${app.voiceUseGrammar}, " +
-                    "bt=${btSettings.enabled && btSettings.deviceAddress != null})")
+                    "bt=${btSettings.enabled && btSettings.deviceAddress != null}, " +
+                    "mode=${audioManager.mode}, sco=${audioManager.isBluetoothScoOn})")
         } catch (e: Exception) {
             listening = false
             Log.e(TAG, "startListening: ИСКЛЮЧЕНИЕ", e)
@@ -423,6 +524,10 @@ class VoiceController(
         pendingText = null
         cancelPendingTimer()
 
+        // FIX 5.9-tts-audio-mode-fix-normal:
+        // если по какой-то причине mode был переключён — вернуть.
+        restoreAudioMode()
+
         try { btController?.stopSco() } catch (_: Exception) {}
 
         try {
@@ -458,8 +563,8 @@ class VoiceController(
 
         private fun ttsVolumeFloat(volume: TtsVolume): Float = when (volume) {
             TtsVolume.OFF -> 0.0f
-            TtsVolume.QUIET -> 0.4f
-            TtsVolume.NORMAL -> 0.8f
+            TtsVolume.QUIET -> 0.5f
+            TtsVolume.NORMAL -> 1.0f
             TtsVolume.LOUD -> 1.0f
         }
 
