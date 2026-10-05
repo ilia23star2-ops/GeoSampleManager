@@ -1964,10 +1964,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             else voiceParser.parse(clean).candidates.map { it.replace("|", "") }
                 .filter { it.isNotBlank() }
 
+            // FIX 5.9-sort-normalize:
+            // В поле поиска SORT должно попадать нормализованное число,
+            // а не сырая фонетика Vosk. Если парсер дал кандидатов —
+            // берём первый (он же primary); иначе оставляем как есть.
+            val normalizedForUi = candidates.firstOrNull() ?: clean
+
             if (candidates.isEmpty()) {
                 descriptionsUi.add("$clean — не найдено")
                 descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
-                uiTokens.add(clean)
+                uiTokens.add(normalizedForUi)
                 continue
             }
 
@@ -2009,12 +2015,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                                 descriptionsSpoken.add(
                                     "$subjectSpoken — найден в нескольких нарядах"
                                 )
-                                uiTokens.add(clean)
+                                uiTokens.add(normalizedForUi)
                             }
                             conflict != null -> {
                                 descriptionsUi.add("$subjectUi — $conflict")
                                 descriptionsSpoken.add("$subjectSpoken — $conflict")
-                                uiTokens.add(clean)
+                                uiTokens.add(normalizedForUi)
                             }
                             else -> {
                                 descriptionsUi.add("$subjectUi, Наряд №${hit.orderNumber}")
@@ -2033,7 +2039,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         descriptionsSpoken.add(
                             "${VoiceSpeaker.spellMimicry(clean)} — не найдено"
                         )
-                        uiTokens.add(clean)
+                        uiTokens.add(normalizedForUi)
                     }
                 }
             } catch (e: CancellationException) {
@@ -2042,7 +2048,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 Log.e(TAG, "voiceSortFlat: проверка «$clean» упала", e)
                 descriptionsUi.add("$clean — ошибка")
                 descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
-                uiTokens.add(clean)
+                uiTokens.add(normalizedForUi)
             }
         }
 
