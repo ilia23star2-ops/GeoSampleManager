@@ -1,6 +1,7 @@
 package com.example.geosamplemanager.data.util
 
 import android.content.Context
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -9,8 +10,10 @@ import android.util.Log
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.bluetooth.BluetoothController
 import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
+import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceCallback
 import com.example.geosamplemanager.data.voice.VoiceGrammar
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
@@ -24,23 +27,22 @@ import java.util.Locale
  * ВАЖНО: во время озвучки микрофон глушится — иначе Vosk слышит сам себя.
  *
  * FIX 5.8.6-2: скорость TTS 1.10, увеличенная задержка возобновления.
- * FIX 5.8.6-5c: time-based debounce 600 мс для дубликатов.
- * FIX 5.8.11-voice-24-debounce: буфер + динамический таймер для
- *   склейки фраз при обрыве Vosk по короткой паузе.
- * FIX 5.8.11-e4-fix-2: RESUME_DELAY_MS уменьшен до 250 мс.
+ * FIX 5.8.6-5c: time-based debounce 600 мс.
+ * FIX 5.8.11-voice-24-debounce: буфер + таймер склейки.
+ * FIX 5.8.11-e4-fix-2: RESUME_DELAY_MS до 250 мс.
+ * FIX 5.9-settings-bt: BluetoothSettings + SCO.
  *
- * FIX 5.9-settings-bt:
- *  - принимает BluetoothSettings и BluetoothController;
- *  - при startListening с включённым BT переключает звук в SCO;
- *  - метод applyBluetoothSettings() — смена на лету, пересоздаёт
- *    SpeechService, чтобы AudioRecord взял новый канал;
- *  - в destroy() выключает SCO.
+ * FIX 5.9-settings-sound:
+ *  - ttsVolume применяется реально: OFF — молчание,
+ *    QUIET/NORMAL/LOUD — разная громкость через KEY_PARAM_VOLUME;
+ *  - applyVoiceSettings(settings) — сменить настройки на лету.
  */
 class VoiceController(
     private val context: Context,
     private val callback: VoiceCallback,
     private var btSettings: BluetoothSettings = BluetoothSettings(),
-    private val btController: BluetoothController? = null
+    private val btController: BluetoothController? = null,
+    private var ttsVolume: TtsVolume = TtsVolume.NORMAL
 ) {
 
     private val app = context.applicationContext as GeoSampleApp
@@ -77,30 +79,27 @@ class VoiceController(
                     tts?.setSpeechRate(DEFAULT_SPEECH_RATE)
 
                     ttsReady = true
-                    Log.e(TAG, "TTS готов, скорость=$DEFAULT_SPEECH_RATE")
+                    Log.e(TAG, "TTS готов, скорость=$DEFAULT_SPEECH_RATE, " +
+                            "громкость=$ttsVolume")
                 } catch (e: Exception) {
                     Log.e(TAG, "TTS: ошибка языка", e)
                 }
 
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
-                        Log.e(TAG, "TTS onStart → пауза Vosk")
                         pauseVosk()
                     }
 
                     override fun onDone(utteranceId: String?) {
-                        Log.e(TAG, "TTS onDone → возобновляю Vosk через ${RESUME_DELAY_MS} мс")
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
-                        Log.e(TAG, "TTS onError → возобновляю Vosk")
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
-                        Log.e(TAG, "TTS onError($errorCode) → возобновляю Vosk")
                         resumeVoskDelayed(RESUME_DELAY_MS)
                     }
                 })
@@ -115,6 +114,11 @@ class VoiceController(
             Log.d(TAG, "speak: TTS не готов, пропускаю")
             return
         }
+        // FIX 5.9-settings-sound: OFF — полное молчание.
+        if (ttsVolume == TtsVolume.OFF) {
+            Log.d(TAG, "speak: TTS выключен (OFF), пропускаю")
+            return
+        }
 
         val clean = text.trim()
         if (clean.isEmpty()) return
@@ -122,15 +126,29 @@ class VoiceController(
         suppressUntil = System.currentTimeMillis() + estimateSpeechMs(clean)
 
         try {
+            val params = Bundle().apply {
+                putFloat(
+                    TextToSpeech.Engine.KEY_PARAM_VOLUME,
+                    ttsVolumeFloat(ttsVolume)
+                )
+            }
             tts?.speak(
                 clean,
                 TextToSpeech.QUEUE_FLUSH,
-                null,
+                params,
                 "v_${System.currentTimeMillis()}"
             )
         } catch (e: Exception) {
             Log.w(TAG, "speak failed", e)
         }
+    }
+
+    /**
+     * FIX 5.9-settings-sound:
+     * Сменить голосовые настройки на лету.
+     */
+    fun applyVoiceSettings(settings: VoiceSettings) {
+        ttsVolume = settings.ttsVolume
     }
 
     private fun estimateSpeechMs(text: String): Long {
@@ -140,7 +158,6 @@ class VoiceController(
     private fun pauseVosk() {
         try {
             speechService?.setPause(true)
-            Log.e(TAG, "Vosk: приостановлен")
         } catch (e: Exception) {
             Log.w(TAG, "pause failed", e)
         }
@@ -150,7 +167,6 @@ class VoiceController(
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
                 speechService?.setPause(false)
-                Log.e(TAG, "Vosk: возобновлён")
             } catch (e: Exception) {
                 Log.w(TAG, "resume failed", e)
             }
@@ -162,14 +178,10 @@ class VoiceController(
     // ================================================================
 
     fun startListening() {
-        if (listening) {
-            Log.d(TAG, "startListening: уже слушаю")
-            return
-        }
+        if (listening) return
 
         val model = app.voiceModel
         if (model == null) {
-            Log.e(TAG, "startListening: МОДЕЛЬ НЕ ЗАГРУЖЕНА")
             callback.onError("Модель Vosk не загружена")
             return
         }
@@ -181,8 +193,6 @@ class VoiceController(
             pendingText = null
             cancelPendingTimer()
 
-            // FIX 5.9-settings-bt: перед стартом — включить SCO,
-            // если выбрана BT-гарнитура.
             applyBluetoothAtStart()
 
             val service = speechService ?: createService(model)
@@ -205,32 +215,20 @@ class VoiceController(
         val rec = if (app.voiceUseGrammar) {
             try {
                 val grammar = VoiceGrammar.build()
-                Log.e(TAG, "createService: с грамматикой (${grammar.length} байт)")
                 Recognizer(model, SAMPLE_RATE, grammar)
             } catch (e: Exception) {
-                Log.e(TAG, "createService: грамматика упала, без неё", e)
                 Recognizer(model, SAMPLE_RATE)
             }
         } else {
-            Log.e(TAG, "createService: без грамматики")
             Recognizer(model, SAMPLE_RATE)
         }
 
         recognizer = rec
-
         val service = SpeechService(rec, SAMPLE_RATE)
         speechService = service
-
         return service
     }
 
-    /**
-     * FIX 5.9-settings-bt:
-     * Полная пересборка SpeechService — нужна, когда меняется
-     * источник микрофона (BT ↔ встроенный). AudioRecord
-     * внутри Vosk создаётся один раз и не подхватывает смену
-     * канала на лету.
-     */
     private fun recreateSpeechService() {
         try {
             speechService?.stop()
@@ -241,8 +239,6 @@ class VoiceController(
         speechService = null
         recognizer = null
         listening = false
-
-        // Запускаем заново — теперь с новым микрофоном.
         startListening()
     }
 
@@ -257,17 +253,13 @@ class VoiceController(
 
         pendingText = null
         cancelPendingTimer()
-
         listening = false
     }
 
     // ================================================================
-    // FIX 5.9-settings-bt: Bluetooth
+    // Bluetooth
     // ================================================================
 
-    /**
-     * Включить SCO, если в настройках выбрана BT-гарнитура.
-     */
     private fun applyBluetoothAtStart() {
         val useBt = btSettings.enabled && btSettings.deviceAddress != null
         if (!useBt) {
@@ -277,10 +269,6 @@ class VoiceController(
         btController?.startSco()
     }
 
-    /**
-     * Сменить BT-настройки на лету. Если активно слушаем и
-     * источник микрофона изменился — пересоздаём SpeechService.
-     */
     fun applyBluetoothSettings(newSettings: BluetoothSettings) {
         if (newSettings == btSettings) return
 
@@ -292,13 +280,8 @@ class VoiceController(
 
         if (prevUseBt == newUseBt && sameDevice) return
 
-        // Переключаем SCO.
         if (newUseBt) btController?.startSco() else btController?.stopSco()
-
-        // Пересоздаём микрофонный канал, если активно слушаем.
-        if (listening) {
-            recreateSpeechService()
-        }
+        if (listening) recreateSpeechService()
     }
 
     private val listener = object : RecognitionListener {
@@ -306,27 +289,19 @@ class VoiceController(
         override fun onPartialResult(hypothesis: String?) {
             val text = extractText(hypothesis, "partial")
             if (text.isEmpty()) return
-
-            if (!pendingText.isNullOrBlank()) {
-                restartPendingTimer()
-            }
-
+            if (!pendingText.isNullOrBlank()) restartPendingTimer()
             callback.onPartial(text)
         }
 
         override fun onResult(hypothesis: String?) {
             val text = extractText(hypothesis, "text")
             if (text.isEmpty()) return
-
             if (isEcho(text)) return
             if (isDuplicate(text)) return
 
             acceptFinal(text)
 
-            Log.e(TAG, "RESULT: «$text»")
-
             if (isInstantCommand(text)) {
-                Log.e(TAG, "RESULT: мгновенная команда → flush сразу")
                 pendingText = null
                 cancelPendingTimer()
                 deliverResult(text)
@@ -336,20 +311,16 @@ class VoiceController(
             val merged = if (pendingText.isNullOrBlank()) text
             else "${pendingText} $text"
             pendingText = merged
-            Log.e(TAG, "RESULT: буфер = «$merged»")
             restartPendingTimer()
         }
 
         override fun onFinalResult(hypothesis: String?) {
             val text = extractText(hypothesis, "text")
             if (text.isEmpty()) return
-
             if (isEcho(text)) return
             if (isDuplicate(text)) return
 
             acceptFinal(text)
-
-            Log.e(TAG, "FINAL: «$text»")
 
             val merged = if (pendingText.isNullOrBlank()) text
             else "${pendingText} $text"
@@ -361,7 +332,6 @@ class VoiceController(
             listening = false
             pendingText = null
             cancelPendingTimer()
-            Log.e(TAG, "VOSK onError: ${e?.message}", e)
             callback.onError("Ошибка распознавания: ${e?.message ?: "неизвестная"}")
         }
 
@@ -369,7 +339,6 @@ class VoiceController(
             listening = false
             pendingText = null
             cancelPendingTimer()
-            Log.e(TAG, "VOSK onTimeout")
             callback.onError("Тишина в микрофоне")
         }
     }
@@ -387,10 +356,7 @@ class VoiceController(
 
     private fun restartPendingTimer() {
         cancelPendingTimer()
-        val r = Runnable {
-            Log.e(TAG, "pending timer сработал (${DEBOUNCE_MS} мс)")
-            flushPending()
-        }
+        val r = Runnable { flushPending() }
         pendingRunnable = r
         handler.postDelayed(r, DEBOUNCE_MS)
     }
@@ -405,14 +371,12 @@ class VoiceController(
         val text = pendingText ?: return
         pendingText = null
         if (text.isBlank()) return
-        Log.e(TAG, "flush: «$text» → callback.onResult")
         deliverResult(text)
     }
 
     private fun deliverResult(text: String) {
         try {
             callback.onResult(text)
-            Log.e(TAG, "callback.onResult отработал")
         } catch (e: Exception) {
             Log.e(TAG, "callback.onResult УПАЛ", e)
         }
@@ -420,14 +384,12 @@ class VoiceController(
 
     private fun isEcho(text: String): Boolean {
         if (System.currentTimeMillis() >= suppressUntil) return false
-        Log.e(TAG, "VOSK echo suppressed: «$text»")
         return true
     }
 
     private fun isDuplicate(text: String): Boolean {
         val now = System.currentTimeMillis()
         if (text == lastFinalText && now - lastFinalAt < DUPLICATE_WINDOW_MS) {
-            Log.e(TAG, "VOSK duplicate suppressed: «$text»")
             return true
         }
         return false
@@ -439,19 +401,9 @@ class VoiceController(
     }
 
     fun destroy() {
-        Log.e(TAG, "destroy")
-
         try {
             speechService?.stop()
-        } catch (_: Exception) {
-        }
-
-        try {
             speechService?.shutdown()
-        } catch (_: Exception) {
-        }
-
-        try {
             recognizer?.close()
         } catch (_: Exception) {
         }
@@ -465,11 +417,7 @@ class VoiceController(
         pendingText = null
         cancelPendingTimer()
 
-        // FIX 5.9-settings-bt: выключить SCO при закрытии диалога.
-        try {
-            btController?.stopSco()
-        } catch (_: Exception) {
-        }
+        try { btController?.stopSco() } catch (_: Exception) {}
 
         try {
             tts?.stop()
@@ -502,6 +450,17 @@ class VoiceController(
 
         private const val DUPLICATE_WINDOW_MS = 600L
         private const val DEBOUNCE_MS = 1200L
+
+        /**
+         * FIX 5.9-settings-sound:
+         * Громкость TTS: KEY_PARAM_VOLUME — float от 0.0 до 1.0.
+         */
+        private fun ttsVolumeFloat(volume: TtsVolume): Float = when (volume) {
+            TtsVolume.OFF -> 0.0f
+            TtsVolume.QUIET -> 0.4f
+            TtsVolume.NORMAL -> 0.8f
+            TtsVolume.LOUD -> 1.0f
+        }
 
         private val INSTANT_COMMANDS: Set<String> = setOf(
             "стоп", "хатит", "хватит", "пауза", "паузу",

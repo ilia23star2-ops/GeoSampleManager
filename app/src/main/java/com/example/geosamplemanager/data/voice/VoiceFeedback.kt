@@ -19,10 +19,14 @@ import android.os.Looper
  * Гвардия от серии (правила К3, К5 из DECISIONS §13.5):
  *   • Один и тот же звук подряд в пределах «окна» — глушится.
  *   • OK         — окно 300 мс.
- *   • ATTENTION  — окно 2000 мс (первая запрещённая команда играет,
- *                  повторные — нет).
+ *   • ATTENTION  — окно 2000 мс.
  *   • ERROR      — окно 1500 мс.
  *   Разные типы звуков не глушат друг друга.
+ *
+ * FIX 5.9-settings-sound:
+ *  - поля enabled и volume управляют звуком;
+ *  - applySettings(settings) — применить настройки;
+ *  - intensity у ToneGenerator берётся из SoundLevel.
  */
 class VoiceFeedback(private val context: Context) {
 
@@ -33,16 +37,36 @@ class VoiceFeedback(private val context: Context) {
     private var lastKind: Kind? = null
     private var lastAtMs: Long = 0L
 
+    /** Вкл/выкл сигналы. */
+    var enabled: Boolean = true
+
+    /** Уровень громкости сигналов. */
+    var volume: SoundLevel = SoundLevel.NORMAL
+
+    // ================================================================
+    // Применение настроек
+    // ================================================================
+
+    /**
+     * FIX 5.9-settings-sound:
+     * Применить настройки. Вызывается при создании VoiceFeedback
+     * и при смене настроек на лету.
+     */
+    fun applySettings(settings: VoiceSettings) {
+        enabled = settings.feedbackEnabled
+        volume = settings.feedbackVolume
+    }
+
     // ================================================================
     // Публичный API
     // ================================================================
 
     /** Подтверждение: проба отмечена, вес принят, отмена/повтор, next. */
     fun soundOk() {
+        if (!enabled) return
         if (!canPlay(Kind.OK)) return
         try {
-            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
-            // Короткий высокий «принято».
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, volume.intensity)
             tg.startTone(ToneGenerator.TONE_PROP_ACK, 100)
             handler.postDelayed({
                 try { tg.release() } catch (_: Exception) {}
@@ -54,10 +78,10 @@ class VoiceFeedback(private val context: Context) {
 
     /** Внимание: другой наряд/участок/несколько, проба уже отмечена, нужен вес. */
     fun soundAttention() {
+        if (!enabled) return
         if (!canPlay(Kind.ATTENTION)) return
         try {
-            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
-            // Два ровных средних бипа.
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, volume.intensity)
             tg.startTone(ToneGenerator.TONE_PROP_BEEP2, 100)
             handler.postDelayed({
                 try { tg.startTone(ToneGenerator.TONE_PROP_BEEP2, 100) }
@@ -71,10 +95,10 @@ class VoiceFeedback(private val context: Context) {
 
     /** Ошибка: не найдено, ошибка поиска, проба не существует. */
     fun soundError() {
+        if (!enabled) return
         if (!canPlay(Kind.ERROR)) return
         try {
-            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, 80)
-            // Низкий длинный.
+            val tg = ToneGenerator(AudioManager.STREAM_MUSIC, volume.intensity)
             tg.startTone(ToneGenerator.TONE_PROP_NACK, 300)
             handler.postDelayed({
                 try { tg.release() } catch (_: Exception) {}
@@ -99,7 +123,6 @@ class VoiceFeedback(private val context: Context) {
             Kind.ERROR -> 1500L
         }
         if (lastKind == kind && now - lastAtMs < windowMs) {
-            // Тот же звук слишком быстро — глушим.
             return false
         }
         lastKind = kind
