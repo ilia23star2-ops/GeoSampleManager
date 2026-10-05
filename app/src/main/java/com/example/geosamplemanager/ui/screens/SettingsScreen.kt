@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +30,7 @@ import com.example.geosamplemanager.data.bluetooth.BtDevice
 import com.example.geosamplemanager.data.bluetooth.BtProfile
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.settings.UiScale
 import com.example.geosamplemanager.data.voice.SoundLevel
 import com.example.geosamplemanager.data.voice.SoundTestUtil
 import com.example.geosamplemanager.data.voice.TtsVolume
@@ -38,6 +40,10 @@ import kotlin.math.roundToInt
 
 /**
  * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок 0.5..2.0.
+ * FIX 5.9-settings-scale: раздел «Внешний вид» — масштаб интерфейса.
+ * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле,
+ * дерево категорий — в вертикальном. Иначе при крупном масштабе
+ * кнопки уходят за край экрана.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -104,6 +110,7 @@ private fun CategoryTree(
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .verticalScroll(rememberScrollState())
             .padding(8.dp)
     ) {
         Text(
@@ -145,7 +152,10 @@ private fun CategoryChipsRow(
     onSelect: (SettingsCategory) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         SettingsCategory.values().forEach { cat ->
@@ -170,9 +180,60 @@ private fun CategoryContent(
         SettingsCategory.VOICE -> VoiceSettingsContent(viewModel, modifier)
         SettingsCategory.SOUND -> SoundSettingsContent(viewModel, modifier)
         SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
-        SettingsCategory.APPEARANCE -> StubContent("Внешний вид", "Тема и размеры — в следующих обновлениях.", modifier)
+        SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
         SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
         SettingsCategory.ABOUT -> AboutContent(modifier)
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «ВНЕШНИЙ ВИД»
+// ============================================================
+
+@Composable
+private fun AppearanceSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val ap by viewModel.appearanceSettings.collectAsState()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Внешний вид",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Размер интерфейса",
+            help = "Масштаб применяется ко всему приложению сразу. " +
+                    "Крупнее — больше текст; отступы и кнопки растут " +
+                    "умеренно, чтобы вёрстка оставалась аккуратной."
+        ) {
+            Text(
+                "Выберите удобный размер",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            ChoiceRow(
+                options = UiScale.values().map { it to it.title },
+                selected = ap.scale,
+                onSelect = { viewModel.setUiScale(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = when (ap.scale) {
+                    UiScale.NORMAL -> "Текущий: обычный."
+                    UiScale.LARGE -> "Текущий: крупнее. Текст 115%, элементы 105%."
+                    UiScale.HUGE -> "Текущий: крупный. Текст 130%, элементы 110%."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
@@ -217,7 +278,6 @@ private fun SoundSettingsContent(
 
             Spacer(Modifier.height(12.dp))
 
-            // FIX 5.9-settings-sound-3-fix-2: скорость ползунком.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Скорость",
@@ -235,7 +295,7 @@ private fun SoundSettingsContent(
                 value = vs.ttsSpeedValue,
                 onValueChange = { viewModel.setTtsSpeed(it) },
                 valueRange = VoiceSettings.MIN_TTS_SPEED..VoiceSettings.MAX_TTS_SPEED,
-                steps = 14   // 0.5, 0.6, ..., 2.0 — 15 позиций
+                steps = 14
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1138,7 +1198,9 @@ private fun <T> ChoiceRow(
     onSelect: (T) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         options.forEach { (value, label) ->

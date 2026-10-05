@@ -9,6 +9,8 @@ import com.example.geosamplemanager.data.logs.DeviceInfo
 import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.data.logs.LogWriter
 import com.example.geosamplemanager.data.logs.LogsDatabase
+import com.example.geosamplemanager.data.settings.AppearanceSettings
+import com.example.geosamplemanager.data.settings.AppearanceSettingsRepository
 import com.example.geosamplemanager.data.settings.SettingsRepository
 import com.example.geosamplemanager.data.voice.VoiceSettingsRepository
 import com.example.geosamplemanager.data.voice.VoiceTtsHolder
@@ -42,6 +44,13 @@ import org.vosk.Model
  *
  * FIX 5.9-settings-bt:
  *  - bluetoothSettingsRepository — настройки BT-микрофона.
+ *
+ * FIX 5.9-settings-scale:
+ *  - appearanceSettingsRepository — настройки внешнего вида;
+ *  - appearance — StateFlow, чтобы изменение масштаба
+ *    применялось мгновенно (MainActivity.ReadyContent
+ *    перерисовывает дерево);
+ *  - updateAppearance() — записать в репозиторий и обновить Flow.
  */
 data class RestartRequest(val tick: Int, val route: String)
 
@@ -60,6 +69,9 @@ class GeoSampleApp : Application() {
         private set
 
     lateinit var bluetoothSettingsRepository: BluetoothSettingsRepository
+        private set
+
+    lateinit var appearanceSettingsRepository: AppearanceSettingsRepository
         private set
 
     var voiceModel: Model? = null
@@ -89,6 +101,15 @@ class GeoSampleApp : Application() {
      */
     private val logsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * FIX 5.9-settings-scale:
+     * Текущие настройки внешнего вида. Обновляется при старте
+     * (load из файла) и при изменении через настройки.
+     * UI подписывается на этот Flow через collectAsState.
+     */
+    private val _appearance = MutableStateFlow(AppearanceSettings())
+    val appearance: StateFlow<AppearanceSettings> = _appearance.asStateFlow()
+
     override fun onCreate() {
         super.onCreate()
 
@@ -103,9 +124,24 @@ class GeoSampleApp : Application() {
         voiceSettingsRepository = VoiceSettingsRepository(this)
         bluetoothSettingsRepository = BluetoothSettingsRepository(this)
 
+        // FIX 5.9-settings-scale: внешний вид — синхронно,
+        // чтобы density была корректной уже на первом кадре.
+        appearanceSettingsRepository = AppearanceSettingsRepository(this)
+        _appearance.value = appearanceSettingsRepository.load()
+
         VoiceTtsHolder.init(this)
 
         logAppStart()
+    }
+
+    /**
+     * FIX 5.9-settings-scale:
+     * Записать новые настройки внешнего вида: обновить StateFlow
+     * (UI перерисуется) и сохранить в файл.
+     */
+    fun updateAppearance(settings: AppearanceSettings) {
+        _appearance.value = settings
+        appearanceSettingsRepository.save(settings)
     }
 
     /**

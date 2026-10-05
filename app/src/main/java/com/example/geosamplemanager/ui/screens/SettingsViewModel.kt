@@ -9,9 +9,11 @@ import com.example.geosamplemanager.data.bluetooth.BluetoothController
 import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.bluetooth.BtDevice
 import com.example.geosamplemanager.data.bluetooth.BtProfile
+import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.settings.UiScale
 import com.example.geosamplemanager.data.voice.SoundLevel
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
@@ -33,12 +35,16 @@ enum class SettingsCategory(val title: String) {
 
 /**
  * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
+ *
+ * FIX 5.9-settings-scale: стейт внешнего вида + setUiScale.
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as GeoSampleApp).settingsRepository
-    private val voiceRepo = (application as GeoSampleApp).voiceSettingsRepository
-    private val btRepo = (application as GeoSampleApp).bluetoothSettingsRepository
+    private val app = application as GeoSampleApp
+
+    private val repo = app.settingsRepository
+    private val voiceRepo = app.voiceSettingsRepository
+    private val btRepo = app.bluetoothSettingsRepository
 
     private val btController = BluetoothController(application.applicationContext)
 
@@ -62,6 +68,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val _btActiveDevice = MutableStateFlow<BtDevice?>(null)
     val btActiveDevice: StateFlow<BtDevice?> = _btActiveDevice.asStateFlow()
+
+    /**
+     * FIX 5.9-settings-scale:
+     * Внешний вид. Источник — GeoSampleApp.appearance (единый
+     * StateFlow на всё приложение), чтобы изменения сразу
+     * применялись в ReadyContent.
+     */
+    private val _appearanceSettings = MutableStateFlow(app.appearance.value)
+    val appearanceSettings: StateFlow<AppearanceSettings> = _appearanceSettings.asStateFlow()
 
     private val _selectedCategory = MutableStateFlow(SettingsCategory.IMPORT)
     val selectedCategory: StateFlow<SettingsCategory> = _selectedCategory.asStateFlow()
@@ -88,6 +103,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun reload() {
         _settings.value = repo.load()
+        _appearanceSettings.value = app.appearance.value
         viewModelScope.launch {
             _voiceSettings.value = voiceRepo.load()
             _btSettings.value = btRepo.load()
@@ -267,6 +283,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             )
         )
         _message.value = "Настройки звука сброшены"
+    }
+
+    // ============ ВНЕШНИЙ ВИД ============
+
+    /**
+     * FIX 5.9-settings-scale:
+     * Смена масштаба интерфейса. Обновляет StateFlow вьюмодели
+     * и через GeoSampleApp — глобальный appearance, чтобы
+     * ReadyContent применил новую density сразу.
+     */
+    fun setUiScale(scale: UiScale) {
+        val updated = _appearanceSettings.value.copy(scale = scale)
+        _appearanceSettings.value = updated
+        app.updateAppearance(updated)
     }
 
     // ============ BLUETOOTH ============

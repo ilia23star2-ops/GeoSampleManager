@@ -31,7 +31,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
@@ -48,7 +50,14 @@ import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
  *
  * FIX 5.9-settings-bt:
  * При входе в приложение запрашиваем BLUETOOTH_CONNECT (API 31+).
- * Разрешение нужно для чтения списка сопряжённых устройств.
+ *
+ * FIX 5.9-settings-scale:
+ * Масштаб интерфейса применяется в ReadyContent через LocalDensity.
+ *
+ * FIX 5.9-settings-scale-2:
+ * fontScale множится на textFactor (сильно — текст становится
+ * крупнее), density — на densityFactor (слабо — отступы и иконки
+ * растут умеренно, вёрстка не разваливается).
  */
 class MainActivity : ComponentActivity() {
 
@@ -83,11 +92,6 @@ class MainActivity : ComponentActivity() {
         super.onPause()
     }
 
-    /**
-     * FIX 5.9-settings-bt:
-     * Запросить BLUETOOTH_CONNECT один раз при входе.
-     * На API < 31 — не нужно, разрешение не требуется.
-     */
     private fun requestBluetoothIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         val granted = ContextCompat.checkSelfPermission(
@@ -100,12 +104,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Корень приложения.
- *
- * Пока модель Vosk не готова — показываем экран загрузки.
- * Как только готова — обычный AppScaffold.
- */
 @Composable
 private fun AppRoot() {
     val context = LocalContext.current
@@ -145,6 +143,10 @@ private fun AppRoot() {
 /**
  * FIX 5.9-db-soft-restart:
  * Поддерево, которое пересоздаётся при смене restart-tick.
+ *
+ * FIX 5.9-settings-scale-2:
+ * LocalDensity переопределяется по настройке масштаба.
+ * fontScale — для текста, density — для элементов.
  */
 @Composable
 private fun ReadyContent(app: GeoSampleApp) {
@@ -152,12 +154,26 @@ private fun ReadyContent(app: GeoSampleApp) {
     val tick = restartRequest?.tick ?: 0
     val initialRoute = restartRequest?.route ?: Screen.MAIN.route
 
+    val appearance by app.appearance.collectAsState()
+
     key(tick) {
         val owner = remember { SimpleViewModelStoreOwner() }
         DisposableEffect(owner) {
             onDispose { owner.viewModelStore.clear() }
         }
-        CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+
+        val baseDensity = LocalDensity.current
+        val scaledDensity = remember(baseDensity, appearance.scale) {
+            Density(
+                density = baseDensity.density * appearance.scale.densityFactor,
+                fontScale = baseDensity.fontScale * appearance.scale.textFactor
+            )
+        }
+
+        CompositionLocalProvider(
+            LocalViewModelStoreOwner provides owner,
+            LocalDensity provides scaledDensity
+        ) {
             AppScaffold(initialRoute = initialRoute)
         }
     }
