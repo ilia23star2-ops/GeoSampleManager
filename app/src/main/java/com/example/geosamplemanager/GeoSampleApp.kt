@@ -13,6 +13,7 @@ import com.example.geosamplemanager.data.session.SessionStateRepository
 import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.AppearanceSettingsRepository
 import com.example.geosamplemanager.data.settings.SettingsRepository
+import com.example.geosamplemanager.data.stats.StatsDatabase
 import com.example.geosamplemanager.data.voice.VoiceSettingsRepository
 import com.example.geosamplemanager.data.voice.VoiceTtsHolder
 import kotlinx.coroutines.CoroutineScope
@@ -31,32 +32,24 @@ import org.vosk.Model
  * FIX 5.9-settings-bt: bluetoothSettingsRepository.
  * FIX 5.9-settings-scale: appearanceSettingsRepository, appearance.
  * FIX 5.9-settings-theme: тема в AppearanceSettings.
+ * FIX 5.9-main-a: sessionStateRepository, pendingSearchRequest.
+ * FIX 5.9-main-b: pendingReportRequest.
  *
- * FIX 5.9-main-a:
- *  - sessionStateRepository — последний активный наряд;
- *  - pendingSearchRequest — одноразовый запрос «открыть Сверку
- *    с конкретным нарядом». Устанавливается с Главной, читается
- *    в ReconciliationViewModel при первом появлении экрана.
+ * FIX 5.10-stat-model:
+ *  - statsDatabase — ленивая инициализация StatsDatabase.
+ *    Создаётся при первом обращении, не в onCreate, чтобы не
+ *    тормозить старт.
+ *  - в onTerminate — закрытие StatsDatabase для симметрии
+ *    с LogsDatabase.
  */
 data class RestartRequest(val tick: Int, val route: String)
 
-/**
- * FIX 5.9-main-a:
- * Одноразовый запрос от Главной — открыть Сверку с выбранным
- * нарядом. ReconciliationViewModel в init читает и очищает.
- */
 data class PendingSearchRequest(
     val orderId: Long,
     val areaTitle: String,
     val orderTitle: String
 )
 
-/**
- * FIX 5.9-main-b:
- * Одноразовый запрос от Главной — открыть Статистику с уже
- * выбранным нарядом для отчёта. StatsScreen читает в LaunchedEffect
- * и открывает ReportFormatDialog.
- */
 data class PendingReportRequest(
     val orderId: Long
 )
@@ -84,6 +77,14 @@ class GeoSampleApp : Application() {
     lateinit var sessionStateRepository: SessionStateRepository
         private set
 
+    /**
+     * FIX 5.10-stat-model:
+     * Ленивая инициализация — БД создаётся при первом обращении.
+     */
+    val statsDatabase: StatsDatabase by lazy {
+        StatsDatabase.getInstance(this)
+    }
+
     var voiceModel: Model? = null
 
     var voiceUseGrammar: Boolean = true
@@ -96,19 +97,8 @@ class GeoSampleApp : Application() {
     private val _appearance = MutableStateFlow(AppearanceSettings())
     val appearance: StateFlow<AppearanceSettings> = _appearance.asStateFlow()
 
-    /**
-     * FIX 5.9-main-a:
-     * Одноразовый запрос «открыть Сверку с нарядом X». Устанавливается
-     * с Главной перед навигацией. ReconciliationViewModel в init
-     * читает и очищает.
-     */
     private val _pendingSearchRequest = MutableStateFlow<PendingSearchRequest?>(null)
 
-    /**
-     * FIX 5.9-main-b:
-     * Одноразовый запрос от Главной — открыть Статистику с
-     * выбранным нарядом для отчёта.
-     */
     private val _pendingReportRequest = MutableStateFlow<PendingReportRequest?>(null)
 
     private val logsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -140,10 +130,6 @@ class GeoSampleApp : Application() {
         appearanceSettingsRepository.save(settings)
     }
 
-    /**
-     * FIX 5.9-main-a:
-     * Запросить открытие Сверки с конкретным нарядом.
-     */
     fun requestSearchForOrder(orderId: Long, areaTitle: String, orderTitle: String) {
         _pendingSearchRequest.value = PendingSearchRequest(
             orderId = orderId,
@@ -152,32 +138,22 @@ class GeoSampleApp : Application() {
         )
     }
 
-    /**
-     * FIX 5.9-main-a:
-     * Прочитать и обнулить запрос. Вызывается из ReconciliationViewModel.
-     */
     fun consumeSearchRequest(): PendingSearchRequest? {
         val r = _pendingSearchRequest.value
         _pendingSearchRequest.value = null
         return r
     }
-    /**
-     * FIX 5.9-main-b:
-     * Запросить открытие Статистики с конкретным нарядом для отчёта.
-     */
+
     fun requestReportFor(orderId: Long) {
         _pendingReportRequest.value = PendingReportRequest(orderId = orderId)
     }
 
-    /**
-     * FIX 5.9-main-b:
-     * Прочитать и обнулить запрос. Вызывается из StatsScreen.
-     */
     fun consumeReportRequest(): PendingReportRequest? {
         val r = _pendingReportRequest.value
         _pendingReportRequest.value = null
         return r
     }
+
     private fun logAppStart() {
         logsScope.launch {
             val previousCrash = CrashHandler.readAndClear(this@GeoSampleApp)
@@ -218,6 +194,7 @@ class GeoSampleApp : Application() {
     override fun onTerminate() {
         super.onTerminate()
         try { LogsDatabase.closeAndReset() } catch (_: Exception) {}
+        try { StatsDatabase.closeAndReset() } catch (_: Exception) {}
     }
 
     fun resetRepository() {
