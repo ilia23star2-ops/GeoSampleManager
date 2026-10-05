@@ -7,6 +7,7 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.logs.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,9 +22,10 @@ import kotlinx.coroutines.withContext
  * FIX 5.9-edit-multiselect — режим выделения, selectedIds.
  * FIX 5.9-edit-mass-ops — MassEditFields, applyMassEdit, deleteSelected.
  *
- * FIX 5.9-edit-mass-ops/2 (hotfix):
- *  - applyMassEditToRow синхронизирует status и weightControl:
- *    CONTROL → weightControl = true; NORMAL/BLANK → weightControl = false.
+ * FIX 5.9-db-restructure-edit:
+ *  - addArea / deleteArea / addOrder / deleteOrder переехали сюда
+ *    из DbViewModel. Теперь создание и удаление участков и нарядов
+ *    — здесь, в дереве Редактирования.
  */
 
 data class EditTreeData(
@@ -96,7 +98,7 @@ data class MassEditFields(
 }
 
 // ====================================================================
-// Чистые функции — тестируются отдельно.
+// Чистые функции
 // ====================================================================
 
 internal fun applyMultiselectToggle(
@@ -112,18 +114,6 @@ internal fun computeSelectionLabel(count: Int): String = when {
     else -> "$count проб"
 }
 
-/**
- * FIX 5.9-edit-mass-ops/2:
- * Применить mass-edit к одной строке.
- *
- * status и weightControl синхронизированы:
- *  - status = CONTROL → weightControl = true;
- *  - status = NORMAL или BLANK → weightControl = false;
- *  - status = null → weightControl не трогаем.
- *
- * controlWeight (число кг) не трогаем — пользователь вводит вручную
- * в сверке через WeightDialog.
- */
 internal fun applyMassEditToRow(
     row: SampleRow,
     fields: MassEditFields
@@ -591,6 +581,103 @@ class EditViewModel(application: Application) : AndroidViewModel(application) {
         _expandedAreaIds.value = emptySet()
         _expandedOrderIds.value = emptySet()
     }
+
+    // ============================================================
+    // FIX 5.9-db-restructure-edit: создание / удаление участков
+    // и нарядов перенесено сюда из DbViewModel.
+    // ============================================================
+
+    fun addArea(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) {
+            _message.value = "Введите название участка"
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val id = withContext(Dispatchers.IO) { repo.addArea(trimmed) }
+                if (id == -1L) {
+                    _message.value = "Участок «$trimmed» уже существует"
+                } else {
+                    _message.value = "Участок «$trimmed» добавлен"
+                    AppLog.edit("Добавлен участок «$trimmed»")
+                        .detail("area", trimmed)
+                        .write()
+                }
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+                AppLog.error("Ошибка добавления участка: ${e.message}", e)
+                    .detail("area", trimmed)
+                    .write()
+            }
+        }
+    }
+
+    fun deleteArea(areaId: Long, areaName: String) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repo.deleteAreaById(areaId) }
+                _message.value = "Участок «$areaName» удалён"
+                AppLog.edit("Удалён участок «$areaName»")
+                    .detail("area", areaName)
+                    .detail("area_id", areaId)
+                    .write()
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+                AppLog.error("Ошибка удаления участка: ${e.message}", e)
+                    .detail("area_id", areaId)
+                    .write()
+            }
+        }
+    }
+
+    fun addOrder(areaId: Long, orderNumber: String) {
+        val trimmed = orderNumber.trim()
+        if (trimmed.isEmpty()) {
+            _message.value = "Введите номер наряда"
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val id = withContext(Dispatchers.IO) { repo.addOrder(areaId, trimmed) }
+                if (id == -1L) {
+                    _message.value = "Наряд «$trimmed» уже есть в этом участке"
+                } else {
+                    _message.value = "Наряд «$trimmed» добавлен"
+                    AppLog.edit("Добавлен наряд «$trimmed»")
+                        .detail("area_id", areaId)
+                        .detail("order", trimmed)
+                        .write()
+                }
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+                AppLog.error("Ошибка добавления наряда: ${e.message}", e)
+                    .detail("area_id", areaId)
+                    .detail("order", trimmed)
+                    .write()
+            }
+        }
+    }
+
+    fun deleteOrder(orderId: Long, orderNumber: String) {
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { repo.deleteOrder(orderId) }
+                _message.value = "Наряд «$orderNumber» удалён"
+                AppLog.edit("Удалён наряд «$orderNumber»")
+                    .detail("order_id", orderId)
+                    .detail("order", orderNumber)
+                    .write()
+            } catch (e: Exception) {
+                _message.value = "Ошибка: ${e.message}"
+                AppLog.error("Ошибка удаления наряда: ${e.message}", e)
+                    .detail("order_id", orderId)
+                    .write()
+            }
+        }
+    }
+
+    // ============================================================
 
     fun saveSample(row: SampleRow) {
         val old = _rawTree.value?.findSample(row.id)

@@ -30,11 +30,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.9-edit-add-sample/3 — цвет статуса виден всегда.
  * FIX 5.9-edit-save-guard — EditSampleDialog с findConflict.
  * FIX 5.9-edit-multiselect — режим выделения, BottomBar.
+ * FIX 5.9-edit-mass-ops — MassEditDialog / MassDeleteDialog.
  *
- * FIX 5.9-edit-mass-ops:
- *  - в BottomBar добавлены кнопки «Изменить» и «Удалить»;
- *  - кнопки активны, если count > 0;
- *  - открывают MassEditDialog / MassDeleteDialog.
+ * FIX 5.9-db-restructure-edit:
+ *  - в дерево добавлены кнопки управления участками и нарядами:
+ *    «+ Участок» рядом с заголовком «Пробы»;
+ *    «+ Наряд» и «Удалить» — у каждого участка;
+ *    «Удалить» — у каждого наряда;
+ *  - диалоги создания / удаления перенесены из DbScreen.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -56,9 +59,14 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
     var deleteDialogRow by remember { mutableStateOf<SampleRow?>(null) }
     var addForOrderId by remember { mutableStateOf<Long?>(null) }
 
-    // FIX 5.9-edit-mass-ops.
     var showMassEditDialog by remember { mutableStateOf(false) }
     var showMassDeleteDialog by remember { mutableStateOf(false) }
+
+    // FIX 5.9-db-restructure-edit: перенос участков/нарядов.
+    var showAddAreaDialog by remember { mutableStateOf(false) }
+    var addOrderForAreaId by remember { mutableStateOf<Long?>(null) }
+    var areaToDelete by remember { mutableStateOf<EditAreaUi?>(null) }
+    var orderToDelete by remember { mutableStateOf<EditOrderUi?>(null) }
 
     LaunchedEffect(message) {
         message?.let {
@@ -102,6 +110,10 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onEnterMultiselect = { viewModel.enterMultiselect(it) },
                     onExitMultiselect = { viewModel.exitMultiselect() },
                     onToggleSelection = { viewModel.toggleSelection(it) },
+                    onAddArea = { showAddAreaDialog = true },
+                    onAddOrderToArea = { addOrderForAreaId = it },
+                    onDeleteArea = { areaToDelete = it },
+                    onDeleteOrder = { orderToDelete = it },
                     modifier = Modifier.fillMaxHeight().width(treeWidth)
                 )
                 VerticalDivider()
@@ -136,6 +148,10 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
                     onEnterMultiselect = { viewModel.enterMultiselect(it) },
                     onExitMultiselect = { viewModel.exitMultiselect() },
                     onToggleSelection = { viewModel.toggleSelection(it) },
+                    onAddArea = { showAddAreaDialog = true },
+                    onAddOrderToArea = { addOrderForAreaId = it },
+                    onDeleteArea = { areaToDelete = it },
+                    onDeleteOrder = { orderToDelete = it },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -233,6 +249,63 @@ fun EditScreen(viewModel: EditViewModel = viewModel()) {
         } else {
             addForOrderId = null
         }
+    }
+
+    // ============================================================
+    // FIX 5.9-db-restructure-edit: диалоги участков и нарядов.
+    // ============================================================
+
+    if (showAddAreaDialog) {
+        TextInputDialog(
+            title = "Новый участок",
+            label = "Название участка",
+            initial = "",
+            onConfirm = {
+                viewModel.addArea(it)
+                showAddAreaDialog = false
+            },
+            onDismiss = { showAddAreaDialog = false }
+        )
+    }
+
+    addOrderForAreaId?.let { areaId ->
+        val areaName = data.areas.firstOrNull { it.areaId == areaId }?.areaName ?: ""
+        TextInputDialog(
+            title = "Новый наряд в «$areaName»",
+            label = "Номер наряда",
+            initial = "",
+            onConfirm = {
+                viewModel.addOrder(areaId, it)
+                addOrderForAreaId = null
+            },
+            onDismiss = { addOrderForAreaId = null }
+        )
+    }
+
+    areaToDelete?.let { area ->
+        ConfirmDialog(
+            title = "Удалить участок?",
+            text = "Будут удалены все наряды и пробы участка " +
+                    "«${area.areaName}». Действие необратимо.",
+            onConfirm = {
+                viewModel.deleteArea(area.areaId, area.areaName)
+                areaToDelete = null
+            },
+            onDismiss = { areaToDelete = null }
+        )
+    }
+
+    orderToDelete?.let { order ->
+        ConfirmDialog(
+            title = "Удалить наряд?",
+            text = "Будут удалены все пробы наряда " +
+                    "«${order.orderNumber}». Действие необратимо.",
+            onConfirm = {
+                viewModel.deleteOrder(order.orderId, order.orderNumber)
+                orderToDelete = null
+            },
+            onDismiss = { orderToDelete = null }
+        )
     }
 }
 
@@ -365,6 +438,10 @@ private fun EditTreePanel(
     onEnterMultiselect: (String?) -> Unit,
     onExitMultiselect: () -> Unit,
     onToggleSelection: (String) -> Unit,
+    onAddArea: () -> Unit,
+    onAddOrderToArea: (Long) -> Unit,
+    onDeleteArea: (EditAreaUi) -> Unit,
+    onDeleteOrder: (EditOrderUi) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -436,6 +513,17 @@ private fun EditTreePanel(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f).padding(start = 8.dp)
                 )
+                // FIX 5.9-db-restructure-edit: «+ Участок».
+                IconButton(
+                    onClick = onAddArea,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.CreateNewFolder,
+                        contentDescription = "Добавить участок",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
                 IconButton(
                     onClick = {
                         if (multiselectMode) onExitMultiselect()
@@ -497,13 +585,16 @@ private fun EditTreePanel(
                             is EditTreeItem.AreaHeader -> AreaHeaderRow(
                                 area = item.area,
                                 expanded = item.expanded,
-                                onToggle = { onToggleArea(item.area.areaId) }
+                                onToggle = { onToggleArea(item.area.areaId) },
+                                onAddOrder = { onAddOrderToArea(item.area.areaId) },
+                                onDeleteArea = { onDeleteArea(item.area) }
                             )
                             is EditTreeItem.OrderHeader -> OrderHeaderRow(
                                 order = item.order,
                                 expanded = item.expanded,
                                 onToggle = { onToggleOrder(item.order.orderId) },
-                                onAdd = { onAddToOrder(item.order.orderId) }
+                                onAdd = { onAddToOrder(item.order.orderId) },
+                                onDelete = { onDeleteOrder(item.order) }
                             )
                             is EditTreeItem.SampleItem -> SampleItemRow(
                                 row = item.row,
@@ -578,11 +669,17 @@ private fun FiltersChipRow(
     }
 }
 
+/**
+ * FIX 5.9-db-restructure-edit:
+ * К заголовку участка добавлены кнопки «+ Наряд» и «Удалить».
+ */
 @Composable
 private fun AreaHeaderRow(
     area: EditAreaUi,
     expanded: Boolean,
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    onAddOrder: () -> Unit,
+    onDeleteArea: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -595,7 +692,7 @@ private fun AreaHeaderRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -618,16 +715,43 @@ private fun AreaHeaderRow(
                     fontSize = 10.sp
                 )
             }
+            IconButton(
+                onClick = onAddOrder,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "Добавить наряд",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = onDeleteArea,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Удалить участок",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
 
+/**
+ * FIX 5.9-db-restructure-edit:
+ * К заголовку наряда добавлена кнопка «Удалить».
+ */
 @Composable
 private fun OrderHeaderRow(
     order: EditOrderUi,
     expanded: Boolean,
     onToggle: () -> Unit,
-    onAdd: () -> Unit
+    onAdd: () -> Unit,
+    onDelete: () -> Unit
 ) {
     Surface(
         modifier = Modifier
@@ -640,7 +764,7 @@ private fun OrderHeaderRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
+                .padding(start = 10.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
@@ -672,6 +796,17 @@ private fun OrderHeaderRow(
                     contentDescription = "Добавить пробу",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Удалить наряд",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
@@ -1005,4 +1140,60 @@ private fun InfoRow(
             modifier = Modifier.weight(1f)
         )
     }
+}
+
+// ====================================================================
+// ДИАЛОГИ ДЛЯ УЧАСТКОВ И НАРЯДОВ
+// (перенесены из DbScreen.kt)
+// ====================================================================
+
+@Composable
+private fun TextInputDialog(
+    title: String,
+    label: String,
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text(label) },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text) }) { Text("Добавить") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
+private fun ConfirmDialog(
+    title: String,
+    text: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(text) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Удалить", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        }
+    )
 }
