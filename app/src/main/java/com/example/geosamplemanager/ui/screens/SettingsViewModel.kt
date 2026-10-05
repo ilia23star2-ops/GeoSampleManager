@@ -8,6 +8,9 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.voice.TtsVolume
+import com.example.geosamplemanager.data.voice.VoiceMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,12 +24,21 @@ enum class SettingsCategory(val title: String) {
     ABOUT("О приложении")
 }
 
+/**
+ * FIX 5.9-settings:
+ * В ViewModel добавлены настройки голосового помощника.
+ * Раздел «Голос» больше не заглушка.
+ */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = (application as GeoSampleApp).settingsRepository
+    private val voiceRepo = (application as GeoSampleApp).voiceSettingsRepository
 
     private val _settings = MutableStateFlow(repo.load())
     val settings: StateFlow<ImportSettings> = _settings.asStateFlow()
+
+    private val _voiceSettings = MutableStateFlow(VoiceSettings())
+    val voiceSettings: StateFlow<VoiceSettings> = _voiceSettings.asStateFlow()
 
     private val _selectedCategory = MutableStateFlow(SettingsCategory.IMPORT)
     val selectedCategory: StateFlow<SettingsCategory> = _selectedCategory.asStateFlow()
@@ -34,20 +46,34 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            _voiceSettings.value = voiceRepo.load()
+        }
+    }
+
     fun clearMessage() { _message.value = null }
 
     fun selectCategory(category: SettingsCategory) {
         _selectedCategory.value = category
     }
 
-    /** Перечитать настройки из файла. Вызывается при открытии экрана. */
+    /** Перечитать настройки из файлов. Вызывается при открытии экрана. */
     fun reload() {
         _settings.value = repo.load()
+        viewModelScope.launch {
+            _voiceSettings.value = voiceRepo.load()
+        }
     }
 
     private fun persist(updated: ImportSettings) {
         _settings.value = updated
         repo.save(updated)
+    }
+
+    private fun persistVoice(updated: VoiceSettings) {
+        _voiceSettings.value = updated
+        viewModelScope.launch { voiceRepo.save(updated) }
     }
 
     // ============ УЧАСТКИ ============
@@ -142,6 +168,37 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun resetToDefaults() {
         _settings.value = repo.resetToDefaults()
         _message.value = "Настройки сброшены к стандартным"
+    }
+
+    // ============ ГОЛОСОВОЙ ПОМОЩНИК ============
+
+    fun setTtsVolume(volume: TtsVolume) {
+        persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
+    }
+
+    fun setVoiceMode(mode: VoiceMode) {
+        persistVoice(_voiceSettings.value.copy(mode = mode))
+    }
+
+    fun setAutoStopMinutes(minutes: Int) {
+        persistVoice(_voiceSettings.value.copy(autoStopMinutes = minutes))
+    }
+
+    fun setShowCharacteristic(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(showCharacteristic = value))
+    }
+
+    fun setShowOnboarding(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(showOnboarding = value))
+    }
+
+    fun setUseGrammar(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(useGrammar = value))
+    }
+
+    fun resetVoiceToDefaults() {
+        persistVoice(VoiceSettings())
+        _message.value = "Настройки голоса сброшены"
     }
 
     // ============ ЭКСПОРТ / ИМПОРТ ============

@@ -22,18 +22,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.voice.TtsVolume
+import com.example.geosamplemanager.data.voice.VoiceMode
 
+/**
+ * FIX 5.9-logs-5: журнал открывается поверх Настроек.
+ * FIX 5.9-settings: разделы «Голос» и «О приложении» заполнены.
+ */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val context = LocalContext.current
     val message by viewModel.message.collectAsState()
     val selected by viewModel.selectedCategory.collectAsState()
 
-    // FIX 5.9-logs-5: журнал открывается поверх Настроек.
     var openedLogs by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.reload() }
@@ -45,7 +51,6 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-logs-5
     if (openedLogs) {
         LogsScreen(onClose = { openedLogs = false })
         return
@@ -157,17 +162,216 @@ private fun CategoryContent(
 ) {
     when (category) {
         SettingsCategory.IMPORT -> ImportSettingsContent(viewModel, modifier)
-        SettingsCategory.VOICE -> StubContent("Голос", "Настройки голосового помощника будут здесь.", modifier)
+        SettingsCategory.VOICE -> VoiceSettingsContent(viewModel, modifier)
         SettingsCategory.APPEARANCE -> StubContent("Внешний вид", "Тема и размеры — в следующих обновлениях.", modifier)
         SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
-        SettingsCategory.ABOUT -> StubContent("О приложении", "GeoSample Manager, версия 1.0", modifier)
+        SettingsCategory.ABOUT -> AboutContent(modifier)
     }
 }
 
+// ============================================================
+// РАЗДЕЛ «ГОЛОС»
+// ============================================================
+
 /**
- * FIX 5.9-logs-5:
- * Раздел «Система». Содержит кнопку «Открыть журнал событий».
+ * FIX 5.9-settings:
+ * Раздел «Голос». Настройки голосового помощника —
+ * озвучка, распознавание, поведение.
  */
+@Composable
+private fun VoiceSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val vs by viewModel.voiceSettings.collectAsState()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Голосовой помощник",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Озвучка",
+            help = "Голосовой помощник произносит ответы через синтезатор речи. " +
+                    "Здесь можно настроить громкость и что показывать в списке проб."
+        ) {
+            Text("Громкость", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    TtsVolume.OFF to "Выкл",
+                    TtsVolume.QUIET to "Тихая",
+                    TtsVolume.NORMAL to "Обычная",
+                    TtsVolume.LOUD to "Громкая"
+                ),
+                selected = vs.ttsVolume,
+                onSelect = { viewModel.setTtsVolume(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.showCharacteristic,
+                    onCheckedChange = { viewModel.setShowCharacteristic(it) }
+                )
+                Text(
+                    "Показывать колонку «Характеристика» в списке проб",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        InfoCard(
+            title = "Распознавание",
+            help = "Грамматика Vosk ограничивает словарь только нужными словами — " +
+                    "это резко повышает точность распознавания чисел и команд."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.useGrammar,
+                    onCheckedChange = { viewModel.setUseGrammar(it) }
+                )
+                Text(
+                    "Использовать грамматику распознавания",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Выключение снижает точность, но добавляет устойчивость " +
+                        "к нестандартным словам.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        InfoCard(
+            title = "Поведение",
+            help = "Авто-стоп выключает микрофон после указанного времени молчания. " +
+                    "Обучение — короткие экраны при первом запуске помощника."
+        ) {
+            Text("Авто-стоп", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    0 to "Выкл",
+                    5 to "5 мин",
+                    10 to "10 мин",
+                    20 to "20 мин"
+                ),
+                selected = vs.autoStopMinutes,
+                onSelect = { viewModel.setAutoStopMinutes(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.showOnboarding,
+                    onCheckedChange = { viewModel.setShowOnboarding(it) }
+                )
+                Text(
+                    "Показывать обучение при следующем запуске",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Режим работы", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    VoiceMode.NOVICE to "Начинающий",
+                    VoiceMode.EXPERIENCED to "Опытный"
+                ),
+                selected = vs.mode,
+                onSelect = { viewModel.setVoiceMode(it) }
+            )
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Сброс",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.resetVoiceToDefaults() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Сбросить настройки голоса") }
+            }
+        }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «О ПРИЛОЖЕНИИ»
+// ============================================================
+
+/**
+ * FIX 5.9-settings:
+ * Раздел «О приложении». Версия — из PackageManager.
+ */
+@Composable
+private fun AboutContent(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val versionName = remember {
+        try {
+            context.packageManager
+                .getPackageInfo(context.packageName, 0)
+                .versionName ?: "?"
+        } catch (_: Exception) {
+            "?"
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.height(16.dp))
+        Icon(
+            Icons.Default.Info,
+            contentDescription = null,
+            modifier = Modifier.size(64.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "GeoSample Manager",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            "Версия $versionName",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Приложение для управления геохимическими пробами " +
+                    "в горнодобывающей промышленности. Учёт нарядов, " +
+                    "импорт описей проб из Excel, сверка фактического " +
+                    "наличия, весовой контроль, заметки и фото.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «СИСТЕМА»
+// ============================================================
+
 @Composable
 private fun SystemSettingsContent(
     modifier: Modifier = Modifier,
