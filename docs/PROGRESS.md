@@ -2,21 +2,22 @@
 
 ## 5.9 серия — допиливание вкладок
 
-**Дата:** 2026-09-29 … 2026-10-02
+**Дата:** 2026-09-29 … 2026-10-05
 **Ветка:** `feature/5.9-full-project`
 **Контекст:** после релизной серии 5.8.11 — планомерное закрытие
-всех вкладок, кроме сверки. Закрыты: Статистика, Редактирование.
-В работе — БД.
+всех вкладок, кроме сверки. Закрыты: Статистика, Редактирование,
+БД, серия `logs`.
 
-### Вкладка «БД» — почти закрыта
+### Вкладка «БД» — закрыта
 
-**Дата:** 2026-10-01 … 2026-10-02
+**Дата:** 2026-10-01 … 2026-10-05
 **Пачки:** `db-style`, `db-info`, `db-backup-v2`, `db-backup-fix`,
 `db-restore-v2` (с 2 hotfix), `db-rollback`, `db-backups-ops`
 (2 подзахода), `db-clean`, `db-smooth-restart`, `db-soft-restart`,
 `db-import-picker` (с фиксом), `db-rollback-public` (с фиксом),
 `db-backup-manager` (с фиксом), `db-merge-v2` (7 подзаходов),
-`db-backups-fix`, `db-compare` (с фиксами).
+`db-backups-fix`, `db-compare` (с фиксами), `db-diagnostics`
+(2 подзахода), `db-restructure-edit` (2 подзахода).
 
 **Что было:** вкладка БД — просмотр участков/нарядов/проб,
 добавление участков и нарядов, удаление, простой бэкап файла `.db`
@@ -25,7 +26,8 @@
 **Что стало:** полноценный менеджер БД — экспорт/импорт,
 инфо-панель, авто-бэкапы с ротацией, откат, очистка, управление
 бэкапами, бесшовный перезапуск стека, слияние с умными
-конфликтами, сравнение двух БД.
+конфликтами, сравнение двух БД, диагностика. Управление участками
+и нарядами (создание, удаление) — перенесено в Редактирование.
 
 #### `db-style` — стилевые правки
 
@@ -38,6 +40,9 @@
 - Кнопка «Инфо» → `DbInfoDialog`.
 - `DatabaseRepository.getDbInfo()` — счётчики + размеры.
 - Новые запросы `countAll()` в трёх DAO.
+
+**Устарело:** в `db-restructure-edit-2` `DbInfoDialog` удалён,
+инфо встроено в `DbScreen` как постоянная панель.
 
 #### `db-backup-v2` — экспорт `.gsmbackup`
 
@@ -175,15 +180,182 @@
 - Узкий экран — две вкладки «Сводка» / «Подробности».
 - Удалён старый `DbCompareDialog`.
 
+#### `db-diagnostics` — поиск и исправление проблем
+
+**Два подзахода.**
+
+**Подзаход /1 — движок + DAO + тесты.**
+
+- `data/diagnostics/DbIssue.kt` — sealed-класс проблем:
+  `OrphanOrder`, `OrphanSample`, `BrokenPhotoLink`,
+  `PhotoFlagMismatch`.
+- `data/diagnostics/DbDiagnosticsEngine.kt` — чистая логика
+  поиска проблем.
+- `OrderDao.findOrphanOrders()`, `SampleDao.findOrphanSamples()`,
+  `SampleDao.getAllSamplesList()`, `SampleImageDao.getAllImages()`.
+- `DbDiagnosticsEngineTest` — 14 тестов.
+
+**Подзаход /2 — UI + применение + авто-бэкап.**
+
+- `data/diagnostics/DiagnosticsModels.kt` — `DbDiagnosticsState`
+  (Idle / Loading / Ready / Applying / Done / Error).
+- `DatabaseRepository.runDiagnostics()` и
+  `applyDiagnosticsFixes()` — применение исправлений в транзакции.
+- `ui/screens/DbDiagnosticsDialog.kt` — единый список с чек-боксами,
+  группировка по типу.
+- `DbViewModel` — состояние, выбор, применение.
+- `DbScreen` — кнопка «Диагностика».
+- Авто-бэкап `pre_diagnostics_*` перед исправлением.
+- `RollbackBackups.OPERATIONS` — добавлена `diagnostics`.
+
+**Проверки:**
+1. Наряды без участка.
+2. Пробы без наряда.
+3. Битые ссылки на фото (объединены пункты 3 и 5 из ТЗ).
+4. Флаг `has_photo = false`, но файлы на диске есть.
+
+#### `db-restructure-edit` — перенос участков/нарядов в Редактирование
+
+**Два подзахода.**
+
+**Подзаход /1 — перенос создания и удаления.**
+
+- `EditViewModel` — добавлены `addArea`, `deleteArea`,
+  `addOrder`, `deleteOrder` (перенесены из `DbViewModel`).
+- `EditScreen` — кнопка «+ Участок» над деревом; иконки
+  «+ Наряд» и «Удалить» у каждого участка; «Удалить» у каждого
+  наряда.
+- Диалоги `TextInputDialog` / `ConfirmDialog` перенесены
+  из `DbScreen` в `EditScreen`.
+- `DbScreen` — список участков/нарядов оставлен только для
+  просмотра (без кнопок создания/удаления).
+
+**Подзаход /2 — инфо-панель вместо списка.**
+
+- `DbScreen` — список участков/нарядов/проб убран полностью.
+  Вместо него — постоянная инфо-панель `DbInfoPanel`.
+- `DbViewModel` — убраны стейты `areas`, `selectedArea`,
+  `orders`, `selectedOrder`, `samples`; методы `selectArea`,
+  `selectOrder`.
+- `DbInfoDialog.kt` удалён. `formatBytes` переехал в `DbScreen.kt`.
+- Кнопка «Инфо» убрана — её роль выполняет панель.
+- Панель обновляется автоматически при заходе на вкладку +
+  кнопка «Обновить».
+
+### Серия `logs` — журнал аудита
+
+**Дата:** 2026-10-05
+**Пачки:** `logs-1` … `logs-8b` (9 подзаходов).
+
+**Что было:** журнала не было. При сбое непонятно, что делал
+оператор и почему приложение упало.
+
+**Что стало:** полный журнал аудита с двумя хранилищами:
+
+- `logs.db` — отдельная БД (не в основной схеме) для быстрого
+  чтения и фильтров.
+- `Downloads/GeoSampleManager/.logs/YYYY-MM-DD.log` — скрытый
+  файловый архив, по одному файлу на день.
+
+**Категории:** `app`, `nav`, `search`, `voice`, `mark`, `edit`,
+`db`, `error`.
+
+**Экран:** Настройки → Система → Журнал событий. Фильтры по
+категории, раскрытие details, двойная очистка с чек-боксом.
+
+#### `logs-1` — фундамент
+
+- `data/logs/LogCategory.kt`, `LogLevel.kt`, `LogEntry.kt`,
+  `LogDao.kt`, `LogsDatabase.kt`, `LogFormatter.kt`.
+- `LogsDatabase` — отдельная БД, `version = 1`.
+- `LogCategoryTest`, `LogLevelTest`, `LogFormatterTest` — 12.
+
+#### `logs-2` — движок
+
+- `data/logs/LogWriter.kt` — канал + батчи (50 записей или
+  раз в 500 мс), `trimToMaxEntries(10_000)`.
+- `data/logs/LogEntryBuilder.kt` — fluent-API.
+- `data/logs/DetailsJson.kt` — Gson-обёртка.
+- `data/logs/Log.kt` — точка входа (`Log.app`, `Log.db` и др.).
+- `DetailsJsonTest`, `LogEntryBuilderTest` — 19.
+
+#### `logs-3` — интеграция
+
+- `data/logs/DeviceInfo.kt` — снимок устройства.
+- `data/logs/CrashRecord.kt`, `CrashHandler.kt` — перехват
+  необработанных исключений; файл `pending_crash.json`
+  до следующего старта.
+- `GeoSampleApp` — `LogWriter.init`, `CrashHandler.install`,
+  запись `app_start` со снимком устройства и счётчиков БД.
+- `MainActivity` — `onResume` / `onPause` → логирование.
+- `NavGraph` — переходы на вкладки.
+- `CrashRecordTest` — 6.
+
+#### `logs-4a` — голос
+
+- `data/logs/AppLog.kt` — `typealias` для `Log`, чтобы не
+  конфликтовать с `android.util.Log`.
+- `VoiceDialog` — запись голосовых команд (`voice:cmd=...`)
+  с raw-текстом Vosk, командой и результатом.
+
+#### `logs-4b` — действия в редакторе
+
+- `data/logs/SampleRowDiff.kt` — diff между старой и новой
+  пробой, формирует фразу для журнала.
+- `ReconciliationViewModel` — логирование отметок, правок,
+  удаления, заметок, фото, Undo/Redo, массовых операций.
+- `SampleRowDiffTest` — 11.
+
+#### `logs-4c` — операции с БД
+
+- `DbViewModel` — логирование экспорта, импорта, отката,
+  очистки, слияния, диагностики.
+- Единая точка `performReplacement` — фразы по `operation`.
+
+#### `logs-5` — экран журнала
+
+- `data/logs/LogsFilter.kt` — enum с русскими метками.
+- `ui/screens/LogsViewModel.kt` — стейты, фильтры, очистка.
+- `ui/screens/LogsScreen.kt` — полноэкранный экран, разделители
+  по дням, чипы фильтра, раскрытие details.
+- `SettingsScreen` — раздел «Система» с кнопкой «Открыть журнал
+  событий».
+- `LogsFilterTest` — 6.
+
+#### `logs-6` / `logs-7` — файловый архив + формат
+
+- `data/logs/LogFileWriter.kt` — файловый архив.
+- Формат — Unicode-маркеры `●` / `⚠` / `✕`.
+- Шапка дня с разделителем `━`.
+- Время в записи — `HH:mm:ss` (дата в шапке).
+- Details раскрыты построчно через `└ key: value`.
+- Категория выровнена до 12 символов.
+- Папка — `Downloads/GeoSampleManager/.logs/` (с точкой —
+  скрыта от стандартных файловых менеджеров).
+- `LogFileWriterTest` — 11.
+
+#### `logs-8a` — UI-поиск и контекст
+
+- `ReconciliationViewModel` — логирование поисковых запросов
+  (после дебаунса, без спама).
+- Логирование выбора участка и наряда (категория `nav`).
+
+#### `logs-8b` — импорт Excel
+
+- `AddViewModel` — логирование импорта: файл, число листов,
+  пропуск/создание/замена наряда, финал (счётчики).
+- Ошибки чтения Excel — категория `error`.
+
 ### Вкладка «Редактирование» — закрыта
 
-**Дата:** 2026-10-01
+**Дата:** 2026-10-01 … 2026-10-05
 **Пачки:** `edit-viewmodel`, `edit-screen-search`, `edit-add-sample`,
 `edit-status-blank`, `edit-save-guard`, `edit-multiselect`,
-`edit-mass-ops`.
+`edit-mass-ops`, `db-restructure-edit` (1).
 
 **Что стало:** реактивный редактор с деревом, поиском, фильтрами,
 добавлением, правкой, мультивыбором, массовыми операциями.
+Управление участками и нарядами (создание, удаление).
 
 ### Пачка `report-xlsx` — закрыта
 
@@ -201,7 +373,8 @@
 - ✅ `docs/5.9-db-rollback-docs`.
 - ✅ `docs/5.9-db-series`.
 - ✅ `docs/5.9-db-merge`.
-- ✅ `docs/5.9-db-compare` — этот заход.
+- ✅ `docs/5.9-db-compare`.
+- ✅ `docs/5.9-logs-docs-1`, `docs/5.9-logs-docs-2`.
 
 ### Пачки Статистики (закрыты ранее)
 
