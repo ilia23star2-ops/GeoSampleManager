@@ -7,21 +7,23 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
@@ -45,17 +49,25 @@ import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.AnswerState
 import com.example.geosamplemanager.data.voice.UnifiedMatchKind
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * FIX 5.8.11-e4-ui-1:
- * Порог появления кнопки «Наверх». Показываем, если прокрутили
- * больше 10 элементов списка (firstVisibleItemIndex > 10).
+ * FIX 5.9-settings-sound-3-fix:
+ *  - openVoiceDialog и micPermissionLauncher стоят ДО requestMic.
+ *
+ * FIX 5.9-settings-scale-2:
+ *  - TopActionsPanel в горизонтальном скролле — при крупном масштабе
+ *    кнопка «?» уезжает за правый край, теперь её можно долистать;
+ *  - LegendDialog без жёсткого heightIn — контент скроллится сам,
+ *    кнопка «Понятно» всегда доступна.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
+
+private const val WIDE_THRESHOLD_DP = 600
 
 sealed interface ReconItem {
     val key: String
@@ -95,15 +107,12 @@ fun SearchScreen(
     val state = viewModel.state
     val context = LocalContext.current
 
-    // FIX 5.8.9e-3: не даём экрану гаснуть, пока сессия ГП активна.
     val view = LocalView.current
     DisposableEffect(state.voiceStatus) {
         view.keepScreenOn = state.voiceStatus != VoiceStatus.Idle
         onDispose { view.keepScreenOn = false }
     }
 
-    // FIX 5.8.11-e4-ui-1: состояние скролла списка проб
-    // + флаг показа кнопки «Наверх».
     val listState = rememberLazyListState()
     val showScrollTop by remember {
         derivedStateOf { shouldShowScrollTop(listState.firstVisibleItemIndex) }
@@ -121,10 +130,21 @@ fun SearchScreen(
     var settingsOrderTitle by remember { mutableStateOf<String?>(null) }
     var confirmResetBlankWeight by remember { mutableStateOf(false) }
     var confirmResetWeightControl by remember { mutableStateOf(false) }
+
     var bulkDialogGroupId by remember { mutableStateOf<String?>(null) }
-    var confirmClearAllGroupId by remember { mutableStateOf<String?>(null) }
+    var bulkDialogRowIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    var markAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+    var clearAllData by remember { mutableStateOf<Pair<String, Set<String>>?>(null) }
+
+    var selectedRowId by rememberSaveable { mutableStateOf<String?>(null) }
+
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
+
+    val app = context.applicationContext as GeoSampleApp
+    var btSettings by remember { mutableStateOf(BluetoothSettings()) }
+    var voiceSettings by remember { mutableStateOf(VoiceSettings()) }
 
     var noteText by remember { mutableStateOf("") }
     var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
@@ -134,6 +154,8 @@ fun SearchScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
+
+    val tableScrollState = rememberScrollState()
 
     val message by viewModel.message.collectAsState()
     LaunchedEffect(message) {
@@ -150,6 +172,23 @@ fun SearchScreen(
     fun hasCamera(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
+
+    fun openVoiceDialog() {
+        scope.launch {
+            btSettings = app.bluetoothSettingsRepository.load()
+            voiceSettings = app.voiceSettingsRepository.load()
+            voiceDialogOpen = true
+        }
+    }
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) openVoiceDialog()
+        else scope.launch {
+            snackbarHostState.showSnackbar("Без разрешения микрофона голос не работает")
+        }
+    }
 
     val takePictureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture()
@@ -191,15 +230,6 @@ fun SearchScreen(
         }
     }
 
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) voiceDialogOpen = true
-        else scope.launch {
-            snackbarHostState.showSnackbar("Без разрешения микрофона голос не работает")
-        }
-    }
-
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -219,7 +249,7 @@ fun SearchScreen(
     }
 
     fun requestMic() {
-        if (hasMic()) voiceDialogOpen = true
+        if (hasMic()) openVoiceDialog()
         else micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
@@ -249,21 +279,12 @@ fun SearchScreen(
         notePhotos = photos
     }
 
-    /**
-     * FIX 5.8.9d-3b: единый алгоритм через analyzeMark.
-     */
     fun onToggleFound(row: SampleRow) {
         val decision = analyzeMark(toMarkContext(state, row))
         when (decision) {
-            is MarkDecision.AlreadyFound -> {
-                alreadyFoundRowId = row.id
-            }
-            is MarkDecision.ImportError -> {
-                errorDialogRowId = row.id
-            }
-            is MarkDecision.Postponed -> {
-                postponedDialogRowId = row.id
-            }
+            is MarkDecision.AlreadyFound -> alreadyFoundRowId = row.id
+            is MarkDecision.ImportError -> errorDialogRowId = row.id
+            is MarkDecision.Postponed -> postponedDialogRowId = row.id
             is MarkDecision.NeedsControlWeight -> {
                 weightDialogRowId = row.id
                 weightDialogIsControl = true
@@ -272,28 +293,37 @@ fun SearchScreen(
                 weightDialogRowId = row.id
                 weightDialogIsControl = false
             }
-            is MarkDecision.MarkWithWeight -> {
+            is MarkDecision.MarkWithWeight ->
                 viewModel.setBlankWeightAndMarkFound(row.id, decision.weight)
-            }
-            is MarkDecision.CanMark -> {
-                viewModel.setFound(row.id, true)
-            }
+            is MarkDecision.CanMark -> viewModel.setFound(row.id, true)
         }
     }
 
     fun onMarkAllClick(groupId: String) {
-        val decisions = state.collectBulkDecisions(groupId)
+        val rowIds = state.visibleRowsForGroup(groupId).map { it.id }.toSet()
+        if (rowIds.isEmpty()) {
+            scope.launch { snackbarHostState.showSnackbar("Нечего отмечать") }
+            return
+        }
+        markAllData = groupId to rowIds
+    }
+
+    fun proceedMarkAll(groupId: String, rowIds: Set<String>) {
+        val decisions = state.collectBulkDecisionsForRows(groupId, rowIds)
         if (decisions.isEmpty()) {
-            val marked = viewModel.applyBulkMarkFound(groupId, emptyMap(), emptyMap())
+            val marked = viewModel.applyBulkMarkFoundForRows(
+                groupId, rowIds, emptyMap(), emptyMap(), emptyMap()
+            )
             scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
-        } else bulkDialogGroupId = groupId
+        } else {
+            bulkDialogGroupId = groupId
+            bulkDialogRowIds = rowIds
+        }
     }
 
     val isMulti = state.isMultiQuery
     val items by remember {
         derivedStateOf {
-            // FIX 5.8.6-5f: явные чтения State — гарантия, что
-            // derivedStateOf подписан на изменения _groups и _queryGroups.
             @Suppress("UNUSED_EXPRESSION")
             state.groups.toList()
             @Suppress("UNUSED_EXPRESSION")
@@ -303,7 +333,9 @@ fun SearchScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().imePadding()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().imePadding()) {
+        val isWide = maxWidth >= WIDE_THRESHOLD_DP.dp
+
         Column(modifier = Modifier.fillMaxSize()) {
             TopActionsPanel(
                 canUndo = state.canUndo, canRedo = state.canRedo,
@@ -319,7 +351,6 @@ fun SearchScreen(
             HorizontalDivider()
 
             LazyColumn(
-                // FIX 5.8.11-e4-ui-1: state для кнопки «Наверх».
                 state = listState,
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
@@ -442,7 +473,19 @@ fun SearchScreen(
                                         )
                                     },
                                     onMarkAllClick = { onMarkAllClick(item.group.id) },
-                                    onClearAllClick = { confirmClearAllGroupId = item.group.id },
+                                    onClearAllClick = {
+                                        val rowIds = state.visibleRowsForGroup(item.group.id)
+                                            .filter { it.found }
+                                            .map { it.id }
+                                            .toSet()
+                                        if (rowIds.isEmpty()) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar("Нет отмеченных проб")
+                                            }
+                                        } else {
+                                            clearAllData = item.group.id to rowIds
+                                        }
+                                    },
                                     onAddSample = {
                                         scope.launch {
                                             snackbarHostState.showSnackbar("Добавить пробу — в разработке")
@@ -451,11 +494,20 @@ fun SearchScreen(
                                 )
                                 is ReconItem.TableHead -> TableHeader(
                                     showCharacteristic = item.showCharacteristic,
-                                    wellColumnTitle = item.wellColumnTitle
+                                    wellColumnTitle = item.wellColumnTitle,
+                                    isWide = isWide,
+                                    scrollState = tableScrollState
                                 )
                                 is ReconItem.Sample -> SampleRowItem(
                                     row = item.row,
                                     showCharacteristic = item.showCharacteristic,
+                                    isWide = isWide,
+                                    scrollState = tableScrollState,
+                                    isSelected = selectedRowId == item.row.id,
+                                    onRowClick = {
+                                        selectedRowId = if (selectedRowId == item.row.id) null
+                                        else item.row.id
+                                    },
                                     onToggleFound = { onToggleFound(item.row) },
                                     onOpenNote = { noteDialogRowId = item.row.id },
                                     onTogglePostponed = {
@@ -489,8 +541,6 @@ fun SearchScreen(
             }
         }
 
-        // FIX 5.8.10-g2 (И-3):
-        // Snackbar поднят на 100 dp — не перекрывает панель ГП.
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
@@ -498,10 +548,6 @@ fun SearchScreen(
                 .padding(bottom = 100.dp, start = 16.dp, end = 16.dp)
         )
 
-        // FIX 5.8.11-e4-ui-1:
-        // Кнопка «Наверх». Появляется, если в списке прокрутили больше
-        // 10 элементов. Маленькая, внизу справа, над панелью ГП.
-        // Скролл — мгновенный (scrollToItem, не animateScrollToItem).
         if (showScrollTop) {
             SmallFloatingActionButton(
                 onClick = {
@@ -513,18 +559,15 @@ fun SearchScreen(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Icon(
-                    Icons.Filled.KeyboardArrowUp,
-                    contentDescription = "Наверх"
-                )
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Наверх")
             }
         }
 
-        // FIX 5.8.10-g1/g2 (И-3):
-        // Панель ГП — немодальная, прижата к низу экрана.
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
+                btSettings = btSettings,
+                voiceSettings = voiceSettings,
                 onDismiss = { voiceDialogOpen = false }
             )
         }
@@ -603,8 +646,9 @@ fun SearchScreen(
         val row = state.rowById(id)
         if (row != null) EditSampleDialog(
             row = row,
-            onSave = {
-                scope.launch { snackbarHostState.showSnackbar("Редактор — в разработке") }
+            findConflict = { sn -> viewModel.findConflictForEdit(id, sn) },
+            onSave = { updated ->
+                viewModel.saveEditedRow(updated)
                 editDialogRowId = null
             },
             onDismiss = { editDialogRowId = null }
@@ -656,8 +700,17 @@ fun SearchScreen(
         val row = state.rowById(id)
         if (row != null) PostponedDialog(
             row = row,
-            onConfirm = { viewModel.setFound(id, true); postponedDialogRowId = null },
+            onMarkFound = {
+                viewModel.setPostponed(id, false)
+                viewModel.setFound(id, true)
+                postponedDialogRowId = null
+            },
+            onUnpostpone = {
+                viewModel.setPostponed(id, false)
+                postponedDialogRowId = null
+            },
             onViewNote = { noteDialogRowId = id; postponedDialogRowId = null },
+            onEdit = { editDialogRowId = id; postponedDialogRowId = null },
             onDismiss = { postponedDialogRowId = null }
         )
     }
@@ -741,37 +794,77 @@ fun SearchScreen(
     }
 
     bulkDialogGroupId?.let { gid ->
-        val decisions = state.collectBulkDecisions(gid)
+        val rowIds = bulkDialogRowIds
+        val decisions = state.collectBulkDecisionsForRows(gid, rowIds)
         BulkActionsDialog(
             decisions = decisions,
-            onApply = { weights, postponedActions ->
-                val marked = viewModel.applyBulkMarkFound(gid, weights, postponedActions)
+            onApply = { controlWeights, blankWeights, postponedActions ->
+                val marked = viewModel.applyBulkMarkFoundForRows(
+                    gid, rowIds, controlWeights, blankWeights, postponedActions
+                )
                 bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
                 scope.launch { snackbarHostState.showSnackbar("Отмечено проб: $marked") }
             },
-            onDismiss = { bulkDialogGroupId = null }
+            onDismiss = {
+                bulkDialogGroupId = null
+                bulkDialogRowIds = emptySet()
+            }
         )
     }
 
-    confirmClearAllGroupId?.let { gid ->
+    markAllData?.let { (gid, rowIds) ->
         val group = state.groupById(gid)
+        val n = rowIds.size
+        val groupLabel = if (group != null)
+            "«${group.areaTitle} / ${group.orderTitle}»" else "группы"
+        AlertDialog(
+            onDismissRequest = { markAllData = null },
+            title = { Text("Отметить все?") },
+            text = {
+                Text(
+                    "Будут отмечены как найденные $n " +
+                            "${samplesWord(n)} в $groupLabel. Продолжить?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    markAllData = null
+                    proceedMarkAll(gid, rowIds)
+                }) { Text("Отметить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { markAllData = null }) { Text("Отмена") }
+            }
+        )
+    }
+
+    clearAllData?.let { (gid, rowIds) ->
+        val group = state.groupById(gid)
+        val n = rowIds.size
         if (group != null) {
             AlertDialog(
-                onDismissRequest = { confirmClearAllGroupId = null },
-                title = { Text("Сбросить все отметки?") },
+                onDismissRequest = { clearAllData = null },
+                title = { Text("Сбросить отметки?") },
                 text = {
-                    Text("Все отметки «найдена» в группе " +
-                            "«${group.areaTitle} / ${group.orderTitle}» будут сняты. Продолжить?")
+                    Text(
+                        "Все отметки «найдена» в группе " +
+                                "«${group.areaTitle} / ${group.orderTitle}» " +
+                                "будут сняты. Видимых проб: $n. Продолжить?"
+                    )
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        viewModel.clearAllFound(gid); confirmClearAllGroupId = null
-                    }) { Text("Да") }
+                        viewModel.clearAllFoundForRows(gid, rowIds)
+                        clearAllData = null
+                    }) { Text("Сбросить") }
                 },
                 dismissButton = {
-                    TextButton(onClick = { confirmClearAllGroupId = null }) { Text("Отмена") }
+                    TextButton(onClick = { clearAllData = null }) { Text("Отмена") }
                 }
             )
+        } else {
+            clearAllData = null
         }
     }
 
@@ -1033,6 +1126,16 @@ private fun variantWord(n: Int): String {
     }
 }
 
+private fun samplesWord(n: Int): String {
+    val mod10 = n % 10
+    val mod100 = n % 100
+    return when {
+        mod10 == 1 && mod100 != 11 -> "проба"
+        mod10 in 2..4 && mod100 !in 12..14 -> "пробы"
+        else -> "проб"
+    }
+}
+
 @Composable
 private fun GroupHeaderCard(
     group: SampleGroup, kind: GroupKind, expanded: Boolean,
@@ -1114,7 +1217,10 @@ private fun TopActionsPanel(
     onShowCharacteristicChange: (Boolean) -> Unit, onHelpClick: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TextButton(
@@ -1140,7 +1246,7 @@ private fun TopActionsPanel(
         if (undoDescription.isNotEmpty()) {
             Spacer(Modifier.width(6.dp))
             Box(
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(horizontal = 8.dp, vertical = 4.dp)
@@ -1150,7 +1256,7 @@ private fun TopActionsPanel(
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(6.dp))
-        } else Spacer(Modifier.weight(1f))
+        } else Spacer(Modifier.width(6.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1269,9 +1375,9 @@ private fun VoiceModeChip(
 ) {
     val isSort = mode == VoiceSessionMode.SORT
     val container = if (isSort) MaterialTheme.colorScheme.tertiaryContainer
-                    else MaterialTheme.colorScheme.primaryContainer
+    else MaterialTheme.colorScheme.primaryContainer
     val content = if (isSort) MaterialTheme.colorScheme.onTertiaryContainer
-                  else MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.onPrimaryContainer
     Box(
         modifier = Modifier
             .padding(start = 4.dp)
@@ -1370,11 +1476,6 @@ private fun MultiQueryIndicatorList(quickAnswers: List<QuickAnswer>) {
     }
 }
 
-/**
- * FIX 5.8.11-sort-fix:
- * Раньше было просто «1 · NV1366» — непонятно, что такое «1».
- * Теперь «Наряд №1 · NV1366».
- */
 private fun buildAnswerLine(qa: QuickAnswer): String {
     val orderNum = qa.orderTitle?.removePrefix("Наряд №")?.trim().orEmpty()
     val value = qa.answerValue
@@ -1566,46 +1667,97 @@ private fun FiltersRow(
 }
 
 @Composable
-private fun TableHeader(showCharacteristic: Boolean, wellColumnTitle: String) {
+private fun TableHeader(
+    showCharacteristic: Boolean,
+    wellColumnTitle: String,
+    isWide: Boolean,
+    scrollState: androidx.compose.foundation.ScrollState
+) {
+    val modifier = Modifier
+        .fillMaxWidth()
+        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        .then(
+            if (!isWide) Modifier.horizontalScroll(scrollState) else Modifier
+        )
+        .padding(horizontal = 12.dp, vertical = 6.dp)
+
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Spacer(Modifier.width(48.dp))
-        HeaderCell("п/п", 36.dp)
-        HeaderCell(wellColumnTitle, 90.dp)
-        HeaderCell("№ пробы", 110.dp)
-        HeaderCell("Интервал", 100.dp)
-        HeaderCell("Вес", 90.dp)
-        if (showCharacteristic) HeaderCell("Характеристика", 120.dp)
-        HeaderCell("Тип", 110.dp)
-        Spacer(Modifier.weight(1f))
-        Spacer(Modifier.width(80.dp))
+        FixedHeaderCell("п/п", 36.dp)
+        if (isWide) {
+            WeightedHeaderCell(wellColumnTitle)
+            WeightedHeaderCell("№ пробы")
+        } else {
+            FixedHeaderCell(wellColumnTitle, 140.dp)
+            FixedHeaderCell("№ пробы", 140.dp)
+        }
+        FixedHeaderCell("Интервал", 100.dp)
+        FixedHeaderCell("Вес", 90.dp)
+        if (showCharacteristic) FixedHeaderCell("Характеристика", 120.dp)
+        FixedHeaderCell("Тип", 110.dp)
+        Spacer(Modifier.width(120.dp))
     }
 }
 
 @Composable
-private fun HeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
-    Text(text, style = MaterialTheme.typography.labelSmall,
+private fun FixedHeaderCell(text: String, width: androidx.compose.ui.unit.Dp) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.width(width))
+        modifier = Modifier.width(width)
+    )
+}
+
+@Composable
+private fun RowScope.WeightedHeaderCell(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.weight(1f)
+    )
 }
 
 @Composable
 private fun SampleRowItem(
     row: SampleRow, showCharacteristic: Boolean,
+    isWide: Boolean,
+    scrollState: androidx.compose.foundation.ScrollState,
+    isSelected: Boolean,
+    onRowClick: () -> Unit,
     onToggleFound: () -> Unit, onOpenNote: () -> Unit, onTogglePostponed: () -> Unit,
     onOpenEdit: () -> Unit, onOpenDelete: () -> Unit, onToggleControl: () -> Unit,
     onWeightClick: () -> Unit, onCharacteristicClick: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
+    val baseBg = rowBackgroundColor(row)
+    val selectedOverlay = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(rowBackgroundColor(row))
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(baseBg)
+            .then(
+                if (isSelected) Modifier.background(selectedOverlay) else Modifier
+            )
+            .then(
+                if (isSelected) Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = RoundedCornerShape(4.dp)
+                ) else Modifier
+            )
+            .clickable { onRowClick() }
+            .then(
+                if (!isWide) Modifier.horizontalScroll(scrollState) else Modifier
+            )
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1618,21 +1770,42 @@ private fun SampleRowItem(
             modifier = Modifier.width(36.dp)
         )
 
-        Column(modifier = Modifier.width(90.dp)) {
-            Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium)
-            Text("скв.", style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (isWide) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("скв.", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("№ в скв.: ${row.numberInWell}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            Column(modifier = Modifier.width(140.dp)) {
+                Text(row.wellNumber, style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("скв.", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Column(modifier = Modifier.width(140.dp)) {
+                Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("№ в скв.: ${row.numberInWell}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        Column(modifier = Modifier.width(110.dp)) {
-            Text(row.sampleNumber, style = MaterialTheme.typography.bodyMedium)
-            Text("№ в скв.: ${row.numberInWell}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+
         Column(modifier = Modifier.width(100.dp)) {
             Text("${row.intervalFrom}–${row.intervalTo}",
-                style = MaterialTheme.typography.bodySmall)
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text("интервал, м", style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -1644,9 +1817,10 @@ private fun SampleRowItem(
         ) {
             Text(text = row.weight?.let { "$it кг" } ?: "—",
                 style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
                 color = if (weightClickable) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurface)
-            if (row.controlWeight != null) {
+            if (row.weightControl && row.controlWeight != null) {
                 Text("(${row.controlWeight} кг)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary)
@@ -1680,59 +1854,64 @@ private fun SampleRowItem(
             )
         }
 
-        Spacer(Modifier.weight(1f))
+        Box(
+            modifier = Modifier.width(120.dp),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (row.weightControl) Icon(Icons.Filled.Scale, "ВК",
+                    tint = Color(0xFF7B1FA2), modifier = Modifier.padding(end = 4.dp))
+                if (row.postponed) Icon(Icons.Filled.PauseCircle, "Отложена",
+                    tint = Color(0xFF1976D2), modifier = Modifier.padding(end = 4.dp))
+                if (row.hasNote) Icon(Icons.Filled.EditNote, "Заметка",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 4.dp))
+                if (row.hasPhoto) Icon(Icons.Filled.PhotoCamera, "Фото",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(end = 4.dp))
+                if (row.hasImportError) Icon(Icons.Filled.Warning, "Ошибка",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(end = 4.dp))
 
-        if (row.weightControl) Icon(Icons.Filled.Scale, "ВК",
-            tint = Color(0xFF7B1FA2), modifier = Modifier.padding(end = 4.dp))
-        if (row.postponed) Icon(Icons.Filled.PauseCircle, "Отложена",
-            tint = Color(0xFF1976D2), modifier = Modifier.padding(end = 4.dp))
-        if (row.hasNote) Icon(Icons.Filled.EditNote, "Заметка",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(end = 4.dp))
-        if (row.hasPhoto) Icon(Icons.Filled.PhotoCamera, "Фото",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(end = 4.dp))
-        if (row.hasImportError) Icon(Icons.Filled.Warning, "Ошибка",
-            tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.padding(end = 4.dp))
-
-        Box {
-            IconButton({ menuOpen = true }, Modifier.size(40.dp)) {
-                Icon(Icons.Filled.MoreVert, "Действия")
-            }
-            if (menuOpen) {
-                DropdownMenu(menuOpen, { menuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Заметка и фото") },
-                        leadingIcon = { Icon(Icons.Filled.EditNote, null) },
-                        onClick = { menuOpen = false; onOpenNote() }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(if (row.postponed) "Снять отложенную" else "Отложить") },
-                        leadingIcon = { Icon(Icons.Filled.PauseCircle, null) },
-                        onClick = { menuOpen = false; onTogglePostponed() }
-                    )
-                    if (!row.isBlank) {
-                        DropdownMenuItem(
-                            text = { Text(
-                                if (row.weightControl) "Снять весовой контроль"
-                                else "Поставить весовой контроль") },
-                            leadingIcon = { Icon(Icons.Filled.Scale, null) },
-                            onClick = { menuOpen = false; onToggleControl() }
-                        )
+                Box {
+                    IconButton({ menuOpen = true }, Modifier.size(40.dp)) {
+                        Icon(Icons.Filled.MoreVert, "Действия")
                     }
-                    DropdownMenuItem(
-                        text = { Text("Редактировать") },
-                        leadingIcon = { Icon(Icons.Filled.Edit, null) },
-                        onClick = { menuOpen = false; onOpenEdit() }
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Удалить", color = MaterialTheme.colorScheme.error) },
-                        leadingIcon = { Icon(Icons.Filled.Delete, null,
-                            tint = MaterialTheme.colorScheme.error) },
-                        onClick = { menuOpen = false; onOpenDelete() }
-                    )
+                    if (menuOpen) {
+                        DropdownMenu(menuOpen, { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Заметка и фото") },
+                                leadingIcon = { Icon(Icons.Filled.EditNote, null) },
+                                onClick = { menuOpen = false; onOpenNote() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (row.postponed) "Снять отложенную" else "Отложить") },
+                                leadingIcon = { Icon(Icons.Filled.PauseCircle, null) },
+                                onClick = { menuOpen = false; onTogglePostponed() }
+                            )
+                            if (!row.isBlank) {
+                                DropdownMenuItem(
+                                    text = { Text(
+                                        if (row.weightControl) "Снять весовой контроль"
+                                        else "Поставить весовой контроль") },
+                                    leadingIcon = { Icon(Icons.Filled.Scale, null) },
+                                    onClick = { menuOpen = false; onToggleControl() }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("Редактировать") },
+                                leadingIcon = { Icon(Icons.Filled.Edit, null) },
+                                onClick = { menuOpen = false; onOpenEdit() }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Удалить", color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = { Icon(Icons.Filled.Delete, null,
+                                    tint = MaterialTheme.colorScheme.error) },
+                                onClick = { menuOpen = false; onOpenDelete() }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1821,8 +2000,13 @@ private fun LegendDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Пояснения к символике") },
         text = {
+            // FIX 5.9-settings-scale-2:
+            // убран heightIn(max = 420.dp). AlertDialog сам ограничит
+            // высоту экрана, а контент скроллится. Так кнопка «Понятно»
+            // всегда доступна, даже при крупном масштабе.
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1869,6 +2053,22 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                     style = MaterialTheme.typography.bodySmall)
 
                 Spacer(Modifier.height(4.dp))
+                Text("Массовые операции",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("«Отметить все» и «Сбросить все» работают только по ВИДИМЫМ " +
+                        "пробам (с учётом поиска и фильтров). Перед выполнением " +
+                        "запрашивается подтверждение с числом проб.",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Выделение строки",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("Тапни по пустому месту строки — она подсветится рамкой. " +
+                        "Так удобно при горизонтальном скролле не терять нужную пробу. " +
+                        "Повторный тап — снимает выделение.",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
                 Text("Цвет фона строки",
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 LegendRow(Color(0xFFA5D6A7), "Проба найдена")
@@ -1912,6 +2112,14 @@ private fun LegendDialog(onDismiss: () -> Unit) {
                         "• 🔵 ПОИСК — со статистикой и отметками (по умолчанию).\n" +
                         "• 🟠 СОРТ — сортировка: без статистики, без отметок.\n\n" +
                         "Тап по чипу переключает режим. Голосом: «поиск» / «сортировка».",
+                    style = MaterialTheme.typography.bodySmall)
+
+                Spacer(Modifier.height(4.dp))
+                Text("Горизонтальный скролл таблицы",
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text("На телефоне таблица проб скроллится вбок — сдвинь строку " +
+                        "влево-вправо, чтобы увидеть остальные колонки. На планшете " +
+                        "и в ландшафте всё видно сразу.",
                     style = MaterialTheme.typography.bodySmall)
             }
         },

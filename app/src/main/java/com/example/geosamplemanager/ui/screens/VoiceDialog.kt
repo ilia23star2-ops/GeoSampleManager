@@ -17,6 +17,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.example.geosamplemanager.data.bluetooth.BluetoothController
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
+import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.util.VoiceController
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.VoiceCallback
@@ -26,6 +29,7 @@ import com.example.geosamplemanager.data.voice.VoiceExecResult
 import com.example.geosamplemanager.data.voice.VoiceFeedback
 import com.example.geosamplemanager.data.voice.VoiceOrdinals
 import com.example.geosamplemanager.data.voice.VoiceSessionMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import com.example.geosamplemanager.data.voice.VoiceSpeaker
 import com.example.geosamplemanager.data.voice.VoiceStatus
 import com.example.geosamplemanager.data.voice.WeightQueueKind
@@ -37,9 +41,20 @@ private const val LOG_TAG = "VoiceDialog"
 
 private const val TIMEOUT_TICK_MS = 250L
 
+/**
+ * FIX 5.9-settings-bt: BluetoothSettings → VoiceController.
+ * FIX 5.9-settings-sound: ttsVolume → VoiceController.
+ *
+ * FIX 5.9-settings-sound-3-fix-2:
+ *  - в VoiceController теперь передаётся ttsSpeed (был пропущен);
+ *  - добавлен лог с фактическими настройками, чтобы видеть в logcat,
+ *    какие значения ушли в контроллер.
+ */
 @Composable
 fun VoiceDialog(
     viewModel: ReconciliationViewModel,
+    btSettings: BluetoothSettings = BluetoothSettings(),
+    voiceSettings: VoiceSettings = VoiceSettings(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -55,7 +70,13 @@ fun VoiceDialog(
     var expanded by remember { mutableStateOf(true) }
 
     DisposableEffect(Unit) {
-        Log.e(LOG_TAG, "DisposableEffect: НАЧАЛО")
+        Log.e(
+            LOG_TAG,
+            "НАЧАЛО: voiceSettings.ttsVolume=${voiceSettings.ttsVolume}, " +
+                    "ttsSpeedValue=${voiceSettings.ttsSpeedValue}, " +
+                    "feedbackEnabled=${voiceSettings.feedbackEnabled}, " +
+                    "feedbackVolume=${voiceSettings.feedbackVolume}"
+        )
 
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -68,6 +89,7 @@ fun VoiceDialog(
         }
 
         val fb = VoiceFeedback(context)
+        fb.applySettings(voiceSettings)
         feedback = fb
 
         val callback = object : VoiceCallback {
@@ -121,6 +143,13 @@ fun VoiceDialog(
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
 
+                        AppLog.voice("Голос: «$text»")
+                            .detail("raw", text)
+                            .detail("command", cmd.toString())
+                            .detail("mode", viewModel.voiceSession.mode.name)
+                            .detail("result", result.toString())
+                            .write()
+
                         recognizedText = displayRecognized(text, result)
                         resultText = describeResult(result, viewModel)
                         status = "Готово"
@@ -135,6 +164,14 @@ fun VoiceDialog(
                         handleFeedback(result, fb, controller, viewModel)
                     } catch (e: Exception) {
                         Log.e(LOG_TAG, "voiceExecute УПАЛ", e)
+                        AppLog.error(
+                            "Ошибка голосовой команды: ${e.message}",
+                            e
+                        )
+                            .detail("raw", text)
+                            .detail("command", cmd.toString())
+                            .write()
+
                         resultText = "Ошибка: ${e.message}"
                         status = "Ошибка"
                         viewModel.setVoiceStatus(VoiceStatus.Error(e.message ?: "ошибка"))
@@ -150,8 +187,25 @@ fun VoiceDialog(
             }
         }
 
-        val c = VoiceController(context, callback)
+        val btController = BluetoothController(context)
+
+        // FIX 5.9-settings-sound-3-fix-2: передаём ttsSpeed.
+        val c = VoiceController(
+            context = context,
+            callback = callback,
+            btSettings = btSettings,
+            btController = btController,
+            ttsVolume = voiceSettings.ttsVolume,
+            ttsSpeed = voiceSettings.ttsSpeedValue
+        )
         controller = c
+
+        Log.e(
+            LOG_TAG,
+            "VoiceController создан: volume=${voiceSettings.ttsVolume}, " +
+                    "speed=${voiceSettings.ttsSpeedValue}"
+        )
+
         c.startListening()
 
         onDispose {
@@ -222,11 +276,6 @@ fun VoiceDialog(
     }
 }
 
-/**
- * FIX 5.8.11-sort-fix-4:
- * Для Message читаем display (канонический номер), если задан.
- * Иначе — сырой Vosk. Для FoundOne — query, как было.
- */
 private fun displayRecognized(rawText: String, result: VoiceExecResult): String {
     return when (result) {
         is VoiceExecResult.FoundOne -> result.query

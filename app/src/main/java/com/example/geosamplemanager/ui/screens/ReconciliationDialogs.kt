@@ -324,9 +324,29 @@ private fun PhotoThumbnail(
 // Редактор пробы
 // ====================================================================
 
+/**
+ * FIX 5.9-edit-status-blank:
+ *  - при статусе «Холостая» поля интервала скрыты;
+ *  - при возврате на «Обычная» — интервал восстанавливается;
+ *  - при сохранении холостой интервал уходит как null;
+ *  - для не-холостой интервал обязателен.
+ *
+ * FIX 5.9-validation-fix:
+ *  - кнопка «Сохранить» всегда активна;
+ *  - при клике выставляется validationAttempted = true — тогда
+ *    под невалидными полями появляются подписи;
+ *  - сохранение не проходит, пока форма невалидна.
+ *
+ * FIX 5.9-edit-save-guard:
+ *  - новый параметр findConflict: (String) -> Boolean — проверяет,
+ *    занят ли № пробы другой пробой в этом же наряде;
+ *  - если № изменён И занят → красная подпись «№ уже занят»,
+ *    сохранение блокируется.
+ */
 @Composable
 fun EditSampleDialog(
     row: SampleRow,
+    findConflict: (String) -> Boolean,
     onSave: (SampleRow) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -340,13 +360,50 @@ fun EditSampleDialog(
     var type by remember { mutableStateOf(row.type) }
     var status by remember { mutableStateOf(row.status) }
 
+    val isBlank = status == SampleStatus.BLANK
+
+    var validationAttempted by remember { mutableStateOf(false) }
+
+    val fromParsed = intervalFrom.replace(',', '.').toDoubleOrNull()
+    val toParsed = intervalTo.replace(',', '.').toDoubleOrNull()
+
+    val fromError = !isBlank && fromParsed == null
+    val toError = !isBlank && toParsed == null
+    val orderError = !isBlank && !fromError && !toError &&
+            (fromParsed ?: 0.0) >= (toParsed ?: 0.0)
+
+    // FIX 5.9-edit-save-guard: если № изменился И занят другой пробой —
+    // блокируем сохранение. Пустой № — тоже ошибка.
+    val sampleNumberChanged = sampleNumber.trim() != row.sampleNumber
+    val sampleNumberEmpty = sampleNumber.isBlank()
+    val sampleNumberConflict = sampleNumberChanged &&
+            !sampleNumberEmpty &&
+            findConflict(sampleNumber.trim())
+
+    val sampleError = sampleNumberEmpty || sampleNumberConflict
+
+    val formValid = !sampleError &&
+            (isBlank || (!fromError && !toError && !orderError))
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Редактирование пробы") },
+        title = {
+            Column {
+                Text("Редактирование пробы")
+                Text(
+                    "Проба ${row.sampleNumber}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.verticalScroll(rememberScrollState())
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 560.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 OutlinedTextField(
                     value = wellNumber, onValueChange = { wellNumber = it },
@@ -356,29 +413,96 @@ fun EditSampleDialog(
                 OutlinedTextField(
                     value = sampleNumber, onValueChange = { sampleNumber = it },
                     label = { Text("№ пробы") }, singleLine = true,
+                    isError = validationAttempted && sampleError,
+                    supportingText = {
+                        if (validationAttempted && sampleNumberEmpty) {
+                            Text("Заполните", color = MaterialTheme.colorScheme.error)
+                        } else if (sampleNumberConflict) {
+                            Text(
+                                "№ уже занят другой пробой",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else null
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = intervalFrom, onValueChange = { intervalFrom = it },
-                        label = { Text("От, м") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = intervalTo, onValueChange = { intervalTo = it },
-                        label = { Text("До, м") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
+
+                if (!isBlank) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = intervalFrom,
+                            onValueChange = { intervalFrom = it },
+                            label = { Text("От, м") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal
+                            ),
+                            isError = validationAttempted && fromError,
+                            supportingText = {
+                                if (validationAttempted && fromError) {
+                                    Text(
+                                        "Заполните",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else null
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = intervalTo,
+                            onValueChange = { intervalTo = it },
+                            label = { Text("До, м") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal
+                            ),
+                            isError = validationAttempted && (toError || orderError),
+                            supportingText = {
+                                if (validationAttempted && toError) {
+                                    Text(
+                                        "Заполните",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else if (validationAttempted && orderError) {
+                                    Text(
+                                        "«До» должно быть больше «От»",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                } else null
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                } else {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Text(
+                            "У холостой пробы нет интервала",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = weight, onValueChange = { weight = it },
                         label = { Text("Вес, кг") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     OutlinedTextField(
                         value = controlWeight, onValueChange = { controlWeight = it },
                         label = { Text("ВК, кг") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Decimal
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -424,21 +548,34 @@ fun EditSampleDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                onSave(
-                    row.copy(
-                        sampleNumber = sampleNumber,
-                        wellNumber = wellNumber,
-                        intervalFrom = intervalFrom,
-                        intervalTo = intervalTo,
-                        weight = weight.replace(',', '.').toDoubleOrNull(),
-                        controlWeight = controlWeight.replace(',', '.').toDoubleOrNull(),
-                        characteristic = characteristic,
-                        type = type,
-                        status = status
+            // FIX 5.9-validation-fix: кнопка всегда активна.
+            // При клике показываем подписи, если форма невалидна.
+            // FIX 5.9-edit-save-guard: не сохраняем при конфликте №.
+            TextButton(
+                onClick = {
+                    validationAttempted = true
+                    if (!formValid) return@TextButton
+
+                    val newIntervalFrom = if (isBlank) null else fromParsed
+                    val newIntervalTo = if (isBlank) null else toParsed
+
+                    onSave(
+                        row.copy(
+                            sampleNumber = sampleNumber.trim(),
+                            wellNumber = wellNumber,
+                            intervalFrom = if (newIntervalFrom == null) "—"
+                            else newIntervalFrom.toString(),
+                            intervalTo = if (newIntervalTo == null) "—"
+                            else newIntervalTo.toString(),
+                            weight = weight.replace(',', '.').toDoubleOrNull(),
+                            controlWeight = controlWeight.replace(',', '.').toDoubleOrNull(),
+                            characteristic = characteristic,
+                            type = type,
+                            status = status
+                        )
                     )
-                )
-            }) { Text("Сохранить") }
+                }
+            ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
@@ -507,15 +644,6 @@ fun DeleteSampleDialog(
 // НАСТРОЙКИ НАРЯДА
 // ====================================================================
 
-/**
- * FIX 5.8.9bug-3-fix-5: холостые и ВК применяются раздельно.
- *
- * В диалоге две секции, в каждой своя кнопка «Применить»:
- *   • Холостые — режим + фикс.значение → «Применить холостые».
- *   • Весовой контроль — шаг N → «Применить весовой контроль».
- *
- * Диалог НЕ закрывается после применения — можно настроить обе секции.
- */
 @Composable
 fun OrderSettingsDialog(
     orderTitle: String,
@@ -568,9 +696,6 @@ fun OrderSettingsDialog(
                     )
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 1: ХОЛОСТЫЕ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.CheckBoxOutlineBlank, null,
@@ -674,9 +799,6 @@ fun OrderSettingsDialog(
                     Text("Сбросить вес холостых в наряде")
                 }
 
-                // ============================================================
-                // СЕКЦИЯ 2: ВЕСОВОЙ КОНТРОЛЬ
-                // ============================================================
                 HorizontalDivider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Scale, null,
@@ -812,19 +934,23 @@ fun ConfirmResetWeightControlDialog(
 fun BulkActionsDialog(
     decisions: List<ReconciliationState.BulkDecision>,
     onApply: (
-        weights: Map<String, Double>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val weights = remember { mutableStateMapOf<String, String>() }
+    val controlWeights = remember { mutableStateMapOf<String, String>() }
+    val blankWeights = remember { mutableStateMapOf<String, String>() }
     val postponedMark = remember { mutableStateMapOf<String, Boolean>() }
 
     LaunchedEffect(decisions) {
         decisions.forEach { d ->
             when (d) {
                 is ReconciliationState.BulkDecision.WeightControlNeedsWeight ->
-                    weights.putIfAbsent(d.row.id, "")
+                    controlWeights.putIfAbsent(d.row.id, "")
+                is ReconciliationState.BulkDecision.BlankNeedsWeight ->
+                    blankWeights.putIfAbsent(d.row.id, "")
                 is ReconciliationState.BulkDecision.PostponedNeedsAction ->
                     postponedMark.putIfAbsent(d.row.id, false)
             }
@@ -833,6 +959,9 @@ fun BulkActionsDialog(
 
     val vkCount = decisions.count {
         it is ReconciliationState.BulkDecision.WeightControlNeedsWeight
+    }
+    val blankCount = decisions.count {
+        it is ReconciliationState.BulkDecision.BlankNeedsWeight
     }
     val postCount = decisions.count {
         it is ReconciliationState.BulkDecision.PostponedNeedsAction
@@ -845,7 +974,7 @@ fun BulkActionsDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 480.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -863,27 +992,27 @@ fun BulkActionsDialog(
                     )
                     decisions.filterIsInstance<ReconciliationState.BulkDecision.WeightControlNeedsWeight>()
                         .forEach { d ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(d.row.sampleNumber,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium)
-                                    Text("скв. ${d.row.wellNumber}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                OutlinedTextField(
-                                    value = weights[d.row.id] ?: "",
-                                    onValueChange = { weights[d.row.id] = it },
-                                    label = { Text("Вес, кг") },
-                                    singleLine = true,
-                                    modifier = Modifier.width(120.dp)
-                                )
-                            }
+                            WeightInputRow(
+                                row = d.row,
+                                value = controlWeights[d.row.id] ?: "",
+                                onValueChange = { controlWeights[d.row.id] = it }
+                            )
+                        }
+                }
+
+                if (blankCount > 0) {
+                    Text(
+                        "Холостые без веса ($blankCount):",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    decisions.filterIsInstance<ReconciliationState.BulkDecision.BlankNeedsWeight>()
+                        .forEach { d ->
+                            WeightInputRow(
+                                row = d.row,
+                                value = blankWeights[d.row.id] ?: "",
+                                onValueChange = { blankWeights[d.row.id] = it }
+                            )
                         }
                 }
 
@@ -928,16 +1057,54 @@ fun BulkActionsDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                val wMap = weights.mapNotNull { (k, v) ->
-                    v.replace(',', '.').toDoubleOrNull()
-                        ?.let { if (it > 0) k to it else null }
-                }.toMap()
+                val cw = parseWeightsMap(controlWeights)
+                val bw = parseWeightsMap(blankWeights)
                 val pMap = postponedMark.toMap()
-                onApply(wMap, pMap)
+                onApply(cw, bw, pMap)
             }) { Text("Применить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
+}
+
+@Composable
+private fun WeightInputRow(
+    row: SampleRow,
+    value: String,
+    onValueChange: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                row.sampleNumber,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                "скв. ${row.wellNumber}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text("Вес, кг") },
+            singleLine = true,
+            modifier = Modifier.width(120.dp)
+        )
+    }
+}
+
+private fun parseWeightsMap(raw: Map<String, String>): Map<String, Double> {
+    return raw.mapNotNull { (k, v) ->
+        v.replace(',', '.').toDoubleOrNull()
+            ?.let { if (it > 0) k to it else null }
+    }.toMap()
 }
 
 // ====================================================================
@@ -1036,40 +1203,54 @@ fun ImportErrorDialog(
 @Composable
 fun PostponedDialog(
     row: SampleRow,
-    onConfirm: () -> Unit,
+    onMarkFound: () -> Unit,
+    onUnpostpone: () -> Unit,
     onViewNote: () -> Unit,
+    onEdit: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Проба отложена") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.PauseCircle, null,
                         tint = MaterialTheme.colorScheme.tertiary)
                     Spacer(Modifier.width(8.dp))
-                    Text("Эта проба помечена как отложенная",
+                    Text("Проба ${row.sampleNumber} отложена",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold)
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "Проба ${row.sampleNumber}. Вы можете отметить её как найденную " +
-                            "(если она найдена) или просмотреть заметку.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text("Что сделать?",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold)
+
+                TextButton(onClick = onMarkFound) {
+                    Icon(Icons.Filled.CheckCircle, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Отметить как найденную")
+                }
+                TextButton(onClick = onUnpostpone) {
+                    Icon(Icons.Filled.Undo, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Снять отложенную (оставить ненайденной)")
+                }
+                if (row.hasNote || row.hasPhoto) {
+                    TextButton(onClick = onViewNote) {
+                        Icon(Icons.Filled.EditNote, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Заметка и фото")
+                    }
+                }
+                TextButton(onClick = onEdit) {
+                    Icon(Icons.Filled.Edit, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Редактировать пробу")
+                }
             }
         },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("Отметить как найденную") } },
-        dismissButton = {
-            Row {
-                if (row.hasNote || row.hasPhoto) {
-                    TextButton(onClick = onViewNote) { Text("Заметка") }
-                    Spacer(Modifier.width(4.dp))
-                }
-                TextButton(onClick = onDismiss) { Text("Отмена") }
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }

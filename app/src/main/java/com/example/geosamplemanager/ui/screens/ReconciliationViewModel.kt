@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.data.logs.AppLog
+import com.example.geosamplemanager.data.logs.SampleRowDiff
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
@@ -91,6 +93,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private var orderInfoByComposite: Map<String, OrderInfo> = emptyMap()
     private var searchJob: Job? = null
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Последний залогированный поисковый запрос — чтобы не спамить
+     * журнал при каждом нажатии клавиши. Логируем только когда
+     * оператор остановился (debounce 500 мс) и после поиска.
+     */
+    private var lastLoggedQuery: String? = null
+
     private val voiceCommandLikeWords = setOf(
         "стоп", "хватит", "пауза", "паузу", "продолжить", "продолжай",
         "отмена", "отменить", "верни", "назад", "повтори", "вперёд", "вперед",
@@ -110,6 +120,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     init {
         subscribeToAreasAndOrders()
         loadVoiceUiSettings()
+        applyPendingSearchRequest()
     }
 
     private fun loadVoiceUiSettings() {
@@ -261,12 +272,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Выбор участка логируется. Это контекст — без него
+     * непонятно, что искали и в каком контексте.
+     */
     fun setSelectedArea(area: String?) {
         state.selectedArea = area
         state.selectedOrder = null
+
+        if (area != null) {
+            AppLog.nav("Выбран участок «$area»")
+                .detail("area", area)
+                .write()
+        }
+
         refreshMultiQueryIfNeeded()
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Выбор наряда логируется с контекстом участка.
+     */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
         val info = resolveOrderInfo(orderTitle)
@@ -275,6 +302,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         } else if (orderTitle != null) {
             Log.w(TAG, "setSelectedOrder: нет orderInfo для «$orderTitle»")
         }
+
+        if (orderTitle != null) {
+            AppLog.nav("Выбран наряд «$orderTitle»")
+                .detail("order", orderTitle)
+                .detail("area", state.selectedArea)
+                .write()
+        }
+
         refreshMultiQueryIfNeeded()
     }
 
@@ -294,6 +329,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         searchJob = viewModelScope.launch { buildMultiQueryGroups(tokens) }
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Ручной поиск — в журнал. Логируем только успешный результат
+     * дебаунса, чтобы не спамить: каждое нажатие клавиши не пишем.
+     * Сравниваем с lastLoggedQuery — если запрос тот же, не пишем
+     * повторно.
+     */
     fun setQuery(query: String) {
         if (voiceSession.isPinned || voiceSession.hasQueue) {
             voiceSession.unpin()
@@ -306,6 +348,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (query.isBlank()) {
             state.queryTokens = emptyList()
             state.clearQueryGroups()
+            lastLoggedQuery = null
             return
         }
 
@@ -327,14 +370,41 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     state.queryTokens = listOf(requestStr)
                     state.clearQueryGroups()
                     loadGroupsForQueryNew(request)
+                    logSearchQuiet(query, listOf(requestStr))
                 }
                 else -> {
                     val oldTokens = requests.map { req -> buildQueryString(req) }
                     state.queryTokens = oldTokens.take(MAX_QUERY_TOKENS)
                     buildMultiQueryGroups(oldTokens)
+                    logSearchQuiet(query, oldTokens)
                 }
             }
         }
+    }
+
+    /**
+     * FIX 5.9-logs-8a:
+     * Логирование поиска. Не пишем повторно то же самое —
+     * защита от многократного вызова с одинаковой строкой.
+     */
+    private fun logSearchQuiet(raw: String, tokens: List<String>) {
+        val key = raw.trim()
+        if (key.isEmpty() || key == lastLoggedQuery) return
+        lastLoggedQuery = key
+
+        val queryCount = tokens.size
+        val summary = if (queryCount == 1) {
+            "Поиск: «${tokens.first()}»"
+        } else {
+            "Поиск ($queryCount запросов): «${tokens.joinToString(" ", "«", "»")}»"
+        }
+
+        AppLog.search(summary)
+            .detail("raw", raw)
+            .detail("tokens", tokens.joinToString(" "))
+            .detail("context_area", state.selectedArea)
+            .detail("context_order", state.selectedOrder)
+            .write()
     }
 
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
@@ -722,7 +792,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             VoiceCommand.ChoicePostpone -> voiceChoicePostpone()
             VoiceCommand.ChoiceSkip -> voiceChoiceSkip()
 
-            // FIX 5.8.11-sort-fix-5: одна команда Next.
             VoiceCommand.Next -> voiceNext()
 
             VoiceCommand.Undo -> {
@@ -1724,12 +1793,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         voiceSession.lastMarkedSampleNumber = null
     }
 
-    /**
-     * FIX 5.8.11-sort-fix-5:
-     * Единая команда Next. Если есть очередь — идём по ней
-     * (voiceNextInQueue). Если нет — полный сброс контекста.
-     * mode SORT — команда неприменима.
-     */
     private suspend fun voiceNext(): VoiceExecResult {
         if (voiceSession.mode == VoiceSessionMode.SORT) {
             return VoiceExecResult.Message("В режиме сортировки не используется.")
@@ -1878,20 +1941,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         )
     }
 
-    /**
-     * FIX 5.8.11-sort-ui:
-     * Раньше метод возвращал только Message для TTS, не трогая state.query.
-     *
-     * FIX 5.8.11-sort-fix-4:
-     * Возвращаем Message с display — каноническим номером для UI-поля
-     * «Распознано».
-     *
-     * FIX 5.8.11-sort-fix-5:
-     * Формируем text (канонический, для UI-поля «Результат») и spoken
-     * (фонетический, для TTS) параллельно. UI теперь видит
-     * «Скважина NV1366, Наряд №1.», а ухо слышит «Скважина эн вэ
-     * тринадцать шестьдесят шесть, Наряд №1.».
-     */
     private suspend fun voiceSortFlat(queries: List<String>): VoiceExecResult {
         voiceSession.isAutoMode = false
         voiceSession.awaitingContinue = false
@@ -1916,10 +1965,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             else voiceParser.parse(clean).candidates.map { it.replace("|", "") }
                 .filter { it.isNotBlank() }
 
+            // FIX 5.9-sort-normalize:
+            // В поле поиска SORT должно попадать нормализованное число,
+            // а не сырая фонетика Vosk. Если парсер дал кандидатов —
+            // берём первый (он же primary); иначе оставляем как есть.
+            val normalizedForUi = candidates.firstOrNull() ?: clean
+
             if (candidates.isEmpty()) {
                 descriptionsUi.add("$clean — не найдено")
                 descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — не найдено")
-                uiTokens.add(clean)
+                uiTokens.add(normalizedForUi)
                 continue
             }
 
@@ -1961,12 +2016,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                                 descriptionsSpoken.add(
                                     "$subjectSpoken — найден в нескольких нарядах"
                                 )
-                                uiTokens.add(clean)
+                                uiTokens.add(normalizedForUi)
                             }
                             conflict != null -> {
                                 descriptionsUi.add("$subjectUi — $conflict")
                                 descriptionsSpoken.add("$subjectSpoken — $conflict")
-                                uiTokens.add(clean)
+                                uiTokens.add(normalizedForUi)
                             }
                             else -> {
                                 descriptionsUi.add("$subjectUi, Наряд №${hit.orderNumber}")
@@ -1985,7 +2040,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         descriptionsSpoken.add(
                             "${VoiceSpeaker.spellMimicry(clean)} — не найдено"
                         )
-                        uiTokens.add(clean)
+                        uiTokens.add(normalizedForUi)
                     }
                 }
             } catch (e: CancellationException) {
@@ -1994,7 +2049,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 Log.e(TAG, "voiceSortFlat: проверка «$clean» упала", e)
                 descriptionsUi.add("$clean — ошибка")
                 descriptionsSpoken.add("${VoiceSpeaker.spellMimicry(clean)} — ошибка")
-                uiTokens.add(clean)
+                uiTokens.add(normalizedForUi)
             }
         }
 
@@ -2089,10 +2144,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun toggleFound(rowId: String) {
         state.toggleFound(rowId)
         val id = rowId.toLongOrNull() ?: return
-        val found = rowById(rowId)?.found ?: return
+        val row = rowById(rowId) ?: return
+        val found = row.found
+        val num = row.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.setFound(id, found) }
+                AppLog.mark("Проба $num ${if (found) "отмечена" else "снята"}")
+                    .detail("sample", num)
+                    .detail("found", found)
+                    .write()
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2101,9 +2162,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun setFound(rowId: String, value: Boolean) {
         state.setFound(rowId, value)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.setFound(id, value) }
+                if (num != null) {
+                    AppLog.mark("Проба $num ${if (value) "отмечена" else "снята"}")
+                        .detail("sample", num)
+                        .detail("found", value)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2112,11 +2180,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun setControlWeightAndFound(rowId: String, weight: Double) {
         state.setControlWeightAndFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setControlWeight(id, weight)
                     repo.setFound(id, true)
+                }
+                if (num != null) {
+                    AppLog.mark("Проба $num — весовой контроль $weight, отмечена")
+                        .detail("sample", num)
+                        .detail("control_weight", weight)
+                        .write()
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
@@ -2136,11 +2211,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun setBlankWeightAndMarkFound(rowId: String, weight: Double) {
         state.setBlankWeightAndMarkFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setWeight(id, weight)
                     repo.setFound(id, true)
+                }
+                if (num != null) {
+                    AppLog.mark("Проба $num — холостая, вес $weight, отмечена")
+                        .detail("sample", num)
+                        .detail("blank_weight", weight)
+                        .write()
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
@@ -2160,8 +2242,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun setPostponed(rowId: String, value: Boolean) {
         state.setPostponed(rowId, value)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setPostponed(id, value) }
+            try {
+                withContext(Dispatchers.IO) { repo.setPostponed(id, value) }
+                if (num != null) {
+                    val phrase = if (value) "Проба $num отложена"
+                    else "Проба $num снята с отложения"
+                    AppLog.mark(phrase)
+                        .detail("sample", num)
+                        .detail("postponed", value)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2171,9 +2263,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         val ok = state.toggleWeightControl(rowId)
         if (ok) {
             val id = rowId.toLongOrNull() ?: return ok
-            val flag = rowById(rowId)?.weightControl ?: return ok
+            val row = rowById(rowId) ?: return ok
+            val flag = row.weightControl
+            val num = row.sampleNumber
             viewModelScope.launch {
-                try { withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) }
+                try {
+                    withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) }
+                    AppLog.mark("Проба $num — ВК ${if (flag) "установлен" else "снят"}")
+                        .detail("sample", num)
+                        .detail("weight_control", flag)
+                        .write()
                 } catch (e: CancellationException) { throw e
                 } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
             }
@@ -2181,34 +2280,164 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return ok
     }
 
+    fun saveEditedRow(updated: SampleRow) {
+        val old = state.rowById(updated.id) ?: return
+        viewModelScope.launch {
+            try {
+                val orderId = old.groupId.toLongOrNull()
+                if (orderId != null && updated.sampleNumber != old.sampleNumber) {
+                    val conflict = withContext(Dispatchers.IO) {
+                        repo.findSampleByOrderAndNumber(orderId, updated.sampleNumber)
+                    }
+                    if (conflict != null && conflict.id.toString() != updated.id) {
+                        _message.value = "№ ${updated.sampleNumber} уже " +
+                                "занят другой пробой в этом наряде"
+                        return@launch
+                    }
+                }
+
+                state.replaceRowFully(updated.id, updated)
+                withContext(Dispatchers.IO) { repo.saveRows(listOf(updated)) }
+
+                val diff = SampleRowDiff.diff(old, updated)
+                if (diff != null) {
+                    AppLog.edit("Проба ${old.sampleNumber}: $diff")
+                        .detail("sample_id", old.id)
+                        .detail("sample_before", old.sampleNumber)
+                        .detail("sample_after", updated.sampleNumber)
+                        .detail("diff", diff)
+                        .write()
+                }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                state.replaceRowFully(updated.id, old)
+                _message.value = humanSaveError(e)
+            }
+        }
+    }
+
+    fun findConflictForEdit(rowId: String, sampleNumber: String): Boolean {
+        state.groups.forEach { g ->
+            g.rows.forEach { r ->
+                if (r.id != rowId && r.sampleNumber == sampleNumber) return true
+            }
+        }
+        return false
+    }
+
+    private fun humanSaveError(e: Exception): String {
+        val m = e.message ?: return "Ошибка сохранения"
+        return if (m.contains("UNIQUE constraint failed", ignoreCase = true)) {
+            "Такой № пробы уже есть в этом наряде"
+        } else {
+            "Ошибка сохранения: $m"
+        }
+    }
+
     fun applyBulkMarkFound(
         groupId: String,
-        weights: Map<String, Double>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
-        val marked = state.applyBulkMarkFound(groupId, weights, postponedActions)
+        val marked = state.applyBulkMarkFound(
+            groupId, controlWeights, blankWeights, postponedActions
+        )
         persistGroup(groupId)
+        if (marked > 0) {
+            val g = state.groups.firstOrNull { it.id == groupId }
+            val orderTitle = g?.orderTitle ?: "?"
+            AppLog.mark("Массовая отметка: $marked проб в наряде «$orderTitle»")
+                .detail("count", marked)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .write()
+        }
         return marked
     }
 
+    fun applyBulkMarkFoundForRows(
+        groupId: String,
+        rowIds: Set<String>,
+        controlWeights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
+        postponedActions: Map<String, Boolean>
+    ): Int {
+        val marked = state.applyBulkMarkFoundForRows(
+            groupId, rowIds, controlWeights, blankWeights, postponedActions
+        )
+        persistGroup(groupId)
+        if (marked > 0) {
+            val g = state.groups.firstOrNull { it.id == groupId }
+            val orderTitle = g?.orderTitle ?: "?"
+            AppLog.mark("Массовая отметка выбранных: $marked проб в наряде «$orderTitle»")
+                .detail("count", marked)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .detail("rows", rowIds.size)
+                .write()
+        }
+        return marked
+    }
+
+    fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
+        val foundBefore = state.groups.firstOrNull { it.id == groupId }
+            ?.rows?.count { it.found && it.id in rowIds } ?: 0
+        state.clearAllFoundForRows(groupId, rowIds)
+        persistGroup(groupId)
+        if (foundBefore > 0) {
+            AppLog.mark("Массовое снятие выбранных: $foundBefore проб")
+                .detail("count", foundBefore)
+                .detail("group", groupId)
+                .write()
+        }
+    }
+
     fun clearAllFound(groupId: String) {
+        val group = state.groups.firstOrNull { it.id == groupId }
+        val foundBefore = group?.rows?.count { it.found } ?: 0
         state.clearAllFound(groupId)
         persistGroup(groupId)
+        if (foundBefore > 0) {
+            val orderTitle = group?.orderTitle ?: "?"
+            AppLog.mark("Массовое снятие: $foundBefore проб в наряде «$orderTitle»")
+                .detail("count", foundBefore)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .write()
+        }
     }
 
     fun deleteRow(rowId: String, recalc: Boolean) {
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.deleteSampleWithRenumber(id, recalc) }
                 state.deleteRow(rowId, recalc)
+                if (num != null) {
+                    val suffix = if (recalc) " (с пересчётом номеров)" else ""
+                    AppLog.edit("Проба $num удалена$suffix")
+                        .detail("sample", num)
+                        .detail("recalc", recalc)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка удаления: ${e.message}" }
         }
     }
 
-    fun undo() { state.undo(); persistAll() }
-    fun redo() { state.redo(); persistAll() }
+    fun undo() {
+        state.undo()
+        persistAll()
+        AppLog.edit("Отменено действие").write()
+    }
+
+    fun redo() {
+        state.redo()
+        persistAll()
+        AppLog.edit("Повторено действие").write()
+    }
 
     fun applyBlankSettingsForOrder(orderTitle: String, settings: BlankWeightSettings): Int {
         val changed = state.applyBlankSettingsForOrder(orderTitle, settings)
@@ -2252,6 +2481,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun saveNoteText(sampleId: Long, text: String): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
+            val isDeleting = text.trim().isEmpty()
+
             withContext(Dispatchers.IO) {
                 val trimmed = text.trim()
                 if (trimmed.isEmpty()) repo.deleteNote(sampleId)
@@ -2273,6 +2505,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
             }
+
+            if (sampleNum != null) {
+                val verb = if (isDeleting) "Заметка удалена для пробы"
+                else "Заметка сохранена для пробы"
+                AppLog.edit("$verb $sampleNum")
+                    .detail("sample", sampleNum)
+                    .detail("deleted", isDeleting)
+                    .write()
+            }
             true
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
@@ -2283,12 +2524,18 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun addPhoto(sampleId: Long, sourceUri: Uri): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
             val ctx = getApplication<Application>()
             val path = withContext(Dispatchers.IO) { PhotoStorage.compressAndSave(ctx, sourceUri) }
             if (path == null) { _message.value = "Не удалось обработать фото"; return false }
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
+            }
+            if (sampleNum != null) {
+                AppLog.edit("Добавлено фото к пробе $sampleNum")
+                    .detail("sample", sampleNum)
+                    .write()
             }
             true
         } catch (e: CancellationException) { throw e
@@ -2300,12 +2547,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun addPhotoFromFile(sampleId: Long, tempFile: File): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
             val ctx = getApplication<Application>()
             val path = withContext(Dispatchers.IO) { PhotoStorage.compressAndSaveFromFile(ctx, tempFile) }
             if (path == null) { _message.value = "Не удалось обработать фото"; return false }
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
+            }
+            if (sampleNum != null) {
+                AppLog.edit("Добавлено фото к пробе $sampleNum (из файла)")
+                    .detail("sample", sampleNum)
+                    .detail("source", "file")
+                    .write()
             }
             true
         } catch (e: CancellationException) { throw e
@@ -2317,11 +2571,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun deletePhoto(imageId: Long, sampleId: Long): Boolean {
         return try {
-            withContext(Dispatchers.IO) {
-                val ok = repo.deletePhoto(imageId, sampleId)
-                if (ok) refreshSampleFlagsInternal(sampleId)
-                ok
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
+            val ok = withContext(Dispatchers.IO) {
+                val result = repo.deletePhoto(imageId, sampleId)
+                if (result) refreshSampleFlagsInternal(sampleId)
+                result
             }
+            if (ok && sampleNum != null) {
+                AppLog.edit("Удалено фото у пробы $sampleNum")
+                    .detail("sample", sampleNum)
+                    .detail("image_id", imageId)
+                    .write()
+            }
+            ok
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
             _message.value = "Ошибка удаления фото: ${e.message}"
@@ -2354,7 +2616,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
-
+    /**
+     * FIX 5.9-main-a:
+     * Применить одноразовый запрос «открыть Сверку с нарядом X»,
+     * который сохранила Главная. Если запрос есть — выбрать участок
+     * и наряд. ReconciliationState.selectedArea/selectedOrder —
+     * это и есть «открытая вкладка Сверка с конкретным нарядом».
+     */
+    private fun applyPendingSearchRequest() {
+        val app = getApplication<Application>() as GeoSampleApp
+        val req = app.consumeSearchRequest() ?: return
+        setSelectedArea(req.areaTitle)
+        setSelectedOrder(req.orderTitle)
+        // Запоминаем как «последний активный» наряд.
+        app.sessionStateRepository.touch(
+            orderId = req.orderId,
+            areaTitle = req.areaTitle,
+            orderTitle = req.orderTitle
+        )
+    }
     private fun persistAll() {
         viewModelScope.launch {
             try {

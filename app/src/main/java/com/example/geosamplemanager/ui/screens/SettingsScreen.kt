@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,16 +23,36 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.data.bluetooth.BtDevice
+import com.example.geosamplemanager.data.bluetooth.BtProfile
+import com.example.geosamplemanager.data.settings.AppTheme
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.settings.UiScale
+import com.example.geosamplemanager.data.voice.SoundLevel
+import com.example.geosamplemanager.data.voice.SoundTestUtil
+import com.example.geosamplemanager.data.voice.TtsVolume
+import com.example.geosamplemanager.data.voice.VoiceMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
+import kotlin.math.roundToInt
 
+/**
+ * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок.
+ * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле.
+ * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
+ * FIX 5.9-settings-help-1: раздел «Справка» + открытие HelpScreen.
+ */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val context = LocalContext.current
     val message by viewModel.message.collectAsState()
     val selected by viewModel.selectedCategory.collectAsState()
+
+    var openedLogs by remember { mutableStateOf(false) }
+    var openedHelp by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.reload() }
 
@@ -39,6 +61,16 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearMessage()
         }
+    }
+
+    if (openedLogs) {
+        LogsScreen(onClose = { openedLogs = false })
+        return
+    }
+
+    if (openedHelp) {
+        HelpScreen(onClose = { openedHelp = false })
+        return
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -56,6 +88,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
+                    onOpenLogs = { openedLogs = true },
+                    onOpenHelp = { openedHelp = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
             }
@@ -66,6 +100,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
+                    onOpenLogs = { openedLogs = true },
+                    onOpenHelp = { openedHelp = true },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -82,6 +118,7 @@ private fun CategoryTree(
     Column(
         modifier = modifier
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+            .verticalScroll(rememberScrollState())
             .padding(8.dp)
     ) {
         Text(
@@ -123,7 +160,10 @@ private fun CategoryChipsRow(
     onSelect: (SettingsCategory) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         SettingsCategory.values().forEach { cat ->
@@ -140,14 +180,715 @@ private fun CategoryChipsRow(
 private fun CategoryContent(
     category: SettingsCategory,
     viewModel: SettingsViewModel,
+    onOpenLogs: () -> Unit,
+    onOpenHelp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (category) {
         SettingsCategory.IMPORT -> ImportSettingsContent(viewModel, modifier)
-        SettingsCategory.VOICE -> StubContent("Голос", "Настройки голосового помощника будут здесь.", modifier)
-        SettingsCategory.APPEARANCE -> StubContent("Внешний вид", "Тема и размеры — в следующих обновлениях.", modifier)
-        SettingsCategory.SYSTEM -> StubContent("Система", "Служебные настройки — позже.", modifier)
-        SettingsCategory.ABOUT -> StubContent("О приложении", "GeoSample Manager, версия 1.0", modifier)
+        SettingsCategory.VOICE -> VoiceSettingsContent(viewModel, modifier)
+        SettingsCategory.SOUND -> SoundSettingsContent(viewModel, modifier)
+        SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
+        SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
+        SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
+        SettingsCategory.ABOUT -> AboutContent(modifier)
+        SettingsCategory.HELP -> HelpSettingsContent(modifier, onOpenHelp)
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «СПРАВКА»
+// ============================================================
+
+/**
+ * FIX 5.9-settings-help-1:
+ * Раздел-категория «Справка» в Настройках. Сам экран справки
+ * (HelpScreen) открывается отдельно — как полноэкранный экран
+ * с TopAppBar, по образцу LogsScreen.
+ */
+@Composable
+private fun HelpSettingsContent(
+    modifier: Modifier = Modifier,
+    onOpenHelp: () -> Unit
+) {
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Справка",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Книга помощи",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Пошаговые подсказки по всем разделам приложения: " +
+                            "импорт Excel, сверка и поиск, голосовой помощник, " +
+                            "редактирование, база данных, статистика и настройки. " +
+                            "Полезно, если только начинаете работать с программой.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenHelp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Открыть справку")
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «ВНЕШНИЙ ВИД»
+// ============================================================
+
+@Composable
+private fun AppearanceSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val ap by viewModel.appearanceSettings.collectAsState()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Внешний вид",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Тема",
+            help = "«Системная» — как в настройках Android " +
+                    "(тёмная ночью, светлая днём). «Светлая» и «Тёмная» — " +
+                    "фиксированные, независимо от системы."
+        ) {
+            Text(
+                "Оформление приложения",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            ChoiceRow(
+                options = AppTheme.values().map { it to it.title },
+                selected = ap.theme,
+                onSelect = { viewModel.setTheme(it) }
+            )
+        }
+
+        InfoCard(
+            title = "Размер интерфейса",
+            help = "Масштаб применяется ко всему приложению сразу. " +
+                    "Крупнее — больше текст; отступы и кнопки растут " +
+                    "умеренно, чтобы вёрстка оставалась аккуратной."
+        ) {
+            Text(
+                "Выберите удобный размер",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            ChoiceRow(
+                options = UiScale.values().map { it to it.title },
+                selected = ap.scale,
+                onSelect = { viewModel.setUiScale(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = when (ap.scale) {
+                    UiScale.NORMAL -> "Текущий: обычный."
+                    UiScale.LARGE -> "Текущий: крупнее. Текст 115%, элементы 105%."
+                    UiScale.HUGE -> "Текущий: крупный. Текст 130%, элементы 110%."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «ЗВУК»
+// ============================================================
+
+@Composable
+private fun SoundSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val vs by viewModel.voiceSettings.collectAsState()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Звук",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Озвучка ответов",
+            help = "Голосовой помощник произносит ответы через синтезатор речи. " +
+                    "«Выкл» — полное молчание. Скорость 1.0 — обычная."
+        ) {
+            Text("Громкость", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    TtsVolume.OFF to "Выкл",
+                    TtsVolume.QUIET to "Тихая",
+                    TtsVolume.NORMAL to "Обычная",
+                    TtsVolume.LOUD to "Громкая"
+                ),
+                selected = vs.ttsVolume,
+                onSelect = { viewModel.setTtsVolume(it) }
+            )
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Скорость",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "%.2f×".format(vs.ttsSpeedValue),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Slider(
+                value = vs.ttsSpeedValue,
+                onValueChange = { viewModel.setTtsSpeed(it) },
+                valueRange = VoiceSettings.MIN_TTS_SPEED..VoiceSettings.MAX_TTS_SPEED,
+                steps = 14
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("0.5×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("1.0×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("2.0×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.speakTest(
+                            context,
+                            vs.ttsVolume,
+                            VoiceSettings.DEFAULT_TTS_SPEED
+                        )
+                    },
+                    enabled = vs.ttsVolume != TtsVolume.OFF,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Обычно") }
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.speakTest(
+                            context,
+                            vs.ttsVolume,
+                            vs.ttsSpeedValue
+                        )
+                    },
+                    enabled = vs.ttsVolume != TtsVolume.OFF,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Проверить") }
+            }
+        }
+
+        InfoCard(
+            title = "Звуковые сигналы",
+            help = "Короткие бипы-подтверждения: успех, внимание, ошибка. " +
+                    "Не зависят от озвучки ответов."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.feedbackEnabled,
+                    onCheckedChange = { viewModel.setFeedbackEnabled(it) }
+                )
+                Text(
+                    "Включить звуковые сигналы",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            if (vs.feedbackEnabled) {
+                Spacer(Modifier.height(8.dp))
+                Text("Громкость", style = MaterialTheme.typography.bodyMedium)
+                ChoiceRow(
+                    options = listOf(
+                        SoundLevel.QUIET to "Тихая",
+                        SoundLevel.NORMAL to "Обычная",
+                        SoundLevel.LOUD to "Громкая"
+                    ),
+                    selected = vs.feedbackVolume,
+                    onSelect = { viewModel.setFeedbackVolume(it) }
+                )
+
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.playAllSignals(context, vs)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Проверить сигналы")
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Прозвучит три сигнала: успех, внимание, ошибка.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Сброс",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.resetSoundToDefaults() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Сбросить настройки звука") }
+            }
+        }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «ГОЛОС»
+// ============================================================
+
+@Composable
+private fun VoiceSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val vs by viewModel.voiceSettings.collectAsState()
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Голосовой помощник",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Отображение",
+            help = "Настройки вида списка проб при работе со сверкой."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.showCharacteristic,
+                    onCheckedChange = { viewModel.setShowCharacteristic(it) }
+                )
+                Text(
+                    "Показывать колонку «Характеристика» в списке проб",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        InfoCard(
+            title = "Распознавание",
+            help = "Грамматика Vosk ограничивает словарь только нужными словами — " +
+                    "это резко повышает точность распознавания чисел и команд."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.useGrammar,
+                    onCheckedChange = { viewModel.setUseGrammar(it) }
+                )
+                Text(
+                    "Использовать грамматику распознавания",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Выключение снижает точность, но добавляет устойчивость " +
+                        "к нестандартным словам.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        InfoCard(
+            title = "Поведение",
+            help = "Авто-стоп выключает микрофон после указанного времени молчания. " +
+                    "Обучение — короткие экраны при первом запуске помощника."
+        ) {
+            Text("Авто-стоп", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    0 to "Выкл",
+                    5 to "5 мин",
+                    10 to "10 мин",
+                    20 to "20 мин"
+                ),
+                selected = vs.autoStopMinutes,
+                onSelect = { viewModel.setAutoStopMinutes(it) }
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = vs.showOnboarding,
+                    onCheckedChange = { viewModel.setShowOnboarding(it) }
+                )
+                Text(
+                    "Показывать обучение при следующем запуске",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Режим работы", style = MaterialTheme.typography.bodyMedium)
+            ChoiceRow(
+                options = listOf(
+                    VoiceMode.NOVICE to "Начинающий",
+                    VoiceMode.EXPERIENCED to "Опытный"
+                ),
+                selected = vs.mode,
+                onSelect = { viewModel.setVoiceMode(it) }
+            )
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Сброс",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.resetVoiceToDefaults() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) { Text("Сбросить настройки голоса") }
+            }
+        }
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «BLUETOOTH»
+// ============================================================
+
+@Composable
+private fun BluetoothSettingsContent(
+    viewModel: SettingsViewModel,
+    modifier: Modifier = Modifier
+) {
+    val bs by viewModel.btSettings.collectAsState()
+    val devices by viewModel.pairedDevices.collectAsState()
+    val enabled by viewModel.btEnabled.collectAsState()
+    val hasPermission by viewModel.btHasPermission.collectAsState()
+    val activeDevice by viewModel.btActiveDevice.collectAsState()
+
+    var showMicTest by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Bluetooth",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        InfoCard(
+            title = "Состояние",
+            help = "Голосовой помощник может использовать микрофон " +
+                    "Bluetooth-гарнитуры вместо встроенного."
+        ) {
+            Text(
+                if (enabled) "Bluetooth включён" else "Bluetooth выключен",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            val active = activeDevice
+            if (active != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Подключено: ${active.name}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (!hasPermission) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Нет разрешения на доступ к Bluetooth. Разрешите " +
+                            "в системных настройках.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { viewModel.openBluetoothSystemSettings() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Открыть настройки Android")
+            }
+        }
+
+        if (!enabled || !hasPermission) {
+            return@Column
+        }
+
+        InfoCard(
+            title = "Использовать гарнитуру",
+            help = "Если выключено — голосовой помощник работает через " +
+                    "встроенный микрофон."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = bs.enabled,
+                    onCheckedChange = { viewModel.setBluetoothEnabled(it) }
+                )
+                Text(
+                    "Работать через Bluetooth-гарнитуру",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        InfoCard(
+            title = "Устройство",
+            help = "Выберите гарнитуру для голосового помощника. " +
+                    "«Встроенный микрофон» — микрофон планшета."
+        ) {
+            val allDevices = devices + BtDevice.BUILT_IN
+            allDevices.forEach { dev ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.setBluetoothDevice(dev) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = if (dev.isBuiltIn) {
+                            !bs.enabled || bs.deviceAddress == null
+                        } else {
+                            bs.deviceAddress == dev.address
+                        },
+                        onClick = { viewModel.setBluetoothDevice(dev) }
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        dev.name,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+
+        InfoCard(
+            title = "Профиль",
+            help = "SCO — для разговора, ниже задержка. A2DP — для музыки, " +
+                    "выше качество. Для голосового помощника лучше SCO."
+        ) {
+            ChoiceRow(
+                options = listOf(
+                    BtProfile.SCO to "SCO (разговор)",
+                    BtProfile.A2DP to "A2DP (медиа)"
+                ),
+                selected = bs.profile,
+                onSelect = { viewModel.setBtProfile(it) }
+            )
+        }
+
+        InfoCard(
+            title = "Если устройство отключилось",
+            help = "Что делать, если гарнитура вне зоны. По умолчанию — " +
+                    "переходим на встроенный микрофон, чтобы работа не " +
+                    "прерывалась."
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = bs.fallbackToBuiltIn,
+                    onCheckedChange = { viewModel.setFallbackToBuiltIn(it) }
+                )
+                Text(
+                    "Переключаться на встроенный микрофон",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Проверка",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Скажите что-нибудь и проверьте, что микрофон " +
+                            "распознаёт текст.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { showMicTest = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Проверить микрофон")
+                }
+            }
+        }
+    }
+
+    if (showMicTest) {
+        MicrophoneTestDialog(
+            btSettings = bs,
+            onDismiss = { showMicTest = false }
+        )
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «О ПРИЛОЖЕНИИ»
+// ============================================================
+
+@Composable
+private fun AboutContent(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val versionName = remember {
+        try {
+            context.packageManager
+                .getPackageInfo(context.packageName, 0)
+                .versionName ?: "?"
+        } catch (_: Exception) {
+            "?"
+        }
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Spacer(Modifier.height(16.dp))
+        Icon(
+            Icons.Default.Info,
+            contentDescription = null,
+            modifier = Modifier.size(64.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "GeoSample Manager",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            "Версия $versionName",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Приложение для управления геохимическими пробами " +
+                    "в горнодобывающей промышленности. Учёт нарядов, " +
+                    "импорт описей проб из Excel, сверка фактического " +
+                    "наличия, весовой контроль, заметки и фото.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «СИСТЕМА»
+// ============================================================
+
+@Composable
+private fun SystemSettingsContent(
+    modifier: Modifier = Modifier,
+    onOpenLogs: () -> Unit
+) {
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Система",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Журнал событий",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "История действий в приложении: запуск, навигация, поиск, " +
+                            "отметки, операции с базой данных. Помогает понять, " +
+                            "что происходило в сессии, и разобрать ошибки.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenLogs,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.List, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Открыть журнал событий")
+                }
+            }
+        }
     }
 }
 
@@ -371,10 +1112,7 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
         )
     }
 
-    // === Диалог слов для заголовков ===
     if (showHeadersDialog) {
-        // Формируем sections из актуального settings.
-        // Передаём список данных, а не лямбду — Compose будет перерисовывать.
         val sections = listOf(
             "serial" to "Серийный №",
             "well" to "Скважина / Выработка",
@@ -403,7 +1141,6 @@ private fun ImportSettingsContent(viewModel: SettingsViewModel, modifier: Modifi
         )
     }
 
-    // === Диалог слов для типов проб ===
     if (showTypesDialog) {
         val sections = listOf(
             "hollow" to "Холостая",
@@ -542,7 +1279,9 @@ private fun <T> ChoiceRow(
     onSelect: (T) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         options.forEach { (value, label) ->

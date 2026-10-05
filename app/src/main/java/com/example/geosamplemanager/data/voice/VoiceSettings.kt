@@ -9,33 +9,38 @@ import java.io.File
 /**
  * Настройки голосового помощника (§14 VOICE.md).
  *
- * FIX 5.8.10-a (И-10):
- * добавлено поле `showCharacteristic` — переключатель колонки
- * «Характеристика» в таблице проб.
+ * FIX 5.8.10-a (И-10): showCharacteristic.
+ * FIX 5.8.10-b (И-9): защита showOnboarding = true.
+ * FIX 5.9-settings-sound: feedbackEnabled, feedbackVolume.
  *
- * FIX 5.8.10-b (И-9):
- * в load() добавлена защита `showOnboarding = true`, если ключа нет
- * в JSON. Раньше Gson ставил false и онбординг не показывался
- * на старых файлах настроек.
+ * FIX 5.9-settings-sound-3-fix-2:
+ *  - ttsSpeed: Float (0.5..2.0) вместо enum — в UI ползунок;
+ *  - поле переименовано (было enum ttsSpeed), старое значение
+ *    в JSON игнорируется, дефолт 1.10;
+ *  - range и дефолт вынесены в companion.
  */
 data class VoiceSettings(
     val segmentPauseMs: Long = 800L,
-    val autoStopMinutes: Int = 5,          // 0 = выкл
+    val autoStopMinutes: Int = 5,
     val ttsVolume: TtsVolume = TtsVolume.NORMAL,
     val mode: VoiceMode = VoiceMode.NOVICE,
     val customPrefixPronunciations: Map<String, String> = emptyMap(),
     val showOnboarding: Boolean = true,
-    /**
-     * Использовать грамматику Vosk (ограниченный словарь).
-     * Резко повышает точность распознавания чисел.
-     */
     val useGrammar: Boolean = true,
-    /**
-     * Показывать колонку «Характеристика» в таблице проб.
-     * FIX 5.8.10-a (И-10): сохраняется между перезапусками.
-     */
-    val showCharacteristic: Boolean = true
-)
+    val showCharacteristic: Boolean = true,
+
+    val feedbackEnabled: Boolean = true,
+    val feedbackVolume: SoundLevel = SoundLevel.NORMAL,
+
+    /** FIX 5.9-settings-sound-3-fix-2: скорость озвучки 0.5..2.0. */
+    val ttsSpeedValue: Float = DEFAULT_TTS_SPEED
+) {
+    companion object {
+        const val DEFAULT_TTS_SPEED = 1.10f
+        const val MIN_TTS_SPEED = 0.5f
+        const val MAX_TTS_SPEED = 2.0f
+    }
+}
 
 enum class TtsVolume { OFF, QUIET, NORMAL, LOUD }
 
@@ -61,19 +66,34 @@ class VoiceSettingsRepository(context: Context) {
             var parsed = gson.fromJson(json, VoiceSettings::class.java) ?: VoiceSettings()
 
             // Gson игнорирует Kotlin-дефолты: если поля не было в JSON,
-            // Boolean становится false. Восстанавливаем true для тех
-            // полей, где дефолт — true.
+            // Boolean становится false. Восстанавливаем true там, где
+            // дефолт — true.
             if (!json.contains("\"useGrammar\"")) {
                 parsed = parsed.copy(useGrammar = true)
             }
             if (!json.contains("\"showCharacteristic\"")) {
                 parsed = parsed.copy(showCharacteristic = true)
             }
-            // FIX 5.8.10-b (И-9): без этой защиты на старых файлах
-            // showOnboarding был false, и онбординг не показывался.
             if (!json.contains("\"showOnboarding\"")) {
                 parsed = parsed.copy(showOnboarding = true)
             }
+            if (!json.contains("\"feedbackEnabled\"")) {
+                parsed = parsed.copy(feedbackEnabled = true)
+            }
+            if (!json.contains("\"feedbackVolume\"")) {
+                parsed = parsed.copy(feedbackVolume = SoundLevel.NORMAL)
+            }
+            // FIX 5.9-settings-sound-3-fix-2:
+            // если старого поля ttsSpeedValue нет — дефолт.
+            if (!json.contains("\"ttsSpeedValue\"")) {
+                parsed = parsed.copy(ttsSpeedValue = VoiceSettings.DEFAULT_TTS_SPEED)
+            }
+            // Защита от некорректного значения (например, старый
+            // enum-ttsSpeed случайно попал в новое поле).
+            parsed = parsed.copy(
+                ttsSpeedValue = parsed.ttsSpeedValue
+                    .coerceIn(VoiceSettings.MIN_TTS_SPEED, VoiceSettings.MAX_TTS_SPEED)
+            )
 
             parsed
         } catch (e: Exception) {

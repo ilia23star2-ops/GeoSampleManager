@@ -17,4 +17,10 @@ interface SampleNoteDao {
 
     @Query("DELETE FROM sample_notes WHERE sample_id = :sampleId")
     suspend fun deleteBySampleId(sampleId: Long)
+
+    /**
+     * FIX 5.9-db-info: количество заметок — для инфо-панели.
+     */
+    @Query("SELECT COUNT(*) FROM sample_notes")
+    suspend fun countAll(): Int
 }

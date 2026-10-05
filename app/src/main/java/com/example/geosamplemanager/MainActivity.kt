@@ -1,8 +1,13 @@
 package com.example.geosamplemanager
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -15,25 +20,64 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import com.example.geosamplemanager.data.logs.Log
+import com.example.geosamplemanager.data.settings.AppTheme
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
 import com.example.geosamplemanager.ui.navigation.AppScaffold
+import com.example.geosamplemanager.ui.navigation.Screen
+import com.example.geosamplemanager.ui.navigation.SimpleViewModelStoreOwner
 import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
+/**
+ * FIX 5.9-logs-3: логируем onResume / onPause.
+ * FIX 5.9-settings-bt: BLUETOOTH_CONNECT (API 31+).
+ * FIX 5.9-settings-scale/scale-2: масштаб через LocalDensity.
+ * FIX 5.9-settings-theme: тема из GeoSampleApp.appearance.
+ *
+ * FIX 5.9-exit:
+ *  - в ReadyContent прокидываем onExitApp в AppScaffold —
+ *    finishAffinity() закрывает всё приложение.
+ */
 class MainActivity : ComponentActivity() {
+
+    private val requestBluetoothPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* результат не нужен — раздел Bluetooth сам покажет статус */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestBluetoothIfNeeded()
+
+        val app = application as GeoSampleApp
+
         setContent {
-            GeoSampleManagerTheme {
+            val appearance by app.appearance.collectAsState()
+            val useDark = when (appearance.theme) {
+                AppTheme.SYSTEM -> isSystemInDarkTheme()
+                AppTheme.LIGHT -> false
+                AppTheme.DARK -> true
+            }
+
+            GeoSampleManagerTheme(darkTheme = useDark) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -43,14 +87,29 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        Log.app("Приложение развёрнуто").write()
+    }
+
+    override fun onPause() {
+        Log.app("Приложение свёрнуто").write()
+        super.onPause()
+    }
+
+    private fun requestBluetoothIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val granted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            requestBluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+    }
 }
 
-/**
- * Корень приложения.
- *
- * Пока модель Vosk не готова — показываем экран загрузки.
- * Как только готова — обычный AppScaffold.
- */
 @Composable
 private fun AppRoot() {
     val context = LocalContext.current
@@ -83,7 +142,45 @@ private fun AppRoot() {
             message = status,
             showSpinner = true
         )
-        else -> AppScaffold()
+        else -> ReadyContent(app)
+    }
+}
+
+@Composable
+private fun ReadyContent(app: GeoSampleApp) {
+    val restartRequest by app.restartRequest.collectAsState()
+    val tick = restartRequest?.tick ?: 0
+    val initialRoute = restartRequest?.route ?: Screen.MAIN.route
+
+    val appearance by app.appearance.collectAsState()
+
+    // FIX 5.9-exit: получаем Activity, чтобы вызвать finishAffinity().
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+
+    key(tick) {
+        val owner = remember { SimpleViewModelStoreOwner() }
+        DisposableEffect(owner) {
+            onDispose { owner.viewModelStore.clear() }
+        }
+
+        val baseDensity = LocalDensity.current
+        val scaledDensity = remember(baseDensity, appearance.scale) {
+            Density(
+                density = baseDensity.density * appearance.scale.densityFactor,
+                fontScale = baseDensity.fontScale * appearance.scale.textFactor
+            )
+        }
+
+        CompositionLocalProvider(
+            LocalViewModelStoreOwner provides owner,
+            LocalDensity provides scaledDensity
+        ) {
+            AppScaffold(
+                initialRoute = initialRoute,
+                onExitApp = { activity?.finishAffinity() }
+            )
+        }
     }
 }
 

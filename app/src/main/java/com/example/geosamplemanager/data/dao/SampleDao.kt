@@ -18,6 +18,13 @@ interface SampleDao {
     @Query("SELECT * FROM samples WHERE order_id = :orderId ORDER BY serial_number")
     suspend fun getSamplesForOrderList(orderId: Long): List<SampleEntity>
 
+    /**
+     * FIX 5.9-stats-reactive:
+     * Flow всех проб — для реактивной статистики.
+     */
+    @Query("SELECT * FROM samples ORDER BY order_id, serial_number")
+    fun getAllSamplesFlow(): Flow<List<SampleEntity>>
+
     @Query("SELECT * FROM samples WHERE id = :sampleId LIMIT 1")
     suspend fun getSampleById(sampleId: Long): SampleEntity?
 
@@ -44,6 +51,23 @@ interface SampleDao {
 
     @Query("SELECT DISTINCT order_id FROM samples")
     suspend fun getOrderIdsWithSamples(): List<Long>
+
+    /**
+     * FIX 5.9-edit-save-guard:
+     * Поиск пробы по (order_id, sample_number) — для проверки
+     * конфликтов перед сохранением. Возвращает первую найденную.
+     */
+    @Query(
+        """
+        SELECT * FROM samples 
+        WHERE order_id = :orderId AND sample_number = :sampleNumber 
+        LIMIT 1
+        """
+    )
+    suspend fun findByOrderAndNumber(
+        orderId: Long,
+        sampleNumber: String
+    ): SampleEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(sample: SampleEntity): Long
@@ -163,4 +187,34 @@ interface SampleDao {
         """
     )
     suspend fun getAllForVoiceSearch(): List<VoiceSampleHit>
+
+    // ================================================================
+    // Диагностика (5.9-db-diagnostics)
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Все пробы списком (не Flow) — для движка диагностики.
+     * Порядок — по id, чтобы результат был стабилен.
+     */
+    @Query("SELECT * FROM samples ORDER BY id")
+    suspend fun getAllSamplesList(): List<SampleEntity>
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Пробы, чей order_id не существует в orders.
+     *
+     * FK с CASCADE обычно это предотвращает, но при прямой
+     * правке SQLite-файла или восстановлении из повреждённого
+     * бэкапа такая ситуация возможна.
+     */
+    @Query(
+        """
+        SELECT s.* FROM samples s
+        LEFT JOIN orders o ON o.id = s.order_id
+        WHERE o.id IS NULL
+        ORDER BY s.id
+        """
+    )
+    suspend fun findOrphanSamples(): List<SampleEntity>
 }

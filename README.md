@@ -2,44 +2,51 @@
 
 Android-приложение для управления геохимическими пробами в горнодобывающей
 промышленности. Учёт нарядов, импорт описей проб из Excel, сверка фактического
-наличия, весовой контроль, заметки и фото, голосовой помощник.
+наличия, весовой контроль, заметки и фото, голосовой помощник, журнал аудита.
 
 ---
 
-## 🧭 Этот файл — главная точка входа для ИИ
+## 🧭 Этот файл — главная точка входа
 
-**Читай в таком порядке:**
+**Документы разработки — в папке `docs/`.**
+Корень репозитория — только код и этот файл.
 
-1. **`AI_RULES.md`** — как работать. **Обязательно первым.**
-2. **`CONTEXT_BRIEF.md`** — где мы сейчас (одна страница).
-3. **`README.md`** (этот файл) — где что лежит.
-4. **`PROGRESS.md`** — полная история.
-5. **`NEXT_STEPS.md`** — текущий заход.
-6. **`DECISIONS.md`** — все решения по UI и логике.
-7. **`DATABASE.md`** — схема БД.
-8. **`ROADMAP.md`** — план до релиза.
-9. **`VOICE.md`** — спецификация ГП.
-10. **`GLOSSARY.md`** — термины.
-11. **`ISSUES.md`** — открытые проблемы.
-12. **`TESTING.md`** — что тестировать.
+### Порядок чтения (для ИИ — обязательно первым)
 
-**Правило:** перед изменением Room-сущностей — сверить с `DATABASE.md` и
-`NEXT_STEPS.md`, там указаны запланированные миграции.
+1. **`docs/AI_RULES.md`** — как работать. **Обязательно первым.**
+2. **`docs/CONTEXT_BRIEF.md`** — где мы сейчас (одна страница).
+3. **`README.md`** — этот файл (в корне).
+4. **`docs/PROGRESS.md`** — полная история.
+5. **`docs/NEXT_STEPS.md`** — текущий заход.
+6. **`docs/DECISIONS.md`** — все решения по UI и логике.
+7. **`docs/DATABASE.md`** — схема БД.
+8. **`docs/ROADMAP.md`** — план до релиза.
+9. **`docs/VOICE.md`** — спецификация ГП.
+10. **`docs/GLOSSARY.md`** — термины.
+11. **`docs/ISSUES.md`** — открытые проблемы.
+12. **`docs/TESTING.md`** — что тестировать.
+13. **`docs/SCENARIOS.md`** — сценарии вкладки «Сверка».
+14. **`docs/SEARCH_MODEL.md`** — единая модель поиска.
 
-**Первым делом ИИ спрашивает: «где ты — дома или на работе?»** От ответа
-зависит формат ответа. См. `AI_RULES.md` §20.
+**Правило:** перед изменением Room-сущностей — сверить с
+`docs/DATABASE.md` и `docs/NEXT_STEPS.md`.
+
+**Первым делом ИИ спрашивает: «где ты — дома или на работе?»** И дома,
+и на работе — Android Studio + git в терминале. Fallback — github.dev
+или github.com. См. `docs/AI_RULES.md` §20.
 
 ---
 
 ## Технологии
 
 - **Kotlin**, **Jetpack Compose** (Material 3)
-- **Room** (SQLite), KSP — **version = 2**
+- **Room** (SQLite), KSP — **основная версия = 2**,
+  отдельная `logs.db` (version = 1)
 - **Navigation Compose**
 - **Kotlin Coroutines + Flow**
 - **Vosk** — офлайн-распознавание речи
 - **Свой парсер `.xlsx`** (без Apache POI)
-- **Gson** — настройки и история импорта
+- **Gson** — настройки, история импорта, details журнала
 
 Версии: AGP 8.1.4, Kotlin 1.9.20, compileSdk 34, minSdk 24, Java 17.
 
@@ -63,49 +70,51 @@ Android-приложение для управления геохимическ�
 5. **Настройки автосохраняются.**
 6. **Один заход = 1–3 файла.** Больше — делить.
 7. **После кода — раздел «Как проверить».**
-8. **Стоп-сигналы** — см. `AI_RULES.md` §17.
+8. **Стоп-сигналы** — см. `docs/AI_RULES.md` §17.
 9. **Работа с двух машин** — см. ниже.
 
 ---
 
-## Работа с двух машин — три режима
+## Работа с двух машин
 
 **Контекст:** проект разрабатывается на двух машинах.
 
-- **Дома** — Android Studio. Полный цикл: сборка, тесты, эмулятор,
-  реальное устройство.
-- **На работе** — без IDE. Git на машине не установлен. Приоритет —
-  `github.dev` (браузерный VS Code), fallback — `github.com` (веб).
+- **Дома** — Android Studio, git в терминале. Полный цикл.
+- **На работе** — тоже Android Studio + git в терминале. Полный цикл.
+- **Fallback** — если AS недоступен: `github.dev` или `github.com`.
 
-### Режим А — дома (Android Studio)
+### Режим А — Android Studio (основной)
 
-1. `git pull`.
-2. Создать feature-ветку: `feature/X.Y-краткое`.
+1. `git checkout feature/X.Y-xxx` → `git pull`.
+2. Создать ветку пачки: `git checkout -b fix/X.Y-bundle` →
+   `git push -u origin fix/X.Y-bundle`.
 3. Правки в IDE.
 4. Локально: `Build → Make Project`, юнит-тесты, эмулятор, устройство.
-5. **Коммит + push** (все файлы одним коммитом).
-6. **CI (вручную)** — GitHub → Actions → Build & Test → Run workflow.
-7. PR → Merge.
-8. Удалить ветку.
+5. **Ждать «норм»** от пользователя.
+6. **Коммит + push** (один общий на пачку).
+7. **Merge пачки в фичу** — локально в терминале.
+8. Удалить ветку пачки.
 
-### Режим Б — на работе, `github.dev` (приоритет)
+**Важно:** git-операции — **только через Terminal** (`Alt+F12`).
+Интерфейс AS (Commit/Push) ломает репо.
+
+### Режим Б — github.dev (fallback)
 
 1. Открыть репозиторий на github.com → нажать `.`.
-2. Создать feature-ветку (внизу слева кнопка с именем ветки).
+2. Создать ветку пачки от фичи.
 3. Править файлы.
-4. Source Control (`Ctrl+Shift+G`) → **один коммит** на все файлы →
-   Commit & Push.
-5. PR → **CI (вручную)** → Merge → Delete branch.
+4. Source Control (`Ctrl+Shift+G`) → один коммит → Commit & Push.
+5. PR → base: фича → Merge → Delete branch.
 
-### Режим В — на работе, `github.com` (fallback)
+### Режим В — github.com (fallback)
 
-Используется, если `github.dev` недоступен.
+Используется, если github.dev недоступен.
 
-1. Репозиторий → `main ▾` → Create branch: `feature/X.Y-краткое`.
+1. Репозиторий → `main ▾` → Create branch: `fix/X.Y-bundle`.
 2. **Каждый файл — отдельный коммит:**
    - Файл 1: открыть → ✏️ → правки → Commit changes → `X.Y/1 — Имя`.
    - Файл 2: ... → `X.Y/2 — Имя`.
-3. PR → **CI (вручную)** → Merge → Delete branch.
+3. PR → base: фича → Merge → Delete branch.
 
 ### Правила гигиены
 
@@ -114,46 +123,35 @@ Android-приложение для управления геохимическ�
 - **Одна задача = одна ветка.**
 - **Коммит после каждого захода.**
 - **Пуш в конце сессии.**
-- **После merge — удалить ветку.**
+- **После merge пачки — удалить.**
+- **После merge фичи в `main` — НЕ удалять (архив).**
 
 ### Схема веток
 
 - `main` — стабильная.
 - `feature/<заход>-<краткое>` — новая функциональность.
-- `fix/<заход>-<краткое>` — баг.
+- `fix/<заход>-<краткое>` — баг, пачка, подзаход.
 - `docs/<заход>-<краткое>` — документация.
 
-### CI (GitHub Actions) — только вручную
+### CI (GitHub Actions)
 
-**Автозапуска по push / PR нет.** CI запускается **по команде**.
+**Автоматически:**
+- **`unit-tests`** — на каждый PR в `main` и `feature/*`.
+- **`build-apk`** — если на PR висит лейбл `build-apk`.
 
-**Как запустить:**
-
-1. GitHub → вкладка **Actions**.
-2. Слева — **Build & Test**.
-3. Справа сверху — **Run workflow**.
-4. Выбрать ветку.
-5. Поставить чек-боксы:
-    - **Run unit tests** — прогнать юнит-тесты (по умолчанию ✅).
-    - **Build Debug APK** — собрать APK (по умолчанию ⬜).
-6. Зелёная кнопка **Run workflow**.
-
-**Что когда выбирать:**
-
-| Ситуация | run_tests | build_apk |
-|---|---|---|
-| Быстрая проверка (только тесты) | ✅ | ⬜ |
-| Полная сборка APK | ✅ | ✅ |
-| Только APK (тесты уже прогонялись) | ⬜ | ✅ |
+**Вручную (Actions → Build & Test → Run workflow):**
+- Прогнать тесты без PR.
+- Собрать APK без лейбла.
 
 **Артефакты** на странице запуска:
 - `app-debug` — APK (если `build_apk`).
 - `test-report` — HTML-отчёт (если `run_tests`).
 
 Vosk-модель не коммитится в Git. В CI она выкачивается из релиза GitHub
-отдельным шагом (заход 2e).
+(`models-v1`) в `build.yml`. Дома и на работе — локально в
+`app/src/main/assets/vosk-model-small-ru-0.22/`.
 
-**Подробности:** `AI_RULES.md` §20.
+**Подробности:** `docs/AI_RULES.md` §20.
 
 ---
 
@@ -164,14 +162,14 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 ### Точка входа
 | Файл | Назначение |
 |---|---|
-| `MainActivity.kt` | Activity. |
-| `GeoSampleApp.kt` | Application. Инициализирует 3 репозитория. |
+| `MainActivity.kt` | Activity. `ReadyContent` — пересбор поддерева через `key(tick)` + `SimpleViewModelStoreOwner`. Логирование lifecycle (`onResume` / `onPause`). |
+| `GeoSampleApp.kt` | Application. Репозитории, `resetRepository()`, `requestRestart()`, `LogWriter.init()`, `CrashHandler.install()`. |
 
 ### `data/` — слой данных
 | Файл | Назначение |
 |---|---|
-| `AppDatabase.kt` | Room-БД. **version = 2**, 6 сущностей, миграция 1→2. |
-| `DatabaseRepository.kt` | Обёртка над DAO. |
+| `AppDatabase.kt` | Основная Room-БД. **version = 2**, 6 сущностей, миграция 1→2. `closeAndReset()`, `buildTemp()`. |
+| `DatabaseRepository.kt` | Обёртка над DAO. `checkpointWal()`, `clearAllData()`, `getDbInfo()`, `runDiagnostics()`, `applyDiagnosticsFixes()`. |
 
 #### `data/entity/`
 `AreaEntity`, `OrderEntity`, `OrderWellEntity`, `SampleEntity`,
@@ -180,8 +178,6 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 #### `data/dao/`
 `AreaDao`, `OrderDao`, `OrderWellDao`, `SampleDao`, `SampleNoteDao`,
 `SampleImageDao`.
-
-`SampleDao` — много атомарных UPDATE.
 
 #### `data/excel/`
 `XlsxReader`, `ExcelAnalyzer`, `ExcelImporter`, `ExcelModels`,
@@ -194,30 +190,95 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 `ImportSettings`, `SettingsRepository`.
 
 #### `data/util/`
-`PhotoStorage` — работа с фото.
+`PhotoStorage`, `VoiceController`.
 
 #### `data/voice/`
-`VoiceController`, `VoiceDictionary`, `VoiceNumberParser`,
-`VoiceSegmenter`, `VoiceSettings`, `VoicePrefixResolver`, `VoiceSearch`,
-`VoiceCommand`, `VoiceCommandParser`, `VoiceOrdinals`, `VoiceSession`,
-`VoiceSpeaker`, `VoiceSearchRepository`, `AnswerState`, `UnifiedSearch`.
+`VoiceDictionary`, `VoiceNumberParser`, `VoiceSegmenter`, `VoiceSettings`,
+`VoicePrefixResolver`, `VoiceSearch`, `VoiceCommand`, `VoiceCommandParser`,
+`VoiceOrdinals`, `VoiceSession`, `VoiceSpeaker`, `VoiceSearchRepository`,
+`AnswerState`, `UnifiedSearch`.
+
+#### `data/backup/` — бэкапы и авто-бэкапы
+| Файл | Назначение |
+|---|---|
+| `GsmBackupReader.kt` | Чтение `.gsmbackup`. |
+| `GsmBackupWriter.kt` | Запись `.gsmbackup`. |
+| `RollbackBackups.kt` | Парсер `pre_*`, ротация, merge. Четыре операции: restore / rollback / clean / diagnostics. |
+| `PublicBackupsLister.kt` | Листинг публичных бэкапов. |
+| `PublicBackupsMigrator.kt` | Ленивая миграция старых бэкапов. |
+| `BackupManagerStats.kt` | Сводка по бэкапам. |
+
+#### `data/merge/` — слияние БД
+| Файл | Назначение |
+|---|---|
+| `MergeModels.kt` | Планы, конфликты, дерево. |
+| `MergeEngine.kt` | Движок. |
+| `MergeRunner.kt` | Оркестратор apply-фаз. |
+
+#### `data/compare/` — сравнение БД
+| Файл | Назначение |
+|---|---|
+| `CompareModels.kt` | Дерево сравнения. |
+| `CompareEngine.kt` | `buildResult()` — 4 дерева. |
+
+#### `data/diagnostics/` — диагностика БД
+| Файл | Назначение |
+|---|---|
+| `DbIssue.kt` | Sealed-класс проблем: `OrphanOrder`, `OrphanSample`, `BrokenPhotoLink`, `PhotoFlagMismatch`. |
+| `DbDiagnosticsEngine.kt` | Чистая логика поиска проблем. |
+| `DiagnosticsModels.kt` | `DbDiagnosticsState`. |
+
+#### `data/logs/` — журнал аудита
+| Файл | Назначение |
+|---|---|
+| `LogCategory.kt` | Категории с русскими метками. |
+| `LogLevel.kt` | Уровни (info / warn / error). |
+| `LogEntry.kt` | Entity для `logs.db`. |
+| `LogDao.kt` | DAO журнала. |
+| `LogsDatabase.kt` | Отдельная Room-БД. |
+| `LogFormatter.kt` | Формат даты и времени. |
+| `LogWriter.kt` | Канал + батчи + запись в БД и файл. |
+| `LogEntryBuilder.kt` | Fluent-API. |
+| `DetailsJson.kt` | Gson-обёртка для details. |
+| `Log.kt` | Точка входа (`Log.app`, `Log.db`, …). |
+| `AppLog.kt` | `typealias` для использования рядом с `android.util.Log`. |
+| `LogFileWriter.kt` | Файловый архив `.logs/YYYY-MM-DD.log`. |
+| `LogsFilter.kt` | Фильтр UI журнала. |
+| `DeviceInfo.kt` | Снимок устройства для app_start. |
+| `CrashRecord.kt` | Запись о крэше (файл `pending_crash.json`). |
+| `CrashHandler.kt` | Глобальный перехват исключений. |
+| `SampleRowDiff.kt` | Diff между старой и новой пробой. |
 
 ### `ui/navigation/`
-`NavGraph.kt` (AppScaffold), `Screen.kt`.
+`NavGraph.kt` (переходы на вкладки логируются), `Screen.kt`,
+`SimpleViewModelStoreOwner.kt`.
 
 ### `ui/screens/`
 Основные экраны: `MainScreen`, `AddScreen` + `AddViewModel`,
-`SearchScreen`, `StatsScreen`, `EditScreen`, `DbScreen` + `DbViewModel`,
-`SettingsScreen` + `SettingsViewModel`.
+`SearchScreen`, `StatsScreen`, `EditScreen` + `EditViewModel`,
+`DbScreen` + `DbViewModel`, `SettingsScreen` + `SettingsViewModel`.
 
 Модели и состояние сверки: `ReconciliationModels`,
 `ReconciliationState`, `ReconciliationMapper`, `ReconciliationViewModel`.
 
-Диалоги: `ReconciliationDialogs`, `KeywordsDialogs`,
+Диалоги сверки: `ReconciliationDialogs`, `KeywordsDialogs`,
 `MappingEditorDialog`, `VoiceDialog`.
 
 Вспомогательные: `RememberChanges`, `RoleColors`, `SampleDisplay`,
 `SamplesTable`.
+
+**Диалоги вкладки БД:**
+`DbBackupDialog`, `DbRestoreDialog`, `DbRollbackDialog`,
+`DbCleanDialog`, `DbImportPickerDialog`, `BackupManagerDialog`,
+`DbDiagnosticsDialog`.
+
+**Экраны БД:**
+`MergeWizard`, `MergeConflictsScreen`, `DbCompareScreen`.
+
+**Модели вкладки БД:** `CleanConfirmState`.
+
+**Экран журнала:** `LogsScreen` + `LogsViewModel`
+(открывается из Настройки → Система).
 
 ### `ui/theme/`
 `Color.kt`, `Theme.kt`, `Type.kt`.
@@ -226,12 +287,24 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 
 ## Как запускается приложение
 
-1. `MainActivity` → `GeoSampleManagerTheme` → `AppScaffold()`.
-2. `GeoSampleApp.onCreate` создаёт:
-    - `DatabaseRepository`
-    - `SettingsRepository`
-    - `ImportHistoryRepository`
-3. ViewModel'и берут репозиторий через `(application as GeoSampleApp).repository`.
+1. `MainActivity` → `GeoSampleManagerTheme` → `AppRoot()`.
+2. `AppRoot` ждёт загрузки Vosk-модели → `ReadyContent(app)`.
+3. `ReadyContent` — `key(tick)` + `SimpleViewModelStoreOwner` +
+   `AppScaffold(initialRoute)`.
+4. `GeoSampleApp.onCreate`:
+   - `LogWriter.init(this)` — старт журнала;
+   - `CrashHandler.install(this)` — перехват падений;
+   - создаёт репозитории:
+      - `DatabaseRepository`
+      - `SettingsRepository`
+      - `ImportHistoryRepository`
+      - `VoiceSettingsRepository`;
+   - записывает `app_start` со снимком устройства и счётчиков БД.
+5. ViewModel'и берут репозиторий через `(application as GeoSampleApp).repository`.
+
+**После замены БД** (импорт/откат/слияние/очистка) — `requestRestart()`
+пересобирает поддерево без пересоздания Activity.
+См. `docs/CONTEXT_BRIEF.md`.
 
 ---
 
@@ -241,8 +314,13 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 - **Сверка и поиск** → `SearchScreen` + `Reconciliation*` + `SampleDao`.
 - **Заметки и фото** → `NotePhotoDialog` + `PhotoStorage` + `SampleImageDao`.
 - **Управление БД** → `DbScreen` + `DbViewModel`.
+- **Бэкапы и авто-бэкапы** → `data/backup/*`.
+- **Слияние двух БД** → `data/merge/*` + `MergeWizard` + `MergeConflictsScreen`.
+- **Сравнение двух БД** → `data/compare/*` + `DbCompareScreen`.
+- **Диагностика БД** → `data/diagnostics/*` + `DbDiagnosticsDialog`.
+- **Журнал аудита** → `data/logs/*` + `LogsScreen` (Настройки → Система).
 - **Настройки** → `SettingsScreen` + `SettingsRepository`.
-- **Голосовой помощник** → `VOICE.md` + `data/voice/*`.
+- **Голосовой помощник** → `docs/VOICE.md` + `data/voice/*`.
 
 ---
 
@@ -256,24 +334,35 @@ Vosk-модель не коммитится в Git. В CI она выкачив�
 | Парсинг Excel | `data/excel/*` |
 | Настройки импорта | `ImportSettings.kt` + `SettingsRepository.kt` |
 | Диалог сверки | `ReconciliationDialogs.kt` + `SearchScreen.kt` |
-| Логика ГП | `VOICE.md` + `data/voice/*` |
-| Термин — что значит | `GLOSSARY.md` |
-| Что тестировать | `TESTING.md` |
-| Открытые проблемы | `ISSUES.md` |
+| Логика ГП | `docs/VOICE.md` + `data/voice/*` |
+| Бэкап/восстановление | `data/backup/*` + `DbViewModel` |
+| Слияние БД | `data/merge/*` + `MergeWizard` + `MergeConflictsScreen` |
+| Сравнение БД | `data/compare/*` + `DbCompareScreen` |
+| Диагностика БД | `data/diagnostics/*` + `DbDiagnosticsDialog` |
+| Журнал | `data/logs/*` + `LogsScreen` |
+| Создание/удаление участков и нарядов | `EditScreen.kt`, `EditViewModel.kt` |
+| Термин — что значит | `docs/GLOSSARY.md` |
+| Что тестировать | `docs/TESTING.md` |
+| Открытые проблемы | `docs/ISSUES.md` |
+| Сценарии сверки | `docs/SCENARIOS.md` |
+| Модель поиска | `docs/SEARCH_MODEL.md` |
 
 ---
 
 ## Файлы документации
 
-- `AI_RULES.md` — правила работы ИИ.
-- `CONTEXT_BRIEF.md` — где мы сейчас.
-- `README.md` — этот файл.
-- `PROGRESS.md` — статус проекта.
-- `NEXT_STEPS.md` — текущий этап.
-- `DECISIONS.md` — решения по UI и логике.
-- `DATABASE.md` — схема БД.
-- `ROADMAP.md` — план до релиза.
-- `VOICE.md` — спецификация ГП.
-- `GLOSSARY.md` — термины.
-- `ISSUES.md` — проблемы.
-- `TESTING.md` — тесты.
+Все документы — в папке `docs/`.
+
+- `docs/AI_RULES.md` — правила работы ИИ.
+- `docs/CONTEXT_BRIEF.md` — где мы сейчас.
+- `docs/PROGRESS.md` — история.
+- `docs/NEXT_STEPS.md` — текущий этап.
+- `docs/DECISIONS.md` — решения по UI и логике.
+- `docs/DATABASE.md` — схема БД.
+- `docs/ROADMAP.md` — план до релиза.
+- `docs/VOICE.md` — спецификация ГП.
+- `docs/GLOSSARY.md` — термины.
+- `docs/ISSUES.md` — проблемы.
+- `docs/TESTING.md` — тесты.
+- `docs/SCENARIOS.md` — сценарии сверки.
+- `docs/SEARCH_MODEL.md` — единая модель поиска.

@@ -171,6 +171,14 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             return sortGroupsByRelevance(byStatus, selectedArea, selectedOrder)
         }
 
+    fun visibleRowsForGroup(groupId: String): List<SampleRow> {
+        visibleGroups.firstOrNull { it.id == groupId }?.let { return it.rows }
+        for (qg in _queryGroups) {
+            filteredGroupsForQuery(qg).firstOrNull { it.id == groupId }?.let { return it.rows }
+        }
+        return emptyList()
+    }
+
     val currentStatistics: GroupStats
         get() {
             val groupsToCount = if (selectedOrder != null) {
@@ -381,7 +389,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         val newRows = group.rows.map { row ->
             if (row.weightControl) {
                 changed++
-                row.copy(weightControl = false)
+                row.copy(weightControl = false, controlWeight = null)
             } else row
         }
         if (changed > 0) {
@@ -430,14 +438,14 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
             if (row.isBlank || row.hasImportError) {
                 if (row.weightControl) {
                     changed++
-                    row.copy(weightControl = false)
+                    row.copy(weightControl = false, controlWeight = null)
                 } else row
             } else {
                 counter++
                 val shouldBeVk = counter % step == 0
                 if (shouldBeVk != row.weightControl) {
                     changed++
-                    row.copy(weightControl = shouldBeVk)
+                    row.copy(weightControl = shouldBeVk, controlWeight = null)
                 } else row
             }
         }
@@ -576,16 +584,49 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         if (newFlag) {
             replaceRow(gi, ri, row.copy(weightControl = true, found = false, controlWeight = null))
             pushUndo(UndoAction.SetWeightControlFlag(rowId, oldFlag, true))
+            if (row.controlWeight != null) {
+                pushUndo(UndoAction.SetControlWeight(rowId, row.controlWeight, null))
+            }
             if (oldFound) pushUndo(UndoAction.SetFound(rowId, oldFound, false))
         } else {
-            replaceRow(gi, ri, row.copy(weightControl = false))
+            val oldCW = row.controlWeight
+            replaceRow(gi, ri, row.copy(weightControl = false, controlWeight = null))
             pushUndo(UndoAction.SetWeightControlFlag(rowId, oldFlag, false))
+            if (oldCW != null) {
+                pushUndo(UndoAction.SetControlWeight(rowId, oldCW, null))
+            }
         }
         return true
     }
 
+    /**
+     * FIX 5.9-edit-search-save-fix:
+     * Заменить всю пробу целиком (правка через EditSampleDialog).
+     * Все поля новой строки применяются сразу. Undo-действие — одна
+     * запись BulkRowsChange (до/после для группы).
+     */
+    fun replaceRowFully(rowId: String, newRow: SampleRow) {
+        val (gi, ri) = findRow(rowId) ?: return
+        val oldRow = _groups[gi].rows[ri]
+        if (oldRow == newRow) return
+
+        val group = _groups[gi]
+        val before = group.rows.toList()
+        val newRows = group.rows.toMutableList().also { it[ri] = newRow }
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(
+            UndoAction.BulkRowsChange(
+                groupId = group.id,
+                before = before,
+                after = newRows,
+                label = "Правка: ${newRow.sampleNumber}"
+            )
+        )
+    }
+
     sealed class BulkDecision {
         data class WeightControlNeedsWeight(val row: SampleRow) : BulkDecision()
+        data class BlankNeedsWeight(val row: SampleRow) : BulkDecision()
         data class PostponedNeedsAction(val row: SampleRow) : BulkDecision()
     }
 
@@ -597,6 +638,29 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 row.hasImportError -> Unit
                 row.weightControl && row.controlWeight == null ->
                     result.add(BulkDecision.WeightControlNeedsWeight(row))
+                row.isBlank && row.weight == null ->
+                    result.add(BulkDecision.BlankNeedsWeight(row))
+                row.postponed ->
+                    result.add(BulkDecision.PostponedNeedsAction(row))
+            }
+        }
+        return result
+    }
+
+    fun collectBulkDecisionsForRows(
+        groupId: String,
+        rowIds: Set<String>
+    ): List<BulkDecision> {
+        val group = _groups.firstOrNull { it.id == groupId } ?: return emptyList()
+        val result = mutableListOf<BulkDecision>()
+        group.rows.forEach { row ->
+            if (row.id !in rowIds) return@forEach
+            when {
+                row.hasImportError -> Unit
+                row.weightControl && row.controlWeight == null ->
+                    result.add(BulkDecision.WeightControlNeedsWeight(row))
+                row.isBlank && row.weight == null ->
+                    result.add(BulkDecision.BlankNeedsWeight(row))
                 row.postponed ->
                     result.add(BulkDecision.PostponedNeedsAction(row))
             }
@@ -607,6 +671,7 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
     fun applyBulkMarkFound(
         groupId: String,
         weights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
         postponedActions: Map<String, Boolean>
     ): Int {
         val gi = _groups.indexOfFirst { it.id == groupId }
@@ -633,7 +698,61 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
                 if (row.weight != null) {
                     marked++; row.copy(found = true)
                 } else {
-                    val w = when (settings.mode) {
+                    val fromDialog = blankWeights[row.id]
+                    val w = fromDialog ?: when (settings.mode) {
+                        BlankWeightMode.FIXED -> settings.fixedValue
+                        BlankWeightMode.AVERAGE -> calculateAverageNeighborWeight(group, row.id)
+                        BlankWeightMode.MANUAL -> null
+                    }
+                    if (w != null && w > 0) {
+                        marked++; row.copy(weight = w, found = true)
+                    } else row
+                }
+            } else {
+                marked++; row.copy(found = true)
+            }
+        }
+
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(UndoAction.SetAllFound(groupId, changes))
+        return marked
+    }
+
+    fun applyBulkMarkFoundForRows(
+        groupId: String,
+        rowIds: Set<String>,
+        weights: Map<String, Double>,
+        blankWeights: Map<String, Double>,
+        postponedActions: Map<String, Boolean>
+    ): Int {
+        val gi = _groups.indexOfFirst { it.id == groupId }
+        if (gi < 0) return 0
+        if (rowIds.isEmpty()) return 0
+
+        val group = _groups[gi]
+        val settings = blankWeightFor(group.orderTitle)
+        var marked = 0
+        val changes = group.rows.map { it.id to it.found }
+
+        val newRows = group.rows.map { row ->
+            if (row.id !in rowIds) return@map row
+            if (row.hasImportError) return@map row
+            if (row.found) return@map row
+
+            if (row.weightControl && row.controlWeight == null) {
+                val w = weights[row.id]
+                if (w != null && w > 0) {
+                    marked++; row.copy(controlWeight = w, found = true)
+                } else row
+            } else if (row.postponed) {
+                val doMark = postponedActions[row.id] ?: false
+                if (doMark) { marked++; row.copy(found = true) } else row
+            } else if (row.isBlank) {
+                if (row.weight != null) {
+                    marked++; row.copy(found = true)
+                } else {
+                    val fromDialog = blankWeights[row.id]
+                    val w = fromDialog ?: when (settings.mode) {
                         BlankWeightMode.FIXED -> settings.fixedValue
                         BlankWeightMode.AVERAGE -> calculateAverageNeighborWeight(group, row.id)
                         BlankWeightMode.MANUAL -> null
@@ -658,6 +777,19 @@ class ReconciliationState(initialGroups: List<SampleGroup>) {
         val group = _groups[gi]
         val changes = group.rows.map { it.id to it.found }
         val newRows = group.rows.map { it.copy(found = false) }
+        _groups[gi] = group.copy(rows = newRows)
+        pushUndo(UndoAction.SetAllFound(groupId, changes))
+    }
+
+    fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
+        val gi = _groups.indexOfFirst { it.id == groupId }
+        if (gi < 0) return
+        if (rowIds.isEmpty()) return
+        val group = _groups[gi]
+        val changes = group.rows.map { it.id to it.found }
+        val newRows = group.rows.map { row ->
+            if (row.id in rowIds) row.copy(found = false) else row
+        }
         _groups[gi] = group.copy(rows = newRows)
         pushUndo(UndoAction.SetAllFound(groupId, changes))
     }

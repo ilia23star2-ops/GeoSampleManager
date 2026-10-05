@@ -18,7 +18,16 @@ import com.example.geosamplemanager.data.entity.OrderWellEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import java.io.File
 
+/**
+ * FIX 5.9-db-restore-v2:
+ *  - добавлен closeAndReset().
+ *
+ * FIX 5.9-db-merge-v2/1:
+ *  - добавлен buildTemp() — открыть БД по произвольному пути
+ *    (для чтения архива при слиянии). Не влияет на синглтон.
+ */
 @Database(
     entities = [
         AreaEntity::class,
@@ -47,20 +56,12 @@ abstract class AppDatabase : RoomDatabase() {
 
         /**
          * Миграция 1 → 2 (этап 5.5.1 — заметки и фото).
-         *
-         * Что делаем:
-         *  1) samples: добавляем has_photo BOOLEAN NOT NULL DEFAULT 0.
-         *  2) sample_notes: пересоздаём без image_path (данных там нет).
-         *  3) создаём sample_images + индекс по sample_id.
          */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                // 1) samples + has_photo
                 db.execSQL(
                     "ALTER TABLE samples ADD COLUMN has_photo INTEGER NOT NULL DEFAULT 0"
                 )
-
-                // 2) sample_notes: пересоздаём без image_path
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS sample_notes_new (
@@ -84,8 +85,6 @@ abstract class AppDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_sample_notes_sample_id " +
                             "ON sample_notes(sample_id)"
                 )
-
-                // 3) sample_images
                 db.execSQL(
                     """
                     CREATE TABLE IF NOT EXISTS sample_images (
@@ -116,6 +115,33 @@ abstract class AppDatabase : RoomDatabase() {
                 INSTANCE = instance
                 instance
             }
+        }
+
+        /**
+         * FIX 5.9-db-restore-v2:
+         * Закрыть текущее соединение и сбросить синглтон.
+         */
+        fun closeAndReset() {
+            synchronized(this) {
+                try { INSTANCE?.close() } catch (_: Exception) {}
+                INSTANCE = null
+            }
+        }
+
+        /**
+         * FIX 5.9-db-merge-v2/1:
+         * Открыть AppDatabase по произвольному пути — используется
+         * для чтения временной БД архива при слиянии. Не пишет в
+         * синглтон INSTANCE, вызывающий обязан закрыть вручную.
+         */
+        fun buildTemp(context: Context, file: File): AppDatabase {
+            return Room.databaseBuilder(
+                context.applicationContext,
+                AppDatabase::class.java,
+                file.absolutePath
+            )
+                .addMigrations(MIGRATION_1_2)
+                .build()
         }
     }
 }

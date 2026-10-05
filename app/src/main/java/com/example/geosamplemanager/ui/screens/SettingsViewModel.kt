@@ -5,9 +5,20 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.bluetooth.BluetoothController
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
+import com.example.geosamplemanager.data.bluetooth.BtDevice
+import com.example.geosamplemanager.data.bluetooth.BtProfile
+import com.example.geosamplemanager.data.settings.AppTheme
+import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.OrderNumberRule
 import com.example.geosamplemanager.data.settings.OrderSource
+import com.example.geosamplemanager.data.settings.UiScale
+import com.example.geosamplemanager.data.voice.SoundLevel
+import com.example.geosamplemanager.data.voice.TtsVolume
+import com.example.geosamplemanager.data.voice.VoiceMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,17 +27,53 @@ import kotlinx.coroutines.launch
 enum class SettingsCategory(val title: String) {
     IMPORT("Импорт Excel"),
     VOICE("Голос"),
+    SOUND("Звук"),
+    BLUETOOTH("Bluetooth"),
     APPEARANCE("Внешний вид"),
     SYSTEM("Система"),
-    ABOUT("О приложении")
+    ABOUT("О приложении"),
+    HELP("Справка")
 }
 
+/**
+ * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
+ * FIX 5.9-settings-scale: стейт внешнего вида + setUiScale.
+ * FIX 5.9-settings-theme: setTheme(AppTheme).
+ * FIX 5.9-settings-help-1: категория HELP для справки.
+ */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repo = (application as GeoSampleApp).settingsRepository
+    private val app = application as GeoSampleApp
+
+    private val repo = app.settingsRepository
+    private val voiceRepo = app.voiceSettingsRepository
+    private val btRepo = app.bluetoothSettingsRepository
+
+    private val btController = BluetoothController(application.applicationContext)
 
     private val _settings = MutableStateFlow(repo.load())
     val settings: StateFlow<ImportSettings> = _settings.asStateFlow()
+
+    private val _voiceSettings = MutableStateFlow(VoiceSettings())
+    val voiceSettings: StateFlow<VoiceSettings> = _voiceSettings.asStateFlow()
+
+    private val _btSettings = MutableStateFlow(BluetoothSettings())
+    val btSettings: StateFlow<BluetoothSettings> = _btSettings.asStateFlow()
+
+    private val _pairedDevices = MutableStateFlow<List<BtDevice>>(emptyList())
+    val pairedDevices: StateFlow<List<BtDevice>> = _pairedDevices.asStateFlow()
+
+    private val _btEnabled = MutableStateFlow(false)
+    val btEnabled: StateFlow<Boolean> = _btEnabled.asStateFlow()
+
+    private val _btHasPermission = MutableStateFlow(true)
+    val btHasPermission: StateFlow<Boolean> = _btHasPermission.asStateFlow()
+
+    private val _btActiveDevice = MutableStateFlow<BtDevice?>(null)
+    val btActiveDevice: StateFlow<BtDevice?> = _btActiveDevice.asStateFlow()
+
+    private val _appearanceSettings = MutableStateFlow(app.appearance.value)
+    val appearanceSettings: StateFlow<AppearanceSettings> = _appearanceSettings.asStateFlow()
 
     private val _selectedCategory = MutableStateFlow(SettingsCategory.IMPORT)
     val selectedCategory: StateFlow<SettingsCategory> = _selectedCategory.asStateFlow()
@@ -34,20 +81,46 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            _voiceSettings.value = voiceRepo.load()
+            _btSettings.value = btRepo.load()
+            refreshBluetoothState()
+        }
+    }
+
     fun clearMessage() { _message.value = null }
 
     fun selectCategory(category: SettingsCategory) {
         _selectedCategory.value = category
+        if (category == SettingsCategory.BLUETOOTH) {
+            refreshBluetoothState()
+        }
     }
 
-    /** Перечитать настройки из файла. Вызывается при открытии экрана. */
     fun reload() {
         _settings.value = repo.load()
+        _appearanceSettings.value = app.appearance.value
+        viewModelScope.launch {
+            _voiceSettings.value = voiceRepo.load()
+            _btSettings.value = btRepo.load()
+            refreshBluetoothState()
+        }
     }
 
     private fun persist(updated: ImportSettings) {
         _settings.value = updated
         repo.save(updated)
+    }
+
+    private fun persistVoice(updated: VoiceSettings) {
+        _voiceSettings.value = updated
+        viewModelScope.launch { voiceRepo.save(updated) }
+    }
+
+    private fun persistBt(updated: BluetoothSettings) {
+        _btSettings.value = updated
+        viewModelScope.launch { btRepo.save(updated) }
     }
 
     // ============ УЧАСТКИ ============
@@ -142,6 +215,130 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun resetToDefaults() {
         _settings.value = repo.resetToDefaults()
         _message.value = "Настройки сброшены к стандартным"
+    }
+
+    // ============ ГОЛОСОВОЙ ПОМОЩНИК ============
+
+    fun setVoiceMode(mode: VoiceMode) {
+        persistVoice(_voiceSettings.value.copy(mode = mode))
+    }
+
+    fun setAutoStopMinutes(minutes: Int) {
+        persistVoice(_voiceSettings.value.copy(autoStopMinutes = minutes))
+    }
+
+    fun setShowCharacteristic(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(showCharacteristic = value))
+    }
+
+    fun setShowOnboarding(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(showOnboarding = value))
+    }
+
+    fun setUseGrammar(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(useGrammar = value))
+    }
+
+    fun resetVoiceToDefaults() {
+        persistVoice(VoiceSettings())
+        _message.value = "Настройки голоса сброшены"
+    }
+
+    // ============ ЗВУК ============
+
+    fun setTtsVolume(volume: TtsVolume) {
+        persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
+    }
+
+    fun setTtsSpeed(speed: Float) {
+        val clamped = speed.coerceIn(
+            VoiceSettings.MIN_TTS_SPEED,
+            VoiceSettings.MAX_TTS_SPEED
+        )
+        persistVoice(_voiceSettings.value.copy(ttsSpeedValue = clamped))
+    }
+
+    fun setFeedbackEnabled(value: Boolean) {
+        persistVoice(_voiceSettings.value.copy(feedbackEnabled = value))
+    }
+
+    fun setFeedbackVolume(volume: SoundLevel) {
+        persistVoice(_voiceSettings.value.copy(feedbackVolume = volume))
+    }
+
+    fun resetSoundToDefaults() {
+        persistVoice(
+            _voiceSettings.value.copy(
+                ttsVolume = TtsVolume.NORMAL,
+                ttsSpeedValue = VoiceSettings.DEFAULT_TTS_SPEED,
+                feedbackEnabled = true,
+                feedbackVolume = SoundLevel.NORMAL
+            )
+        )
+        _message.value = "Настройки звука сброшены"
+    }
+
+    // ============ ВНЕШНИЙ ВИД ============
+
+    fun setUiScale(scale: UiScale) {
+        val updated = _appearanceSettings.value.copy(scale = scale)
+        _appearanceSettings.value = updated
+        app.updateAppearance(updated)
+    }
+
+    fun setTheme(theme: AppTheme) {
+        val updated = _appearanceSettings.value.copy(theme = theme)
+        _appearanceSettings.value = updated
+        app.updateAppearance(updated)
+    }
+
+    // ============ BLUETOOTH ============
+
+    fun refreshBluetoothState() {
+        _btHasPermission.value = btController.hasPermission()
+        _btEnabled.value = btController.isBluetoothEnabled()
+        _pairedDevices.value = if (_btEnabled.value) {
+            btController.listPairedDevices()
+        } else {
+            emptyList()
+        }
+        _btActiveDevice.value = btController.currentActiveDevice()
+    }
+
+    fun setBluetoothEnabled(value: Boolean) {
+        persistBt(_btSettings.value.copy(enabled = value))
+    }
+
+    fun setBluetoothDevice(device: BtDevice) {
+        if (device.isBuiltIn) {
+            persistBt(
+                _btSettings.value.copy(
+                    enabled = false,
+                    deviceAddress = null,
+                    deviceName = null
+                )
+            )
+        } else {
+            persistBt(
+                _btSettings.value.copy(
+                    enabled = true,
+                    deviceAddress = device.address,
+                    deviceName = device.name
+                )
+            )
+        }
+    }
+
+    fun setBtProfile(profile: BtProfile) {
+        persistBt(_btSettings.value.copy(profile = profile))
+    }
+
+    fun setFallbackToBuiltIn(value: Boolean) {
+        persistBt(_btSettings.value.copy(fallbackToBuiltIn = value))
+    }
+
+    fun openBluetoothSystemSettings() {
+        btController.openSystemSettings()
     }
 
     // ============ ЭКСПОРТ / ИМПОРТ ============

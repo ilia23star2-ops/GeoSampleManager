@@ -2,6 +2,8 @@ package com.example.geosamplemanager.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsEngine
+import com.example.geosamplemanager.data.diagnostics.DbIssue
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
@@ -13,6 +15,33 @@ import com.example.geosamplemanager.ui.screens.SampleRow
 import kotlinx.coroutines.flow.Flow
 import java.io.File
 
+/**
+ * FIX 5.9-db-info: getDbInfo().
+ * FIX 5.9-db-backup-v2: checkpointWal(), getPhotosDir(),
+ *   DB_SCHEMA_VERSION.
+ * FIX 5.9-db-rollback: getRollbackBackupsDir().
+ * FIX 5.9-db-clean: clearAllData().
+ * FIX 5.9-db-diagnostics: runDiagnostics(), applyDiagnosticsFixes().
+ *
+ * FIX 5.9-main-a:
+ *  - countOrphanOrders() — количество нарядов без участка (быстрый
+ *    SQL, без файловых проверок);
+ *  - countOrphanSamples() — количество проб без наряда.
+ *    Используется индикатором «База в порядке» на Главной.
+ */
+data class DbInfo(
+    val dbPath: String,
+    val dbSizeBytes: Long,
+    val photosSizeBytes: Long,
+    val lastModified: Long,
+    val areasCount: Int,
+    val ordersCount: Int,
+    val samplesCount: Int,
+    val notesCount: Int,
+    val photosCount: Int,
+    val wellsCount: Int
+)
+
 class DatabaseRepository(context: Context) {
 
     private val appContext = context.applicationContext
@@ -23,6 +52,10 @@ class DatabaseRepository(context: Context) {
     private val orderWellDao = db.orderWellDao()
     private val sampleNoteDao = db.sampleNoteDao()
     private val sampleImageDao = db.sampleImageDao()
+
+    companion object {
+        const val DB_SCHEMA_VERSION = 2
+    }
 
     // ============ УЧАСТКИ ============
 
@@ -51,13 +84,15 @@ class DatabaseRepository(context: Context) {
 
     suspend fun getAllOrders(): List<OrderEntity> = orderDao.getAllOrders()
 
-    /** Flow всех нарядов. Для реактивного обновления списка в сверке. */
     fun getAllOrdersFlow(): Flow<List<OrderEntity>> = orderDao.getAllOrdersFlow()
 
     // ============ ПРОБЫ ============
 
     fun getSamplesForOrder(orderId: Long): Flow<List<SampleEntity>> =
         sampleDao.getSamplesForOrder(orderId)
+
+    fun getAllSamplesFlow(): Flow<List<SampleEntity>> =
+        sampleDao.getAllSamplesFlow()
 
     suspend fun getSamplesForOrderList(orderId: Long): List<SampleEntity> =
         sampleDao.getSamplesForOrderList(orderId)
@@ -71,6 +106,11 @@ class DatabaseRepository(context: Context) {
 
     suspend fun getSamplesByWell(wellNumber: String): List<SampleEntity> =
         sampleDao.getSamplesByWell(wellNumber)
+
+    suspend fun findSampleByOrderAndNumber(
+        orderId: Long,
+        sampleNumber: String
+    ): SampleEntity? = sampleDao.findByOrderAndNumber(orderId, sampleNumber)
 
     suspend fun addSample(sample: SampleEntity): Long = sampleDao.insert(sample)
     suspend fun updateSample(sample: SampleEntity) = sampleDao.update(sample)
@@ -93,6 +133,21 @@ class DatabaseRepository(context: Context) {
 
     suspend fun getOrderIdsWithSamples(): List<Long> =
         sampleDao.getOrderIdsWithSamples()
+
+    suspend fun addSampleWithShift(
+        newSample: SampleEntity,
+        shifts: List<Pair<Long, String>>
+    ): Long {
+        return db.withTransaction {
+            shifts.reversed().forEach { (id, newNum) ->
+                val existing = sampleDao.getSampleById(id) ?: return@forEach
+                if (existing.sampleNumber != newNum) {
+                    sampleDao.update(existing.copy(sampleNumber = newNum))
+                }
+            }
+            sampleDao.insert(newSample)
+        }
+    }
 
     // ============ СТАТИСТИКА ============
 
@@ -177,7 +232,59 @@ class DatabaseRepository(context: Context) {
 
     fun getDatabaseFile(): File = appContext.getDatabasePath("geosamples.db")
 
-    // ============ ОЧИСТКА НАРЯДА ============
+    fun getPhotosDir(): File = File(appContext.filesDir, "sample_photos")
+
+    fun getRollbackBackupsDir(): File = File(appContext.filesDir, "db_backups")
+
+    fun checkpointWal() {
+        try {
+            db.openHelper.writableDatabase
+                .query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .use { it.moveToFirst() }
+        } catch (_: Exception) {
+        }
+    }
+
+    suspend fun getDbInfo(): DbInfo {
+        val dbFile = getDatabaseFile()
+        val photosDir = getPhotosDir()
+
+        val photosSize = if (photosDir.exists() && photosDir.isDirectory) {
+            photosDir.listFiles()?.sumOf { it.length() } ?: 0L
+        } else 0L
+
+        return DbInfo(
+            dbPath = dbFile.absolutePath,
+            dbSizeBytes = if (dbFile.exists()) dbFile.length() else 0L,
+            photosSizeBytes = photosSize,
+            lastModified = if (dbFile.exists()) dbFile.lastModified() else 0L,
+            areasCount = getAreas().size,
+            ordersCount = getAllOrders().size,
+            samplesCount = getTotalCount(),
+            notesCount = sampleNoteDao.countAll(),
+            photosCount = sampleImageDao.countAll(),
+            wellsCount = orderWellDao.countAll()
+        )
+    }
+
+    // ============ ОЧИСТКА ============
+
+    suspend fun clearAllData() {
+        db.clearAllTables()
+
+        val photosDir = getPhotosDir()
+        if (photosDir.exists() && photosDir.isDirectory) {
+            val files = photosDir.listFiles()
+            if (files != null) {
+                for (f in files) {
+                    try {
+                        if (f.isFile) f.delete()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+    }
 
     suspend fun clearOrder(orderId: Long) {
         val imagePaths = collectImagePathsForOrder(orderId)
@@ -186,18 +293,6 @@ class DatabaseRepository(context: Context) {
         PhotoStorage.deleteAll(imagePaths)
     }
 
-    /**
-     * FIX 5.8.10-d:
-     * Раньше метод шёл через areaDao.getAreaId(areaName) с LIMIT 1.
-     * Если в БД когда-либо появились два участка с одинаковым
-     * area_name (без UNIQUE на areas.area_name это возможно),
-     * возвращался только один — и наряд, записанный в «другой»
-     * дубликат, не находился.
-     *
-     * Теперь ищем наряды по ИМЕНИ участка напрямую через JOIN и
-     * складываем статистику по всем совпадениям. Обычно это один
-     * наряд; в патологическом случае — сумма по дубликатам.
-     */
     suspend fun getExistingOrderStats(areaName: String, orderNumber: String): OrderStats? {
         val orderIds = orderDao.getOrderIdsByName(areaName, orderNumber)
         if (orderIds.isEmpty()) return null
@@ -293,6 +388,83 @@ class DatabaseRepository(context: Context) {
         while (i > 0 && sampleNumber[i - 1].isDigit()) i--
         return (sampleNumber.length - i).coerceAtLeast(1)
     }
+
+    // ============ ДИАГНОСТИКА БД ============
+
+    suspend fun runDiagnostics(): List<DbIssue> {
+        val orphanOrders = orderDao.findOrphanOrders()
+        val orphanSamples = sampleDao.findOrphanSamples()
+        val allSamples = sampleDao.getAllSamplesList()
+        val allImages = sampleImageDao.getAllImages()
+
+        return DbDiagnosticsEngine.detect(
+            orphanOrders = orphanOrders,
+            orphanSamples = orphanSamples,
+            allSamples = allSamples,
+            allImages = allImages,
+            fileExists = { path -> File(path).exists() }
+        )
+    }
+
+    suspend fun applyDiagnosticsFixes(selected: List<DbIssue>): Int {
+        if (selected.isEmpty()) return 0
+
+        val filesToDelete = mutableListOf<String>()
+        var fixedCount = 0
+
+        db.withTransaction {
+            for (issue in selected) {
+                when (issue) {
+                    is DbIssue.OrphanOrder -> {
+                        orderDao.deleteById(issue.orderId)
+                        fixedCount++
+                    }
+                    is DbIssue.OrphanSample -> {
+                        filesToDelete +=
+                            sampleImageDao.getImagePathsForSample(issue.sampleId)
+                        sampleDao.deleteById(issue.sampleId)
+                        fixedCount++
+                    }
+                    is DbIssue.BrokenPhotoLink -> {
+                        sampleImageDao.deleteById(issue.imageId)
+                        filesToDelete += issue.imagePath
+                        val sample = sampleDao.getSampleById(issue.sampleId)
+                        if (sample != null) {
+                            val remaining =
+                                sampleImageDao.countForSample(issue.sampleId)
+                            sampleDao.update(
+                                sample.copy(hasPhoto = remaining > 0)
+                            )
+                        }
+                        fixedCount++
+                    }
+                    is DbIssue.PhotoFlagMismatch -> {
+                        val sample = sampleDao.getSampleById(issue.sampleId)
+                        if (sample != null && !sample.hasPhoto) {
+                            sampleDao.update(sample.copy(hasPhoto = true))
+                            fixedCount++
+                        }
+                    }
+                }
+            }
+        }
+
+        if (filesToDelete.isNotEmpty()) {
+            PhotoStorage.deleteAll(filesToDelete)
+        }
+        return fixedCount
+    }
+
+    // ============ FIX 5.9-main-a: ЛЁГКАЯ ПРОВЕРКА ============
+
+    /**
+     * Лёгкая проверка «База в порядке» для Главной.
+     * Только SQL-сироты. Без чтения файлов фото — это делает
+     * полная диагностика по кнопке.
+     */
+    suspend fun countOrphanOrders(): Int = orderDao.findOrphanOrders().size
+
+    suspend fun countOrphanSamples(): Int = sampleDao.findOrphanSamples().size
 }
 
 data class OrderStats(val total: Int, val found: Int)

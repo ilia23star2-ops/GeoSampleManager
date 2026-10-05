@@ -17,4 +17,10 @@ interface OrderWellDao {
 
     @Query("DELETE FROM order_wells WHERE order_id = :orderId")
     suspend fun deleteAllForOrder(orderId: Long)
+
+    /**
+     * FIX 5.9-db-info: всего скважин в БД — для инфо-панели.
+     */
+    @Query("SELECT COUNT(*) FROM order_wells")
+    suspend fun countAll(): Int
 }

@@ -78,6 +78,15 @@ dependencies {
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
     implementation 'androidx.activity:activity-compose:1.8.2'
     testImplementation 'junit:junit:4.13.2'
+    /**
+     * FIX 5.9-db-backups-ops/2:
+     * org.json в android.jar — заглушка (Stub! при вызове).
+     * В unit-тестах подменяем настоящей реализацией, иначе
+     * GsmBackupReader.parseManifest всегда возвращает null.
+     * На device (androidTest / runtime) используется системная
+     * org.json, эта зависимость действует только в test classpath.
+     */
+    testImplementation 'org.json:json:20231013'
 
     implementation platform('androidx.compose:compose-bom:2024.02.00')
     implementation 'androidx.compose.ui:ui'
