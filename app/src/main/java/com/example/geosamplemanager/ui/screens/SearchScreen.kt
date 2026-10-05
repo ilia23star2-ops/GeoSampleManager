@@ -56,9 +56,13 @@ import java.io.File
 
 /**
  * FIX 5.9-settings-sound-3-fix:
- *  - openVoiceDialog и micPermissionLauncher стоят ДО requestMic —
- *    Kotlin требует локальные функции определять до использования;
- *  - настройки грузятся ДО открытия диалога.
+ *  - openVoiceDialog и micPermissionLauncher стоят ДО requestMic.
+ *
+ * FIX 5.9-settings-scale-2:
+ *  - TopActionsPanel в горизонтальном скролле — при крупном масштабе
+ *    кнопка «?» уезжает за правый край, теперь её можно долистать;
+ *  - LegendDialog без жёсткого heightIn — контент скроллится сам,
+ *    кнопка «Понятно» всегда доступна.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -169,8 +173,6 @@ fun SearchScreen(
         context, Manifest.permission.CAMERA
     ) == PackageManager.PERMISSION_GRANTED
 
-    // FIX 5.9-settings-sound-3-fix:
-    // Грузим настройки из репозиториев ДО открытия диалога.
     fun openVoiceDialog() {
         scope.launch {
             btSettings = app.bluetoothSettingsRepository.load()
@@ -1215,7 +1217,10 @@ private fun TopActionsPanel(
     onShowCharacteristicChange: (Boolean) -> Unit, onHelpClick: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TextButton(
@@ -1241,7 +1246,7 @@ private fun TopActionsPanel(
         if (undoDescription.isNotEmpty()) {
             Spacer(Modifier.width(6.dp))
             Box(
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(horizontal = 8.dp, vertical = 4.dp)
@@ -1251,7 +1256,7 @@ private fun TopActionsPanel(
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(6.dp))
-        } else Spacer(Modifier.weight(1f))
+        } else Spacer(Modifier.width(6.dp))
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1995,8 +2000,13 @@ private fun LegendDialog(onDismiss: () -> Unit) {
         onDismissRequest = onDismiss,
         title = { Text("Пояснения к символике") },
         text = {
+            // FIX 5.9-settings-scale-2:
+            // убран heightIn(max = 420.dp). AlertDialog сам ограничит
+            // высоту экрана, а контент скроллится. Так кнопка «Понятно»
+            // всегда доступна, даже при крупном масштабе.
             Column(
-                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
