@@ -2085,25 +2085,49 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.9-logs-6:
+     * setFound вызывается из голосовых команд (applyMarkDecision,
+     * voiceClearOrdinal, voiceClearLast, voiceClearAll и др.).
+     * Теперь отмечается в журнале.
+     */
     fun setFound(rowId: String, value: Boolean) {
         state.setFound(rowId, value)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.setFound(id, value) }
+                if (num != null) {
+                    AppLog.mark("Проба $num ${if (value) "отмечена" else "снята"}")
+                        .detail("sample", num)
+                        .detail("found", value)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
 
+    /**
+     * FIX 5.9-logs-6:
+     * Отметка весового контроля с записью в журнал.
+     */
     fun setControlWeightAndFound(rowId: String, weight: Double) {
         state.setControlWeightAndFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setControlWeight(id, weight)
                     repo.setFound(id, true)
+                }
+                if (num != null) {
+                    AppLog.mark("Проба $num — весовой контроль $weight, отмечена")
+                        .detail("sample", num)
+                        .detail("control_weight", weight)
+                        .write()
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
@@ -2120,14 +2144,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.9-logs-6:
+     * Холостая с весом + отметка — с записью в журнал.
+     */
     fun setBlankWeightAndMarkFound(rowId: String, weight: Double) {
         state.setBlankWeightAndMarkFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
                     repo.setWeight(id, weight)
                     repo.setFound(id, true)
+                }
+                if (num != null) {
+                    AppLog.mark("Проба $num — холостая, вес $weight, отмечена")
+                        .detail("sample", num)
+                        .detail("blank_weight", weight)
+                        .write()
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
@@ -2144,23 +2179,48 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.9-logs-6:
+     * Отложить / снять с отложения — с записью в журнал.
+     */
     fun setPostponed(rowId: String, value: Boolean) {
         state.setPostponed(rowId, value)
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
-            try { withContext(Dispatchers.IO) { repo.setPostponed(id, value) }
+            try {
+                withContext(Dispatchers.IO) { repo.setPostponed(id, value) }
+                if (num != null) {
+                    val phrase = if (value) "Проба $num отложена"
+                    else "Проба $num снята с отложения"
+                    AppLog.mark(phrase)
+                        .detail("sample", num)
+                        .detail("postponed", value)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
     }
 
+    /**
+     * FIX 5.9-logs-6:
+     * Переключение ВК — с записью в журнал.
+     */
     fun toggleWeightControl(rowId: String): Boolean {
         val ok = state.toggleWeightControl(rowId)
         if (ok) {
             val id = rowId.toLongOrNull() ?: return ok
-            val flag = rowById(rowId)?.weightControl ?: return ok
+            val row = rowById(rowId) ?: return ok
+            val flag = row.weightControl
+            val num = row.sampleNumber
             viewModelScope.launch {
-                try { withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) }
+                try {
+                    withContext(Dispatchers.IO) { repo.setWeightControl(id, flag) }
+                    AppLog.mark("Проба $num — ВК ${if (flag) "установлен" else "снят"}")
+                        .detail("sample", num)
+                        .detail("weight_control", flag)
+                        .write()
                 } catch (e: CancellationException) { throw e
                 } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
             }
@@ -2180,13 +2240,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
      *
      * FIX 5.9-logs-4b:
      * После успешного сохранения пишем в журнал перечень изменённых
-     * полей: «Проба X: номер с «03» на «05», вес с 2.5 на 3».
+     * полей.
      */
     fun saveEditedRow(updated: SampleRow) {
         val old = state.rowById(updated.id) ?: return
         viewModelScope.launch {
             try {
-                // 1. Проверка конфликта № по БД (если номер изменился).
                 val orderId = old.groupId.toLongOrNull()
                 if (orderId != null && updated.sampleNumber != old.sampleNumber) {
                     val conflict = withContext(Dispatchers.IO) {
@@ -2199,11 +2258,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
 
-                // 2. Применяем state и сохраняем.
                 state.replaceRowFully(updated.id, updated)
                 withContext(Dispatchers.IO) { repo.saveRows(listOf(updated)) }
 
-                // FIX 5.9-logs-4b: журнал изменённых полей.
                 val diff = SampleRowDiff.diff(old, updated)
                 if (diff != null) {
                     AppLog.edit("Проба ${old.sampleNumber}: $diff")
@@ -2215,18 +2272,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
-                // Откатываем state — правка не прошла в БД.
                 state.replaceRowFully(updated.id, old)
                 _message.value = humanSaveError(e)
             }
         }
     }
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Проверить, занят ли № пробы другой пробой в том же наряде.
-     * Используется в EditSampleDialog для показа подписи до сохранения.
-     */
     fun findConflictForEdit(rowId: String, sampleNumber: String): Boolean {
         state.groups.forEach { g ->
             g.rows.forEach { r ->
@@ -2236,10 +2287,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return false
     }
 
-    /**
-     * FIX 5.9-edit-save-guard:
-     * Понятный текст ошибки вместо сырого SQL.
-     */
     private fun humanSaveError(e: Exception): String {
         val m = e.message ?: return "Ошибка сохранения"
         return if (m.contains("UNIQUE constraint failed", ignoreCase = true)) {
@@ -2421,9 +2468,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
             }
 
-            // FIX 5.9-logs-4b
             if (sampleNum != null) {
-                val verb = if (isDeleting) "Заметка удалена для пробы" else "Заметка сохранена для пробы"
+                val verb = if (isDeleting) "Заметка удалена для пробы"
+                else "Заметка сохранена для пробы"
                 AppLog.edit("$verb $sampleNum")
                     .detail("sample", sampleNum)
                     .detail("deleted", isDeleting)
@@ -2447,7 +2494,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
             }
-            // FIX 5.9-logs-4b
             if (sampleNum != null) {
                 AppLog.edit("Добавлено фото к пробе $sampleNum")
                     .detail("sample", sampleNum)
@@ -2471,7 +2517,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
             }
-            // FIX 5.9-logs-4b
             if (sampleNum != null) {
                 AppLog.edit("Добавлено фото к пробе $sampleNum (из файла)")
                     .detail("sample", sampleNum)
@@ -2494,7 +2539,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 if (result) refreshSampleFlagsInternal(sampleId)
                 result
             }
-            // FIX 5.9-logs-4b
             if (ok && sampleNum != null) {
                 AppLog.edit("Удалено фото у пробы $sampleNum")
                     .detail("sample", sampleNum)
