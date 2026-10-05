@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -39,6 +40,7 @@ import com.example.geosamplemanager.data.backup.BackupSource
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.backup.PublicBackup
 import com.example.geosamplemanager.data.backup.RollbackBackup
+import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsState
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -86,6 +88,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val compareState by viewModel.compareState.collectAsState()
     val compareLoading by viewModel.compareLoading.collectAsState()
 
+    // FIX 5.9-db-diagnostics
+    val diagnosticsState by viewModel.diagnosticsState.collectAsState()
+
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -129,6 +134,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var showImportPickerDialog by remember { mutableStateOf(false) }
     var showBackupManagerDialog by remember { mutableStateOf(false) }
 
+    // FIX 5.9-db-diagnostics
+    var showDiagnosticsDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(showDbInfoDialog) {
         if (showDbInfoDialog) viewModel.loadDbInfo()
     }
@@ -147,6 +155,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     LaunchedEffect(showBackupManagerDialog) {
         if (showBackupManagerDialog) viewModel.loadAllBackupsForManager()
+    }
+
+    // FIX 5.9-db-diagnostics: запустить поиск проблем при открытии.
+    LaunchedEffect(showDiagnosticsDialog) {
+        if (showDiagnosticsDialog) viewModel.startDiagnostics()
     }
 
     LaunchedEffect(lastExportUri) {
@@ -377,18 +390,34 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Сравнить", maxLines = 1)
                 }
             }
-            OutlinedButton(
-                onClick = { showCleanDialog = true },
-                enabled = cleanState is RestoreState.Idle,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                ),
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                modifier = Modifier.fillMaxWidth()
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Очистить БД", maxLines = 1)
+                // FIX 5.9-db-diagnostics: кнопка «Диагностика».
+                OutlinedButton(
+                    onClick = { showDiagnosticsDialog = true },
+                    enabled = diagnosticsState !is DbDiagnosticsState.Applying,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Build, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(2.dp))
+                    Text("Диагностика", maxLines = 1)
+                }
+                OutlinedButton(
+                    onClick = { showCleanDialog = true },
+                    enabled = cleanState is RestoreState.Idle,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Очистить БД", maxLines = 1)
+                }
             }
 
             HorizontalDivider()
@@ -691,6 +720,21 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
             onDeleteOld = { viewModel.deleteOldBackups() },
             onDeleteAll = { viewModel.deleteAllBackups() },
             onDismiss = { showBackupManagerDialog = false }
+        )
+    }
+
+    // FIX 5.9-db-diagnostics
+    if (showDiagnosticsDialog) {
+        DbDiagnosticsDialog(
+            state = diagnosticsState,
+            onToggle = { viewModel.toggleDiagnosticsSelection(it) },
+            onToggleAll = { viewModel.toggleDiagnosticsSelectAll() },
+            onApply = { viewModel.applyDiagnosticsFixes() },
+            onReload = { viewModel.startDiagnostics() },
+            onDismiss = {
+                showDiagnosticsDialog = false
+                viewModel.resetDiagnosticsState()
+            }
         )
     }
 }

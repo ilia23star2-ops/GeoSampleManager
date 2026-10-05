@@ -6,6 +6,14 @@ import java.util.Locale
 
 /**
  * FIX 5.9-db-rollback / 5.9-db-backups-ops / 5.9-db-rollback-public.
+ *
+ * FIX 5.9-db-diagnostics:
+ *  - в OPERATIONS добавлена операция "diagnostics" — авто-бэкап
+ *    pre_diagnostics_* создаётся перед исправлениями на вкладке БД;
+ *  - добавление подхватывается автоматически в:
+ *      RollbackBackups.parseFileName / rotateByPrefix,
+ *      PublicBackupsLister.isAutoBackupSubDir / rotateAutoBackups,
+ *      PublicBackupsMigrator.subdirFor.
  */
 enum class BackupSource { PRIVATE, PUBLIC }
 
@@ -27,7 +35,8 @@ data class ParsedName(
 
 object RollbackBackups {
 
-    val OPERATIONS: List<String> = listOf("restore", "rollback", "clean")
+    val OPERATIONS: List<String> =
+        listOf("restore", "rollback", "clean", "diagnostics")
 
     const val NAME_SUFFIX = ".gsmbackup"
 
