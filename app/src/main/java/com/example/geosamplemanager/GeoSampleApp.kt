@@ -51,6 +51,16 @@ data class PendingSearchRequest(
     val orderTitle: String
 )
 
+/**
+ * FIX 5.9-main-b:
+ * Одноразовый запрос от Главной — открыть Статистику с уже
+ * выбранным нарядом для отчёта. StatsScreen читает в LaunchedEffect
+ * и открывает ReportFormatDialog.
+ */
+data class PendingReportRequest(
+    val orderId: Long
+)
+
 class GeoSampleApp : Application() {
 
     lateinit var repository: DatabaseRepository
@@ -93,6 +103,13 @@ class GeoSampleApp : Application() {
      * читает и очищает.
      */
     private val _pendingSearchRequest = MutableStateFlow<PendingSearchRequest?>(null)
+
+    /**
+     * FIX 5.9-main-b:
+     * Одноразовый запрос от Главной — открыть Статистику с
+     * выбранным нарядом для отчёта.
+     */
+    private val _pendingReportRequest = MutableStateFlow<PendingReportRequest?>(null)
 
     private val logsScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -144,7 +161,23 @@ class GeoSampleApp : Application() {
         _pendingSearchRequest.value = null
         return r
     }
+    /**
+     * FIX 5.9-main-b:
+     * Запросить открытие Статистики с конкретным нарядом для отчёта.
+     */
+    fun requestReportFor(orderId: Long) {
+        _pendingReportRequest.value = PendingReportRequest(orderId = orderId)
+    }
 
+    /**
+     * FIX 5.9-main-b:
+     * Прочитать и обнулить запрос. Вызывается из StatsScreen.
+     */
+    fun consumeReportRequest(): PendingReportRequest? {
+        val r = _pendingReportRequest.value
+        _pendingReportRequest.value = null
+        return r
+    }
     private fun logAppStart() {
         logsScope.launch {
             val previousCrash = CrashHandler.readAndClear(this@GeoSampleApp)

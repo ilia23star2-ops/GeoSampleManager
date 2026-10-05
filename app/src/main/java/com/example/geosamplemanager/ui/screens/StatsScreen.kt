@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.example.geosamplemanager.GeoSampleApp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,6 +51,14 @@ import java.util.Locale
 @Composable
 fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
     val data by viewModel.data.collectAsState()
+    // FIX 5.9-main-b: подхватить pendingReportRequest от Главной.
+    val app = LocalContext.current.applicationContext as GeoSampleApp
+    var autoOpenReportFor by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(Unit) {
+        val req = app.consumeReportRequest() ?: return@LaunchedEffect
+        viewModel.selectOrder(req.orderId)
+        autoOpenReportFor = req.orderId
+    }
     val searchQuery by viewModel.searchQuery.collectAsState()
     val hideReady by viewModel.hideReady.collectAsState()
     val expandedAreas by viewModel.expandedAreaIds.collectAsState()
@@ -194,6 +203,17 @@ fun StatsScreen(viewModel: StatsViewModel = viewModel()) {
                 MultiReportFormat.EXCEL -> multiXlsxLauncher.launch("$name.xlsx")
                 MultiReportFormat.HTML -> multiHtmlLauncher.launch("$name.html")
             }
+        }
+        // FIX 5.9-main-b: авто-открытие диалога формата после
+        // перехода с Главной.
+        autoOpenReportFor?.let { orderId ->
+            ReportFormatDialog(
+                onDismiss = { autoOpenReportFor = null },
+                onSelect = { fmt ->
+                    autoOpenReportFor = null
+                    startReport(orderId, fmt)
+                }
+            )
         }
 
         if (isWide) {
