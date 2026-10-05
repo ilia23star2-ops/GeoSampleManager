@@ -2,6 +2,7 @@ package com.example.geosamplemanager
 
 import android.app.Application
 import com.example.geosamplemanager.data.DatabaseRepository
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettingsRepository
 import com.example.geosamplemanager.data.history.ImportHistoryRepository
 import com.example.geosamplemanager.data.logs.CrashHandler
 import com.example.geosamplemanager.data.logs.DeviceInfo
@@ -38,6 +39,9 @@ import org.vosk.Model
  *  - CrashHandler.install() — глобальный перехват падений;
  *  - запись app_start с данными устройства и счётчиками БД;
  *  - чтение pending_crash.json из прошлого запуска.
+ *
+ * FIX 5.9-settings-bt:
+ *  - bluetoothSettingsRepository — настройки BT-микрофона.
  */
 data class RestartRequest(val tick: Int, val route: String)
 
@@ -53,6 +57,9 @@ class GeoSampleApp : Application() {
         private set
 
     lateinit var voiceSettingsRepository: VoiceSettingsRepository
+        private set
+
+    lateinit var bluetoothSettingsRepository: BluetoothSettingsRepository
         private set
 
     var voiceModel: Model? = null
@@ -94,6 +101,7 @@ class GeoSampleApp : Application() {
         settingsRepository = SettingsRepository(this)
         importHistoryRepository = ImportHistoryRepository(this)
         voiceSettingsRepository = VoiceSettingsRepository(this)
+        bluetoothSettingsRepository = BluetoothSettingsRepository(this)
 
         VoiceTtsHolder.init(this)
 
@@ -108,9 +116,6 @@ class GeoSampleApp : Application() {
      */
     private fun logAppStart() {
         logsScope.launch {
-            // Сначала читаем прошлый крэш (если был) — до записи
-            // app_start, чтобы в порядке лога крэш шёл первым и
-            // был явно виден как причина запуска.
             val previousCrash = CrashHandler.readAndClear(this@GeoSampleApp)
             if (previousCrash != null) {
                 Log.error("Приложение было аварийно завершено в прошлой сессии")
@@ -123,7 +128,6 @@ class GeoSampleApp : Application() {
                     .write()
             }
 
-            // Основная запись app_start.
             val details = HashMap<String, Any?>(
                 DeviceInfo.snapshot(this@GeoSampleApp)
             )
