@@ -16,25 +16,18 @@ import kotlinx.coroutines.flow.Flow
 import java.io.File
 
 /**
- * FIX 5.9-db-info:
- * Добавлен метод getDbInfo() — счётчики по всем таблицам + размеры
- * файлов БД и папки фото.
+ * FIX 5.9-db-info: getDbInfo().
+ * FIX 5.9-db-backup-v2: checkpointWal(), getPhotosDir(),
+ *   DB_SCHEMA_VERSION.
+ * FIX 5.9-db-rollback: getRollbackBackupsDir().
+ * FIX 5.9-db-clean: clearAllData().
+ * FIX 5.9-db-diagnostics: runDiagnostics(), applyDiagnosticsFixes().
  *
- * FIX 5.9-db-backup-v2:
- *  - checkpointWal() — сброс WAL перед чтением файла .db;
- *  - getPhotosDir() — путь к папке sample_photos;
- *  - DB_SCHEMA_VERSION — константа для манифеста.
- *
- * FIX 5.9-db-rollback:
- *  - getRollbackBackupsDir() — путь к папке авто-бэкапов
- *    (pre_restore_*, pre_rollback_*).
- *
- * FIX 5.9-db-clean:
- *  - clearAllData() — полная очистка БД + удаление всех фото.
- *
- * FIX 5.9-db-diagnostics:
- *  - runDiagnostics() — поиск проблем;
- *  - applyDiagnosticsFixes() — применение выбранных исправлений.
+ * FIX 5.9-main-a:
+ *  - countOrphanOrders() — количество нарядов без участка (быстрый
+ *    SQL, без файловых проверок);
+ *  - countOrphanSamples() — количество проб без наряда.
+ *    Используется индикатором «База в порядке» на Главной.
  */
 data class DbInfo(
     val dbPath: String,
@@ -61,7 +54,6 @@ class DatabaseRepository(context: Context) {
     private val sampleImageDao = db.sampleImageDao()
 
     companion object {
-        /** FIX 5.9-db-backup-v2: версия схемы БД для манифеста. */
         const val DB_SCHEMA_VERSION = 2
     }
 
@@ -240,34 +232,16 @@ class DatabaseRepository(context: Context) {
 
     fun getDatabaseFile(): File = appContext.getDatabasePath("geosamples.db")
 
-    /**
-     * FIX 5.9-db-backup-v2:
-     * Папка с фото проб.
-     */
     fun getPhotosDir(): File = File(appContext.filesDir, "sample_photos")
 
-    /**
-     * FIX 5.9-db-rollback:
-     * Папка с авто-бэкапами (pre_restore_*, pre_rollback_*, pre_clean_*).
-     * Создаётся при первом обращении при необходимости.
-     */
     fun getRollbackBackupsDir(): File = File(appContext.filesDir, "db_backups")
 
-    /**
-     * FIX 5.9-db-backup-v2:
-     * Сбросить WAL в основной файл БД перед чтением.
-     * Без этого файл .db может быть неполным (данные ещё в -wal).
-     *
-     * PRAGMA wal_checkpoint(TRUNCATE) — сливает WAL в .db и обрезает
-     * WAL до нуля.
-     */
     fun checkpointWal() {
         try {
             db.openHelper.writableDatabase
                 .query("PRAGMA wal_checkpoint(TRUNCATE)")
                 .use { it.moveToFirst() }
         } catch (_: Exception) {
-            // Не критично: если режим журнала не WAL, PRAGMA безвреден.
         }
     }
 
@@ -295,15 +269,6 @@ class DatabaseRepository(context: Context) {
 
     // ============ ОЧИСТКА ============
 
-    /**
-     * FIX 5.9-db-clean:
-     * Полная очистка содержимого БД: все таблицы + все файлы фото.
-     * Схема и миграции не трогаются — Room сам управляет.
-     *
-     * Вызывающий код обязан после этого сбросить соединение
-     * (AppDatabase.closeAndReset) и репозиторий (GeoSampleApp.resetRepository),
-     * чтобы UI подписался заново на пустые Flow.
-     */
     suspend fun clearAllData() {
         db.clearAllTables()
 
@@ -315,14 +280,11 @@ class DatabaseRepository(context: Context) {
                     try {
                         if (f.isFile) f.delete()
                     } catch (_: Exception) {
-                        // Не критично: файл останется, следующая очистка уберёт.
                     }
                 }
             }
         }
     }
-
-    // ============ ОЧИСТКА НАРЯДА ============
 
     suspend fun clearOrder(orderId: Long) {
         val imagePaths = collectImagePathsForOrder(orderId)
@@ -429,11 +391,6 @@ class DatabaseRepository(context: Context) {
 
     // ============ ДИАГНОСТИКА БД ============
 
-    /**
-     * FIX 5.9-db-diagnostics:
-     * Найти все проблемы в текущей БД.
-     * Проверка существования файлов — через File(path).exists().
-     */
     suspend fun runDiagnostics(): List<DbIssue> {
         val orphanOrders = orderDao.findOrphanOrders()
         val orphanSamples = sampleDao.findOrphanSamples()
@@ -449,14 +406,6 @@ class DatabaseRepository(context: Context) {
         )
     }
 
-    /**
-     * FIX 5.9-db-diagnostics:
-     * Применить выбранные исправления. Возвращает число
-     * применённых операций.
-     *
-     * Всё внутри одной транзакции. Файлы фото удаляются после
-     * транзакции — PhotoStorage.delete сам глотает ошибки.
-     */
     suspend fun applyDiagnosticsFixes(selected: List<DbIssue>): Int {
         if (selected.isEmpty()) return 0
 
@@ -505,6 +454,17 @@ class DatabaseRepository(context: Context) {
         }
         return fixedCount
     }
+
+    // ============ FIX 5.9-main-a: ЛЁГКАЯ ПРОВЕРКА ============
+
+    /**
+     * Лёгкая проверка «База в порядке» для Главной.
+     * Только SQL-сироты. Без чтения файлов фото — это делает
+     * полная диагностика по кнопке.
+     */
+    suspend fun countOrphanOrders(): Int = orderDao.findOrphanOrders().size
+
+    suspend fun countOrphanSamples(): Int = sampleDao.findOrphanSamples().size
 }
 
 data class OrderStats(val total: Int, val found: Int)

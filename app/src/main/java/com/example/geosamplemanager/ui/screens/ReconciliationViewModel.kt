@@ -120,6 +120,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     init {
         subscribeToAreasAndOrders()
         loadVoiceUiSettings()
+        applyPendingSearchRequest()
     }
 
     private fun loadVoiceUiSettings() {
@@ -2615,7 +2616,25 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
-
+    /**
+     * FIX 5.9-main-a:
+     * Применить одноразовый запрос «открыть Сверку с нарядом X»,
+     * который сохранила Главная. Если запрос есть — выбрать участок
+     * и наряд. ReconciliationState.selectedArea/selectedOrder —
+     * это и есть «открытая вкладка Сверка с конкретным нарядом».
+     */
+    private fun applyPendingSearchRequest() {
+        val app = getApplication<Application>() as GeoSampleApp
+        val req = app.consumeSearchRequest() ?: return
+        setSelectedArea(req.areaTitle)
+        setSelectedOrder(req.orderTitle)
+        // Запоминаем как «последний активный» наряд.
+        app.sessionStateRepository.touch(
+            orderId = req.orderId,
+            areaTitle = req.areaTitle,
+            orderTitle = req.orderTitle
+        )
+    }
     private fun persistAll() {
         viewModelScope.launch {
             try {
