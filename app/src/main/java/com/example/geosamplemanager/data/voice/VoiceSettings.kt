@@ -9,32 +9,28 @@ import java.io.File
 /**
  * Настройки голосового помощника (§14 VOICE.md).
  *
- * FIX 5.8.10-a (И-10):
- * добавлено поле `showCharacteristic` — переключатель колонки
- * «Характеристика» в таблице проб.
+ * FIX 5.8.10-a (И-10): showCharacteristic — переключатель колонки.
+ * FIX 5.8.10-b (И-9): защита showOnboarding = true.
  *
- * FIX 5.8.10-b (И-9):
- * в load() добавлена защита `showOnboarding = true`, если ключа нет
- * в JSON. Раньше Gson ставил false и онбординг не показывался
- * на старых файлах настроек.
+ * FIX 5.9-settings-sound:
+ *  - feedbackEnabled — вкл/выкл звуковые сигналы;
+ *  - feedbackVolume — громкость сигналов (QUIET/NORMAL/LOUD).
  */
 data class VoiceSettings(
     val segmentPauseMs: Long = 800L,
-    val autoStopMinutes: Int = 5,          // 0 = выкл
+    val autoStopMinutes: Int = 5,
     val ttsVolume: TtsVolume = TtsVolume.NORMAL,
     val mode: VoiceMode = VoiceMode.NOVICE,
     val customPrefixPronunciations: Map<String, String> = emptyMap(),
     val showOnboarding: Boolean = true,
-    /**
-     * Использовать грамматику Vosk (ограниченный словарь).
-     * Резко повышает точность распознавания чисел.
-     */
     val useGrammar: Boolean = true,
-    /**
-     * Показывать колонку «Характеристика» в таблице проб.
-     * FIX 5.8.10-a (И-10): сохраняется между перезапусками.
-     */
-    val showCharacteristic: Boolean = true
+    val showCharacteristic: Boolean = true,
+
+    /** FIX 5.9-settings-sound: вкл/выкл звуковые сигналы. */
+    val feedbackEnabled: Boolean = true,
+
+    /** FIX 5.9-settings-sound: громкость звуковых сигналов. */
+    val feedbackVolume: SoundLevel = SoundLevel.NORMAL
 )
 
 enum class TtsVolume { OFF, QUIET, NORMAL, LOUD }
@@ -69,10 +65,15 @@ class VoiceSettingsRepository(context: Context) {
             if (!json.contains("\"showCharacteristic\"")) {
                 parsed = parsed.copy(showCharacteristic = true)
             }
-            // FIX 5.8.10-b (И-9): без этой защиты на старых файлах
-            // showOnboarding был false, и онбординг не показывался.
             if (!json.contains("\"showOnboarding\"")) {
                 parsed = parsed.copy(showOnboarding = true)
+            }
+            // FIX 5.9-settings-sound: новые поля.
+            if (!json.contains("\"feedbackEnabled\"")) {
+                parsed = parsed.copy(feedbackEnabled = true)
+            }
+            if (!json.contains("\"feedbackVolume\"")) {
+                parsed = parsed.copy(feedbackVolume = SoundLevel.NORMAL)
             }
 
             parsed
