@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
@@ -63,6 +65,11 @@ import java.io.File
  * FIX 5.9-edit-save-guard:
  *  - EditSampleDialog получает findConflict по БД — занятость №
  *    другой пробой в этом же наряде.
+ *
+ * FIX 5.9-settings-bt-3:
+ *  - при открытии VoiceDialog подгружаются BluetoothSettings из
+ *    GeoSampleApp.bluetoothSettingsRepository и передаются в диалог,
+ *    чтобы ГП слушал через выбранную BT-гарнитуру.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -141,6 +148,15 @@ fun SearchScreen(
 
     var voiceDialogOpen by remember { mutableStateOf(false) }
     var pendingCameraForSampleId by remember { mutableStateOf<Long?>(null) }
+
+    // FIX 5.9-settings-bt-3: BT-настройки читаются при открытии ГП.
+    val app = context.applicationContext as GeoSampleApp
+    var btSettings by remember { mutableStateOf(BluetoothSettings()) }
+    LaunchedEffect(voiceDialogOpen) {
+        if (voiceDialogOpen) {
+            btSettings = app.bluetoothSettingsRepository.load()
+        }
+    }
 
     var noteText by remember { mutableStateOf("") }
     var notePhotos by remember { mutableStateOf<List<SampleImageEntity>>(emptyList()) }
@@ -551,9 +567,11 @@ fun SearchScreen(
             }
         }
 
+        // FIX 5.9-settings-bt-3: передаём btSettings в VoiceDialog.
         if (voiceDialogOpen) {
             VoiceDialog(
                 viewModel = viewModel,
+                btSettings = btSettings,
                 onDismiss = { voiceDialogOpen = false }
             )
         }
@@ -628,7 +646,6 @@ fun SearchScreen(
         )
     }
 
-    // FIX 5.9-edit-save-guard: findConflict → из ViewModel по БД.
     editDialogRowId?.let { id ->
         val row = state.rowById(id)
         if (row != null) EditSampleDialog(
