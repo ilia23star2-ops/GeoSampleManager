@@ -66,6 +66,12 @@ sealed class RestoreState {
     data class Error(val message: String) : RestoreState()
 }
 
+/**
+ * FIX 5.9-db-restructure-edit:
+ * Методы создания и удаления участков/нарядов перенесены в
+ * EditViewModel. Здесь остались только операции с БД (импорт /
+ * экспорт / откат / очистка / слияние / сравнение / диагностика).
+ */
 @OptIn(ExperimentalCoroutinesApi::class)
 class DbViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -128,7 +134,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Диагностика БД (5.9-db-diagnostics)
+    // Диагностика БД
     // ================================================================
 
     private val _diagnosticsState =
@@ -178,11 +184,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _diagnosticsState.value = DbDiagnosticsState.Idle
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Логируем в журнал: сколько проблем выбрано, сколько исправлено,
-     * либо ошибку.
-     */
     fun applyDiagnosticsFixes() {
         val s = _diagnosticsState.value as? DbDiagnosticsState.Ready ?: return
         if (s.selectedIds.isEmpty()) return
@@ -207,7 +208,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 _diagnosticsState.value = DbDiagnosticsState.Done(fixed)
                 _message.value = "Исправлено: $fixed"
 
-                // FIX 5.9-logs-4c: журнал — исправление проблем БД.
                 AppLog.db("Исправлено проблем БД: $fixed")
                     .detail("selected", selectedCount)
                     .detail("fixed", fixed)
@@ -483,7 +483,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     myWells[o.id] = repo.getWellsForOrder(o.id)
                 }
 
-                // Конфликты считаем через MergeEngine (только для полей).
                 val areaPlan = MergeEngine.planAreas(myAreas, archive.areas)
                 val orderPlan = MergeEngine.planOrders(
                     myOrders = myOrders,
@@ -758,10 +757,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         runMerge(finalMap)
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Логируем слияние: файл, статистику, успех/ошибку.
-     */
     private fun runMerge(resolutions: Map<Long, FieldResolution>) {
         val state = _mergeState.value
         val preview: MergePreview = when (state) {
@@ -794,7 +789,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 _mergeState.value = MergeWizardState.Done(stats)
                 _message.value = "Слияние завершено"
 
-                // FIX 5.9-logs-4c: журнал — успешное слияние.
                 AppLog.db("Слияние выполнено: $fileName")
                     .detail("file", fileName)
                     .detail("stats", stats.toString())
@@ -841,10 +835,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _lastExportUri.value = null
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Логируем экспорт в публичные Загрузки: имя файла + успех/ошибка.
-     */
     fun exportToDownloads(name: String) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -878,10 +868,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Логируем экспорт через системный диалог.
-     */
     fun exportToUri(uri: Uri) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -1028,10 +1014,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _cleanState.value = RestoreState.Idle
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Логируем очистку БД.
-     */
     fun cleanDatabase() {
         if (_cleanState.value is RestoreState.InProgress) return
 
@@ -1066,13 +1048,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // Общая цепочка замены БД
     // ================================================================
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Единая точка логирования для restore и rollback. Фраза
-     * собирается по [autoBackupOperation]:
-     *  - restore → «Импорт бэкапа выполнен»
-     *  - rollback → «Откат к бэкапу выполнен»
-     */
     private fun performReplacement(
         stateFlow: MutableStateFlow<RestoreState>,
         autoBackupOperation: String,
@@ -1114,7 +1089,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) { rotateAllBackups() }
                 stateFlow.value = RestoreState.Done
 
-                // FIX 5.9-logs-4c
                 AppLog.db(logSuccessPhrase(autoBackupOperation))
                     .detail("operation", autoBackupOperation)
                     .write()
@@ -1122,7 +1096,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 stateFlow.value = RestoreState.Error(
                     e.message ?: errorMessage
                 )
-                // FIX 5.9-logs-4c
                 AppLog.error(
                     "${logErrorPhrase(autoBackupOperation)}: ${e.message}",
                     e
@@ -1133,20 +1106,12 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Русская фраза для успешного завершения операции.
-     */
     private fun logSuccessPhrase(operation: String): String = when (operation) {
         AUTO_BACKUP_OP_RESTORE -> "Импорт бэкапа выполнен"
         AUTO_BACKUP_OP_ROLLBACK -> "Откат к бэкапу выполнен"
         else -> "Операция с БД выполнена: $operation"
     }
 
-    /**
-     * FIX 5.9-logs-4c:
-     * Русская фраза для ошибки операции.
-     */
     private fun logErrorPhrase(operation: String): String = when (operation) {
         AUTO_BACKUP_OP_RESTORE -> "Ошибка импорта бэкапа"
         AUTO_BACKUP_OP_ROLLBACK -> "Ошибка отката к бэкапу"
@@ -1257,7 +1222,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ================================================================
-    // Выбор / действия
+    // Выбор
     // ================================================================
 
     fun selectArea(area: AreaEntity?) {
@@ -1267,79 +1232,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectOrder(order: OrderEntity?) {
         _selectedOrder.value = order
-    }
-
-    fun addArea(name: String) {
-        val trimmed = name.trim()
-        if (trimmed.isEmpty()) {
-            _message.value = "Введите название участка"
-            return
-        }
-        viewModelScope.launch {
-            try {
-                val id = repo.addArea(trimmed)
-                if (id == -1L) {
-                    _message.value = "Участок «$trimmed» уже существует"
-                } else {
-                    _message.value = "Участок «$trimmed» добавлен"
-                }
-            } catch (e: Exception) {
-                _message.value = "Ошибка: ${e.message}"
-            }
-        }
-    }
-
-    fun deleteArea(area: AreaEntity) {
-        viewModelScope.launch {
-            try {
-                repo.deleteAreaById(area.id)
-                if (_selectedArea.value?.id == area.id) {
-                    _selectedArea.value = null
-                    _selectedOrder.value = null
-                }
-                _message.value = "Участок «${area.areaName}» удалён"
-            } catch (e: Exception) {
-                _message.value = "Ошибка: ${e.message}"
-            }
-        }
-    }
-
-    fun addOrder(orderNumber: String) {
-        val area = _selectedArea.value ?: run {
-            _message.value = "Сначала выберите участок"
-            return
-        }
-        val trimmed = orderNumber.trim()
-        if (trimmed.isEmpty()) {
-            _message.value = "Введите номер наряда"
-            return
-        }
-        viewModelScope.launch {
-            try {
-                val id = repo.addOrder(area.id, trimmed)
-                if (id == -1L) {
-                    _message.value = "Наряд «$trimmed» уже существует в этом участке"
-                } else {
-                    _message.value = "Наряд «$trimmed» добавлен"
-                }
-            } catch (e: Exception) {
-                _message.value = "Ошибка: ${e.message}"
-            }
-        }
-    }
-
-    fun deleteOrder(order: OrderEntity) {
-        viewModelScope.launch {
-            try {
-                repo.deleteOrder(order.id)
-                if (_selectedOrder.value?.id == order.id) {
-                    _selectedOrder.value = null
-                }
-                _message.value = "Наряд «${order.orderNumber}» удалён"
-            } catch (e: Exception) {
-                _message.value = "Ошибка: ${e.message}"
-            }
-        }
     }
 
     companion object {

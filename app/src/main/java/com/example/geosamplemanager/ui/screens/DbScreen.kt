@@ -13,10 +13,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Compare
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
@@ -52,6 +50,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * FIX 5.9-db-restructure-edit:
+ * Создание и удаление участков/нарядов перенесено во вкладку
+ * «Редактирование». Здесь остались только операции с БД —
+ * импорт, экспорт, откат, очистка, слияние, сравнение,
+ * диагностика, инфо. Список участков/нарядов — только для
+ * просмотра.
+ */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val context = LocalContext.current
@@ -84,11 +90,9 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
 
     val mergeState by viewModel.mergeState.collectAsState()
 
-    // FIX 5.9-db-compare
     val compareState by viewModel.compareState.collectAsState()
     val compareLoading by viewModel.compareLoading.collectAsState()
 
-    // FIX 5.9-db-diagnostics
     val diagnosticsState by viewModel.diagnosticsState.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -111,10 +115,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    var showAddAreaDialog by remember { mutableStateOf(false) }
-    var showAddOrderDialog by remember { mutableStateOf(false) }
-    var areaToDelete by remember { mutableStateOf<AreaEntity?>(null) }
-    var orderToDelete by remember { mutableStateOf<OrderEntity?>(null) }
     var showDbInfoDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
 
@@ -134,7 +134,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var showImportPickerDialog by remember { mutableStateOf(false) }
     var showBackupManagerDialog by remember { mutableStateOf(false) }
 
-    // FIX 5.9-db-diagnostics
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(showDbInfoDialog) {
@@ -157,7 +156,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         if (showBackupManagerDialog) viewModel.loadAllBackupsForManager()
     }
 
-    // FIX 5.9-db-diagnostics: запустить поиск проблем при открытии.
     LaunchedEffect(showDiagnosticsDialog) {
         if (showDiagnosticsDialog) viewModel.startDiagnostics()
     }
@@ -226,7 +224,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val externalExportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        val name = pendingExternalName
         pendingExternalName = null
         if (uri != null) viewModel.exportToUri(uri)
         else shareAfterNextExport = false
@@ -264,7 +261,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    // FIX 5.9-db-compare: лаунчер для сравнения.
     val compareFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -288,15 +284,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Button(
-                    onClick = { showAddAreaDialog = true },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Add, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(2.dp))
-                    Text("Участок", maxLines = 1)
-                }
                 OutlinedButton(
                     onClick = { showBackupDialog = true },
                     enabled = !exporting,
@@ -394,7 +381,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                // FIX 5.9-db-diagnostics: кнопка «Диагностика».
                 OutlinedButton(
                     onClick = { showDiagnosticsDialog = true },
                     enabled = diagnosticsState !is DbDiagnosticsState.Applying,
@@ -434,7 +420,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             areas = areas,
                             selectedArea = selectedArea,
                             onSelect = { viewModel.selectArea(it) },
-                            onDelete = { areaToDelete = it },
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                         OrdersList(
@@ -442,8 +427,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             orders = orders,
                             selectedOrder = selectedOrder,
                             onSelect = { viewModel.selectOrder(it) },
-                            onAdd = { showAddOrderDialog = true },
-                            onDelete = { orderToDelete = it },
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         )
                     }
@@ -458,7 +441,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             areas = areas,
                             selectedArea = selectedArea,
                             onSelect = { viewModel.selectArea(it) },
-                            onDelete = { areaToDelete = it },
                             modifier = Modifier.fillMaxWidth()
                         )
                         OrdersList(
@@ -466,8 +448,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                             orders = orders,
                             selectedOrder = selectedOrder,
                             onSelect = { viewModel.selectOrder(it) },
-                            onAdd = { showAddOrderDialog = true },
-                            onDelete = { orderToDelete = it },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -499,7 +479,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         val cs = cleanState
         if (cs is RestoreState.InProgress) ProgressOverlay(cs.message)
 
-        // FIX 5.9-db-compare
         if (compareLoading) ProgressOverlay("Читаем архив…")
     }
 
@@ -519,61 +498,10 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         onCloseDone = { viewModel.resetMergeState() }
     )
 
-    // FIX 5.9-db-compare: полноэкранный экран сравнения.
     compareState?.let { result ->
         DbCompareScreen(
             result = result,
             onClose = { viewModel.resetCompareState() }
-        )
-    }
-
-    if (showAddAreaDialog) {
-        TextInputDialog(
-            title = "Новый участок",
-            label = "Название участка",
-            onConfirm = {
-                viewModel.addArea(it)
-                showAddAreaDialog = false
-            },
-            onDismiss = { showAddAreaDialog = false }
-        )
-    }
-
-    if (showAddOrderDialog) {
-        TextInputDialog(
-            title = "Новый наряд в «${selectedArea?.areaName ?: ""}»",
-            label = "Номер наряда",
-            onConfirm = {
-                viewModel.addOrder(it)
-                showAddOrderDialog = false
-            },
-            onDismiss = { showAddOrderDialog = false }
-        )
-    }
-
-    areaToDelete?.let { area ->
-        ConfirmDialog(
-            title = "Удалить участок?",
-            text = "Будут удалены все наряды и пробы участка " +
-                    "«${area.areaName}». Действие необратимо.",
-            onConfirm = {
-                viewModel.deleteArea(area)
-                areaToDelete = null
-            },
-            onDismiss = { areaToDelete = null }
-        )
-    }
-
-    orderToDelete?.let { order ->
-        ConfirmDialog(
-            title = "Удалить наряд?",
-            text = "Будут удалены все пробы наряда " +
-                    "«${order.orderNumber}». Действие необратимо.",
-            onConfirm = {
-                viewModel.deleteOrder(order)
-                orderToDelete = null
-            },
-            onDismiss = { orderToDelete = null }
         )
     }
 
@@ -723,7 +651,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         )
     }
 
-    // FIX 5.9-db-diagnostics
     if (showDiagnosticsDialog) {
         DbDiagnosticsDialog(
             state = diagnosticsState,
@@ -773,7 +700,6 @@ private fun AreasList(
     areas: List<AreaEntity>,
     selectedArea: AreaEntity?,
     onSelect: (AreaEntity) -> Unit,
-    onDelete: (AreaEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(modifier = modifier) {
@@ -786,7 +712,7 @@ private fun AreasList(
             Spacer(Modifier.height(4.dp))
             if (areas.isEmpty()) {
                 Text(
-                    "Пусто. Нажмите «+ Участок».",
+                    "Пусто. Добавить участок — во вкладке «Редактирование».",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -799,8 +725,7 @@ private fun AreasList(
                         ListRow(
                             text = area.areaName,
                             selected = selectedArea?.id == area.id,
-                            onClick = { onSelect(area) },
-                            onDelete = { onDelete(area) }
+                            onClick = { onSelect(area) }
                         )
                     }
                 }
@@ -815,28 +740,15 @@ private fun OrdersList(
     orders: List<OrderEntity>,
     selectedOrder: OrderEntity?,
     onSelect: (OrderEntity) -> Unit,
-    onAdd: () -> Unit,
-    onDelete: (OrderEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Card(modifier = modifier) {
         Column(modifier = Modifier.padding(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Наряды (${orders.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                if (selectedArea != null) {
-                    IconButton(onClick = onAdd) {
-                        Icon(Icons.Default.Add, contentDescription = "Добавить наряд")
-                    }
-                }
-            }
+            Text(
+                "Наряды (${orders.size})",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
             Spacer(Modifier.height(4.dp))
             when {
                 selectedArea == null -> Text(
@@ -845,7 +757,7 @@ private fun OrdersList(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 orders.isEmpty() -> Text(
-                    "Пусто. Нажмите «+».",
+                    "Пусто. Добавить наряд — во вкладке «Редактирование».",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -857,8 +769,7 @@ private fun OrdersList(
                         ListRow(
                             text = order.orderNumber,
                             selected = selectedOrder?.id == order.id,
-                            onClick = { onSelect(order) },
-                            onDelete = { onDelete(order) }
+                            onClick = { onSelect(order) }
                         )
                     }
                 }
@@ -966,8 +877,7 @@ private fun SampleRow(sample: SampleEntity) {
 private fun ListRow(
     text: String,
     selected: Boolean,
-    onClick: () -> Unit,
-    onDelete: () -> Unit
+    onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -985,63 +895,5 @@ private fun ListRow(
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f)
         )
-        IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "Удалить",
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp)
-            )
-        }
     }
-}
-
-@Composable
-private fun TextInputDialog(
-    title: String,
-    label: String,
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var text by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text(label) },
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(text) }) { Text("Добавить") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Отмена") }
-        }
-    )
-}
-
-@Composable
-private fun ConfirmDialog(
-    title: String,
-    text: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(text) },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("Удалить", color = MaterialTheme.colorScheme.error)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Отмена") }
-        }
-    )
 }
