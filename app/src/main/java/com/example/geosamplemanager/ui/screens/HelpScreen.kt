@@ -16,38 +16,30 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.geosamplemanager.data.help.HelpContentLoader
 
 /**
- * FIX 5.9-settings-help-1:
- * Экран «Справка» — каркас. Открывается из Настроек.
+ * FIX 5.9-settings-help-1: экран «Справка» — каркас.
+ * FIX 5.9-settings-help-1-fix-2: maxWidth до входа в Row.
  *
- * Пока контент не загружается — показывается заглушка для
- * каждого раздела. Тексты будут добавлены в следующей пачке
- * (5.9-settings-help-2) через папку assets/help.
- *
- * Навигация:
- *  - широкий экран (≥600dp): слева список разделов, справа содержимое;
- *  - узкий экран: разделы — горизонтальные чипы сверху, содержимое ниже.
- *
- * Выбранный раздел сохраняется через rememberSaveable (строка имени
- * enum), чтобы поворот экрана не сбрасывал навигацию.
- *
- * FIX 5.9-settings-help-1-fix-2:
- * maxWidth из BoxWithConstraints вычисляется ДО входа в Row —
- * внутри RowScope к нему нет доступа (Compose-скоуп).
+ * FIX 5.9-settings-help-2a:
+ *  - контент загружается из assets/help/<file>.md через HelpContentLoader;
+ *  - рендер блоков — HelpBlocksView;
+ *  - если контент пуст — показывается заглушка.
  */
-enum class HelpTopic(val title: String) {
-    START("Быстрый старт"),
-    IMPORT("Импорт Excel"),
-    SEARCH("Сверка и поиск"),
-    VOICE("Голосовой помощник"),
-    EDIT("Редактирование"),
-    DB("База данных"),
-    STATS("Статистика"),
-    SETTINGS("Настройки");
+enum class HelpTopic(val title: String, val fileName: String) {
+    START("Быстрый старт", "start.md"),
+    IMPORT("Импорт Excel", "import.md"),
+    SEARCH("Сверка и поиск", "search.md"),
+    VOICE("Голосовой помощник", "voice.md"),
+    EDIT("Редактирование", "edit.md"),
+    DB("База данных", "db.md"),
+    STATS("Статистика", "stats.md"),
+    SETTINGS("Настройки", "settings.md");
 
     companion object {
         fun fromName(name: String?): HelpTopic {
@@ -81,8 +73,6 @@ fun HelpScreen(
             modifier = Modifier.fillMaxSize().padding(padding)
         ) {
             val isWide = maxWidth >= 600.dp
-            // FIX 5.9-settings-help-1-fix-2:
-            // вычислить ширину боковой панели здесь, до входа в RowScope.
             val sideWidth = maxWidth * 0.35f
 
             if (isWide) {
@@ -183,44 +173,48 @@ private fun HelpTopicChips(
     }
 }
 
-/**
- * FIX 5.9-settings-help-1:
- * Заглушка содержимого раздела. Реальный контент (Markdown из
- * папки assets/help) появится в 5.9-settings-help-2.
- */
 @Composable
 private fun HelpTopicContent(
     topic: HelpTopic,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val blocks = remember(topic) { HelpContentLoader.load(context, topic.fileName) }
+
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Spacer(Modifier.height(16.dp))
-        Icon(
-            Icons.Default.Book,
-            contentDescription = null,
-            modifier = Modifier.size(56.dp),
-            tint = MaterialTheme.colorScheme.primary
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            topic.title,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Содержимое раздела будет добавлено в следующем обновлении.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 16.dp)
-        )
+        if (blocks.isEmpty()) {
+            // FIX 5.9-settings-help-2a:
+            // если файла ещё нет — показываем заглушку.
+            Spacer(Modifier.height(24.dp))
+            Icon(
+                Icons.Default.Book,
+                contentDescription = null,
+                modifier = Modifier.size(56.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                topic.title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Содержимое раздела будет добавлено в следующем обновлении.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            HelpBlocksView(blocks)
+        }
     }
 }
