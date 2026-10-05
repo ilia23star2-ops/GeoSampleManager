@@ -43,6 +43,7 @@ import kotlin.math.roundToInt
  * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок.
  * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле.
  * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
+ * FIX 5.9-settings-help-1: раздел «Справка» + открытие HelpScreen.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -51,6 +52,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val selected by viewModel.selectedCategory.collectAsState()
 
     var openedLogs by remember { mutableStateOf(false) }
+    var openedHelp by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.reload() }
 
@@ -63,6 +65,11 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
 
     if (openedLogs) {
         LogsScreen(onClose = { openedLogs = false })
+        return
+    }
+
+    if (openedHelp) {
+        HelpScreen(onClose = { openedHelp = false })
         return
     }
 
@@ -82,6 +89,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                     category = selected,
                     viewModel = viewModel,
                     onOpenLogs = { openedLogs = true },
+                    onOpenHelp = { openedHelp = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
             }
@@ -93,6 +101,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                     category = selected,
                     viewModel = viewModel,
                     onOpenLogs = { openedLogs = true },
+                    onOpenHelp = { openedHelp = true },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -172,6 +181,7 @@ private fun CategoryContent(
     category: SettingsCategory,
     viewModel: SettingsViewModel,
     onOpenLogs: () -> Unit,
+    onOpenHelp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (category) {
@@ -182,6 +192,62 @@ private fun CategoryContent(
         SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
         SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
         SettingsCategory.ABOUT -> AboutContent(modifier)
+        SettingsCategory.HELP -> HelpSettingsContent(modifier, onOpenHelp)
+    }
+}
+
+// ============================================================
+// РАЗДЕЛ «СПРАВКА»
+// ============================================================
+
+/**
+ * FIX 5.9-settings-help-1:
+ * Раздел-категория «Справка» в Настройках. Сам экран справки
+ * (HelpScreen) открывается отдельно — как полноэкранный экран
+ * с TopAppBar, по образцу LogsScreen.
+ */
+@Composable
+private fun HelpSettingsContent(
+    modifier: Modifier = Modifier,
+    onOpenHelp: () -> Unit
+) {
+    Column(
+        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            "Справка",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    "Книга помощи",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Пошаговые подсказки по всем разделам приложения: " +
+                            "импорт Excel, сверка и поиск, голосовой помощник, " +
+                            "редактирование, база данных, статистика и настройки. " +
+                            "Полезно, если только начинаете работать с программой.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onOpenHelp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Открыть справку")
+                }
+            }
+        }
     }
 }
 
@@ -206,8 +272,6 @@ private fun AppearanceSettingsContent(
             fontWeight = FontWeight.Bold
         )
 
-        // FIX 5.9-settings-theme:
-        // выбор темы — светлая / тёмная / системная.
         InfoCard(
             title = "Тема",
             help = "«Системная» — как в настройках Android " +

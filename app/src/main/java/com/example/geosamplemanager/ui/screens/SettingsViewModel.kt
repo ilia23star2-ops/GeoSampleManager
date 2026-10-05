@@ -31,13 +31,15 @@ enum class SettingsCategory(val title: String) {
     BLUETOOTH("Bluetooth"),
     APPEARANCE("Внешний вид"),
     SYSTEM("Система"),
-    ABOUT("О приложении")
+    ABOUT("О приложении"),
+    HELP("Справка")
 }
 
 /**
  * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
  * FIX 5.9-settings-scale: стейт внешнего вида + setUiScale.
  * FIX 5.9-settings-theme: setTheme(AppTheme).
+ * FIX 5.9-settings-help-1: категория HELP для справки.
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -278,21 +280,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     // ============ ВНЕШНИЙ ВИД ============
 
-    /**
-     * FIX 5.9-settings-scale:
-     * Смена масштаба интерфейса.
-     */
     fun setUiScale(scale: UiScale) {
         val updated = _appearanceSettings.value.copy(scale = scale)
         _appearanceSettings.value = updated
         app.updateAppearance(updated)
     }
 
-    /**
-     * FIX 5.9-settings-theme:
-     * Смена темы. Обновляет StateFlow вьюмодели и GeoSampleApp.appearance —
-     * MainActivity перерисует с новым darkTheme.
-     */
     fun setTheme(theme: AppTheme) {
         val updated = _appearanceSettings.value.copy(theme = theme)
         _appearanceSettings.value = updated
