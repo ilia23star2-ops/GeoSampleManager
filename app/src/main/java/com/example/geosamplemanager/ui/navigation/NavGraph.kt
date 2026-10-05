@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.ui.screens.*
 import kotlinx.coroutines.launch
 
@@ -20,6 +21,11 @@ import kotlinx.coroutines.launch
  * FIX 5.9-db-soft-restart:
  * startDestination берётся из параметра initialRoute — MainActivity
  * передаёт MAIN на первом старте и БД — после пересоздания ViewModel'ей.
+ *
+ * FIX 5.9-logs-3:
+ * Переходы на вкладки пишутся в журнал. Запись делается в
+ * observe-блоке на смену currentScreen — так ловится и клик в
+ * drawer, и программная навигация.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,7 +35,22 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
     val scope = rememberCoroutineScope()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: initialRoute
-    val currentScreen = Screen.values().firstOrNull { it.route == currentRoute } ?: Screen.MAIN
+    val currentScreen = Screen.values().firstOrNull { it.route == currentRoute }
+        ?: Screen.MAIN
+
+    // FIX 5.9-logs-3: логируем смену активной вкладки. Первый
+    // вызов LaunchedEffect срабатывает при появлении экрана —
+    // не пишем его, чтобы не дублировать app_start.
+    var firstNav by remember { mutableStateOf(true) }
+    LaunchedEffect(currentScreen) {
+        if (firstNav) {
+            firstNav = false
+            return@LaunchedEffect
+        }
+        Log.nav("Открыта вкладка «${currentScreen.title}»")
+            .detail("route", currentScreen.route)
+            .write()
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -46,7 +67,9 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                 LazyColumn {
                     items(Screen.values()) { screen ->
                         NavigationDrawerItem(
-                            icon = { Icon(screen.icon, contentDescription = screen.title) },
+                            icon = {
+                                Icon(screen.icon, contentDescription = screen.title)
+                            },
                             label = { Text(screen.title) },
                             selected = currentRoute == screen.route,
                             onClick = {
@@ -57,7 +80,10 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                                 }
                                 scope.launch { drawerState.close() }
                             },
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(
+                                horizontal = 12.dp,
+                                vertical = 2.dp
+                            )
                         )
                     }
                 }
@@ -69,7 +95,9 @@ fun AppScaffold(initialRoute: String = Screen.MAIN.route) {
                 TopAppBar(
                     title = { Text(currentScreen.title) },
                     navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                        IconButton(
+                            onClick = { scope.launch { drawerState.open() } }
+                        ) {
                             Icon(Icons.Filled.Menu, contentDescription = "Меню")
                         }
                     }

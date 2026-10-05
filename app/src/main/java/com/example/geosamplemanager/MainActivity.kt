@@ -30,13 +30,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
 import com.example.geosamplemanager.ui.navigation.AppScaffold
 import com.example.geosamplemanager.ui.navigation.Screen
 import com.example.geosamplemanager.ui.navigation.SimpleViewModelStoreOwner
 import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
+/**
+ * FIX 5.9-logs-3:
+ * Логируем onResume / onPause — «Приложение свёрнуто» /
+ * «Приложение развёрнуто». Это объясняет паузы в логе, когда
+ * оператор работал с другими приложениями.
+ */
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -49,6 +57,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.app("Приложение развёрнуто").write()
+    }
+
+    override fun onPause() {
+        Log.app("Приложение свёрнуто").write()
+        super.onPause()
     }
 }
 
