@@ -16,6 +16,7 @@ import com.example.geosamplemanager.data.excel.SheetMeta
 import com.example.geosamplemanager.data.excel.XlsxReader
 import com.example.geosamplemanager.data.history.ImportHistoryEntry
 import com.example.geosamplemanager.data.history.ImportHistoryItem
+import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.settings.ImportSettings
 import com.example.geosamplemanager.data.settings.normalizeHeaderWord
 import kotlinx.coroutines.Dispatchers
@@ -170,6 +171,10 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
     // СТАРТ ИМПОРТА
     // ============================================================
 
+    /**
+     * FIX 5.9-logs-8b:
+     * Старт импорта — записываем в журнал: файл, число листов.
+     */
     fun importFromUri(uri: Uri, fileName: String) {
         _busy.value = true
         viewModelScope.launch {
@@ -186,12 +191,19 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (metas.isEmpty()) {
                     _message.value = "В файле нет листов"
+                    AppLog.error("Импорт: в файле нет листов")
+                        .detail("file", fileName)
+                        .write()
                     return@launch
                 }
 
                 val candidates = metas.filter { it.rowCount >= 5 }
                 if (candidates.isEmpty()) {
                     _message.value = "Нет листов с данными"
+                    AppLog.error("Импорт: нет листов с данными")
+                        .detail("file", fileName)
+                        .detail("total_sheets", metas.size)
+                        .write()
                     return@launch
                 }
 
@@ -218,9 +230,18 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                     processedItems = emptyList()
                 )
 
+                AppLog.db("Начат импорт Excel: $fileName")
+                    .detail("file", fileName)
+                    .detail("total_sheets", metas.size)
+                    .detail("candidates", candidates.size)
+                    .write()
+
                 processNextSheet()
             } catch (e: Exception) {
                 _message.value = "Ошибка чтения: ${e.message}"
+                AppLog.error("Ошибка чтения Excel: ${e.message}", e)
+                    .detail("file", fileName)
+                    .write()
             } finally {
                 _busy.value = false
             }
@@ -316,6 +337,11 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
         finishQueue(cancelled = false)
     }
 
+    /**
+     * FIX 5.9-logs-8b:
+     * Финал импорта — пишем в журнал итог: сколько импортировано,
+     * заменено, пропущено, ошибок.
+     */
     private fun finishQueue(cancelled: Boolean) {
         _preview.value = null
         _queueState.value = _queueState.value.copy(
@@ -362,12 +388,34 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
             "Импорт завершён. Импортировано: $importedCount, заменено: $replacedCount, пропущено: ${skippedCount + existingSkippedCount}"
         }
         _message.value = msg
+
+        // FIX 5.9-logs-8b: журнал финала импорта.
+        if (processedItems.isNotEmpty() || cancelled) {
+            val summary = if (cancelled) {
+                "Импорт прерван: $currentFileNameWithExt"
+            } else {
+                "Импорт завершён: $currentFileNameWithExt"
+            }
+            AppLog.db(summary)
+                .detail("file", currentFileNameWithExt)
+                .detail("cancelled", cancelled)
+                .detail("imported", importedCount)
+                .detail("replaced", replacedCount)
+                .detail("skipped", skippedCount + existingSkippedCount)
+                .detail("general_list", generalListCount)
+                .detail("errors", errorCount)
+                .write()
+        }
     }
 
     // ============================================================
     // ДЕЙСТВИЯ
     // ============================================================
 
+    /**
+     * FIX 5.9-logs-8b:
+     * Ручной пропуск листа — пишем в журнал.
+     */
     fun skipCurrent() {
         viewModelScope.launch {
             _busy.value = true
@@ -386,6 +434,12 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     )
                     skippedCount++
+                    AppLog.db("Импорт: пропущен лист «${meta.name}»")
+                        .detail("sheet", meta.name)
+                        .detail("area", preview.order.areaName ?: "—")
+                        .detail("order", preview.order.orderNumber)
+                        .detail("samples", preview.order.samples.size)
+                        .write()
                 }
                 queueIndex++
                 updateQueueCounters()
@@ -397,9 +451,17 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * FIX 5.9-logs-8b:
+     * Отмена импорта — пишем в журнал.
+     */
     fun cancelAll() {
         autoJob?.cancel()
         autoJob = null
+        AppLog.db("Импорт отменён пользователем")
+            .detail("file", currentFileNameWithExt)
+            .detail("processed", processedItems.size)
+            .write()
         finishQueue(cancelled = true)
     }
 
@@ -482,6 +544,11 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * FIX 5.9-logs-8b:
+     * Каждое действие (пропуск / добавление / замена) пишется
+     * в журнал с указанием листа, участка, наряда, числа проб.
+     */
     private suspend fun performImport(
         areaName: String,
         orderNumber: String,
@@ -508,6 +575,16 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     )
                     existingSkippedCount++
+
+                    AppLog.db(
+                        "Импорт: пропущен наряд «$orderNumber» (уже в базе)"
+                    )
+                        .detail("sheet", meta.name)
+                        .detail("area", areaName)
+                        .detail("order", orderNumber)
+                        .detail("existing_samples", existingTotal)
+                        .detail("new_samples", p.order.samples.size)
+                        .write()
                 }
             }
 
@@ -517,6 +594,11 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                     true
                 } catch (e: Exception) {
                     _message.value = "Ошибка импорта: ${e.message}"
+                    AppLog.error("Ошибка импорта: ${e.message}", e)
+                        .detail("sheet", meta?.name)
+                        .detail("area", areaName)
+                        .detail("order", orderNumber)
+                        .write()
                     false
                 }
                 if (meta != null) {
@@ -533,7 +615,23 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                             reason = reason
                         )
                     )
-                    if (ok) importedCount++ else errorCount++
+                    if (ok) {
+                        importedCount++
+                        val phrase = if (wasExisting) {
+                            "Импорт: добавлено к наряду «$orderNumber»"
+                        } else {
+                            "Импорт: создан наряд «$orderNumber»"
+                        }
+                        AppLog.db(phrase)
+                            .detail("sheet", meta.name)
+                            .detail("area", areaName)
+                            .detail("order", orderNumber)
+                            .detail("samples", p.order.samples.size)
+                            .detail("existing_samples", if (wasExisting) existingTotal else 0)
+                            .write()
+                    } else {
+                        errorCount++
+                    }
                 }
             }
 
@@ -548,6 +646,11 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                     true
                 } catch (e: Exception) {
                     _message.value = "Ошибка импорта: ${e.message}"
+                    AppLog.error("Ошибка замены: ${e.message}", e)
+                        .detail("sheet", meta?.name)
+                        .detail("area", areaName)
+                        .detail("order", orderNumber)
+                        .write()
                     false
                 }
                 if (meta != null) {
@@ -564,7 +667,20 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                             reason = reason
                         )
                     )
-                    if (ok) replacedCount++ else errorCount++
+                    if (ok) {
+                        replacedCount++
+                        AppLog.db(
+                            "Импорт: заменён наряд «$orderNumber»"
+                        )
+                            .detail("sheet", meta.name)
+                            .detail("area", areaName)
+                            .detail("order", orderNumber)
+                            .detail("old_samples", existingTotal)
+                            .detail("new_samples", p.order.samples.size)
+                            .write()
+                    } else {
+                        errorCount++
+                    }
                 }
             }
         }
@@ -702,6 +818,9 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                 finishQueue(cancelled = false)
             } catch (e: Exception) {
                 _message.value = "Ошибка авто-импорта: ${e.message}"
+                AppLog.error("Ошибка авто-импорта: ${e.message}", e)
+                    .detail("file", currentFileNameWithExt)
+                    .write()
                 finishQueue(cancelled = true)
             } finally {
                 _busy.value = false
@@ -711,6 +830,9 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Обработка одного листа в авто-режиме: применение дефолтного действия при конфликте.
+     *
+     * FIX 5.9-logs-8b:
+     * Логируем импорт / замену / пропуск / общий список в авто-режиме.
      */
     private suspend fun processAutoSheet(
         preview: ImportPreview,
@@ -734,6 +856,10 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
             generalListCount++
+            AppLog.db("Импорт: пропущен общий список (${sampleCount} проб)")
+                .detail("sheet", meta.name)
+                .detail("samples", sampleCount)
+                .write()
             return
         }
 
@@ -756,6 +882,12 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
             existingSkippedCount++
+            AppLog.db("Импорт (авто): пропущен наряд «$order» (уже в базе)")
+                .detail("sheet", meta.name)
+                .detail("area", area)
+                .detail("order", order)
+                .detail("existing_samples", existingTotal)
+                .write()
             return
         }
 
@@ -768,7 +900,14 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
             }
             doImportToDb(preview.order, area, order, settings)
             true
-        } catch (e: Exception) { false }
+        } catch (e: Exception) {
+            AppLog.error("Импорт (авто) «$order»: ${e.message}", e)
+                .detail("sheet", meta.name)
+                .detail("area", area)
+                .detail("order", order)
+                .write()
+            false
+        }
 
         val status = if (!ok) ProcessedStatus.ERROR
         else if (isReplace) ProcessedStatus.REPLACED
@@ -792,8 +931,25 @@ class AddViewModel(application: Application) : AndroidViewModel(application) {
             )
         )
         when (status) {
-            ProcessedStatus.IMPORTED -> importedCount++
-            ProcessedStatus.REPLACED -> replacedCount++
+            ProcessedStatus.IMPORTED -> {
+                importedCount++
+                AppLog.db("Импорт (авто): создан наряд «$order»")
+                    .detail("sheet", meta.name)
+                    .detail("area", area)
+                    .detail("order", order)
+                    .detail("samples", sampleCount)
+                    .write()
+            }
+            ProcessedStatus.REPLACED -> {
+                replacedCount++
+                AppLog.db("Импорт (авто): заменён наряд «$order»")
+                    .detail("sheet", meta.name)
+                    .detail("area", area)
+                    .detail("order", order)
+                    .detail("old_samples", existingTotal)
+                    .detail("new_samples", sampleCount)
+                    .write()
+            }
             ProcessedStatus.ERROR -> errorCount++
             else -> {}
         }
