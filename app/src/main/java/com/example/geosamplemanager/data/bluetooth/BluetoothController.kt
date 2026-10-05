@@ -183,6 +183,12 @@ class BluetoothController(private val context: Context) {
         } catch (e: SecurityException) {
             Log.w(TAG, "currentActiveDevice: SecurityException", e)
             null
+        } catch (e: IllegalArgumentException) {
+            // Планшет без профиля HEADSET (нет BT-звонков).
+            // Ошибка "Profile not supported: 1" — профиль не поддерживается
+            // на этом устройстве. Возвращаем null, UI покажет «Не выбрано».
+            Log.i(TAG, "currentActiveDevice: профиль HEADSET не поддерживается", e)
+            null
         }
     }
 

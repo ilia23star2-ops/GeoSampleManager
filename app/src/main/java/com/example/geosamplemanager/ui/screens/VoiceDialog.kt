@@ -17,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.example.geosamplemanager.data.bluetooth.BluetoothController
+import com.example.geosamplemanager.data.bluetooth.BluetoothSettings
 import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.util.VoiceController
 import com.example.geosamplemanager.data.voice.AnswerReason
@@ -38,9 +40,16 @@ private const val LOG_TAG = "VoiceDialog"
 
 private const val TIMEOUT_TICK_MS = 250L
 
+/**
+ * FIX 5.9-settings-bt:
+ * VoiceDialog принимает BluetoothSettings и передаёт их в
+ * VoiceController. Это включает SCO-канал (микрофон гарнитуры)
+ * при старте ГП.
+ */
 @Composable
 fun VoiceDialog(
     viewModel: ReconciliationViewModel,
+    btSettings: BluetoothSettings = BluetoothSettings(),
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -122,9 +131,6 @@ fun VoiceDialog(
                         val result = viewModel.voiceExecute(cmd)
                         Log.e(LOG_TAG, "voiceExecute вернул: $result")
 
-                        // FIX 5.9-logs-4a: пишем голосовое событие в журнал
-                        // сессии. summary — короткая фраза для оператора,
-                        // details — технические данные для отладки.
                         AppLog.voice("Голос: «$text»")
                             .detail("raw", text)
                             .detail("command", cmd.toString())
@@ -169,7 +175,13 @@ fun VoiceDialog(
             }
         }
 
-        val c = VoiceController(context, callback)
+        val btController = BluetoothController(context)
+        val c = VoiceController(
+            context = context,
+            callback = callback,
+            btSettings = btSettings,
+            btController = btController
+        )
         controller = c
         c.startListening()
 
@@ -241,11 +253,6 @@ fun VoiceDialog(
     }
 }
 
-/**
- * FIX 5.8.11-sort-fix-4:
- * Для Message читаем display (канонический номер), если задан.
- * Иначе — сырой Vosk. Для FoundOne — query, как было.
- */
 private fun displayRecognized(rawText: String, result: VoiceExecResult): String {
     return when (result) {
         is VoiceExecResult.FoundOne -> result.query
