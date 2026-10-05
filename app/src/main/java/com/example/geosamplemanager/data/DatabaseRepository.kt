@@ -2,6 +2,8 @@ package com.example.geosamplemanager.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsEngine
+import com.example.geosamplemanager.data.diagnostics.DbIssue
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.OrderWellEntity
@@ -29,6 +31,10 @@ import java.io.File
  *
  * FIX 5.9-db-clean:
  *  - clearAllData() — полная очистка БД + удаление всех фото.
+ *
+ * FIX 5.9-db-diagnostics:
+ *  - runDiagnostics() — поиск проблем;
+ *  - applyDiagnosticsFixes() — применение выбранных исправлений.
  */
 data class DbInfo(
     val dbPath: String,
@@ -419,6 +425,85 @@ class DatabaseRepository(context: Context) {
         var i = sampleNumber.length
         while (i > 0 && sampleNumber[i - 1].isDigit()) i--
         return (sampleNumber.length - i).coerceAtLeast(1)
+    }
+
+    // ============ ДИАГНОСТИКА БД ============
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Найти все проблемы в текущей БД.
+     * Проверка существования файлов — через File(path).exists().
+     */
+    suspend fun runDiagnostics(): List<DbIssue> {
+        val orphanOrders = orderDao.findOrphanOrders()
+        val orphanSamples = sampleDao.findOrphanSamples()
+        val allSamples = sampleDao.getAllSamplesList()
+        val allImages = sampleImageDao.getAllImages()
+
+        return DbDiagnosticsEngine.detect(
+            orphanOrders = orphanOrders,
+            orphanSamples = orphanSamples,
+            allSamples = allSamples,
+            allImages = allImages,
+            fileExists = { path -> File(path).exists() }
+        )
+    }
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Применить выбранные исправления. Возвращает число
+     * применённых операций.
+     *
+     * Всё внутри одной транзакции. Файлы фото удаляются после
+     * транзакции — PhotoStorage.delete сам глотает ошибки.
+     */
+    suspend fun applyDiagnosticsFixes(selected: List<DbIssue>): Int {
+        if (selected.isEmpty()) return 0
+
+        val filesToDelete = mutableListOf<String>()
+        var fixedCount = 0
+
+        db.withTransaction {
+            for (issue in selected) {
+                when (issue) {
+                    is DbIssue.OrphanOrder -> {
+                        orderDao.deleteById(issue.orderId)
+                        fixedCount++
+                    }
+                    is DbIssue.OrphanSample -> {
+                        filesToDelete +=
+                            sampleImageDao.getImagePathsForSample(issue.sampleId)
+                        sampleDao.deleteById(issue.sampleId)
+                        fixedCount++
+                    }
+                    is DbIssue.BrokenPhotoLink -> {
+                        sampleImageDao.deleteById(issue.imageId)
+                        filesToDelete += issue.imagePath
+                        val sample = sampleDao.getSampleById(issue.sampleId)
+                        if (sample != null) {
+                            val remaining =
+                                sampleImageDao.countForSample(issue.sampleId)
+                            sampleDao.update(
+                                sample.copy(hasPhoto = remaining > 0)
+                            )
+                        }
+                        fixedCount++
+                    }
+                    is DbIssue.PhotoFlagMismatch -> {
+                        val sample = sampleDao.getSampleById(issue.sampleId)
+                        if (sample != null && !sample.hasPhoto) {
+                            sampleDao.update(sample.copy(hasPhoto = true))
+                            fixedCount++
+                        }
+                    }
+                }
+            }
+        }
+
+        if (filesToDelete.isNotEmpty()) {
+            PhotoStorage.deleteAll(filesToDelete)
+        }
+        return fixedCount
     }
 }
 

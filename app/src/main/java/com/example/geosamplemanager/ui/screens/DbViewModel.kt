@@ -26,6 +26,7 @@ import com.example.geosamplemanager.data.backup.RollbackBackups
 import com.example.geosamplemanager.data.compare.CompareEngine
 import com.example.geosamplemanager.data.compare.CompareResult
 import com.example.geosamplemanager.data.compare.ConflictInfo
+import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsState
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
@@ -121,6 +122,87 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 _message.value = "Ошибка чтения БД: ${e.message}"
             } finally {
                 _dbInfoLoading.value = false
+            }
+        }
+    }
+
+    // ================================================================
+    // Диагностика БД (5.9-db-diagnostics)
+    // ================================================================
+
+    private val _diagnosticsState =
+        MutableStateFlow<DbDiagnosticsState>(DbDiagnosticsState.Idle)
+    val diagnosticsState: StateFlow<DbDiagnosticsState> =
+        _diagnosticsState.asStateFlow()
+
+    fun startDiagnostics() {
+        _diagnosticsState.value = DbDiagnosticsState.Loading
+        viewModelScope.launch {
+            try {
+                val issues = withContext(Dispatchers.IO) {
+                    repo.runDiagnostics()
+                }
+                _diagnosticsState.value = DbDiagnosticsState.Ready(
+                    issues = issues,
+                    selectedIds = issues.map { it.id }.toSet()
+                )
+            } catch (e: Exception) {
+                _diagnosticsState.value = DbDiagnosticsState.Error(
+                    e.message ?: "Ошибка диагностики"
+                )
+            }
+        }
+    }
+
+    fun toggleDiagnosticsSelection(issueId: String) {
+        val s = _diagnosticsState.value as? DbDiagnosticsState.Ready ?: return
+        val newSelected = if (issueId in s.selectedIds) {
+            s.selectedIds - issueId
+        } else {
+            s.selectedIds + issueId
+        }
+        _diagnosticsState.value = s.copy(selectedIds = newSelected)
+    }
+
+    fun toggleDiagnosticsSelectAll() {
+        val s = _diagnosticsState.value as? DbDiagnosticsState.Ready ?: return
+        _diagnosticsState.value = if (s.allSelected) {
+            s.copy(selectedIds = emptySet())
+        } else {
+            s.copy(selectedIds = s.issues.map { it.id }.toSet())
+        }
+    }
+
+    fun resetDiagnosticsState() {
+        _diagnosticsState.value = DbDiagnosticsState.Idle
+    }
+
+    fun applyDiagnosticsFixes() {
+        val s = _diagnosticsState.value as? DbDiagnosticsState.Ready ?: return
+        if (s.selectedIds.isEmpty()) return
+        val toFix = s.issues.filter { it.id in s.selectedIds }
+
+        viewModelScope.launch {
+            try {
+                _diagnosticsState.value =
+                    DbDiagnosticsState.Applying("Готовим бэкап…")
+                withContext(Dispatchers.IO) {
+                    autoBackup(AUTO_BACKUP_OP_DIAGNOSTICS)
+                }
+
+                _diagnosticsState.value =
+                    DbDiagnosticsState.Applying("Исправляем…")
+                val fixed = withContext(Dispatchers.IO) {
+                    repo.applyDiagnosticsFixes(toFix)
+                }
+
+                withContext(Dispatchers.IO) { rotateAllBackups() }
+                _diagnosticsState.value = DbDiagnosticsState.Done(fixed)
+                _message.value = "Исправлено: $fixed"
+            } catch (e: Exception) {
+                _diagnosticsState.value = DbDiagnosticsState.Error(
+                    e.message ?: "Ошибка исправления"
+                )
             }
         }
     }
@@ -1170,5 +1252,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         const val AUTO_BACKUP_OP_ROLLBACK = "rollback"
         const val AUTO_BACKUP_OP_CLEAN = "clean"
         const val AUTO_BACKUP_OP_EXPORT = "export"
+        const val AUTO_BACKUP_OP_DIAGNOSTICS = "diagnostics"
     }
 }
