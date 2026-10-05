@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.example.geosamplemanager.data.logs.Log
+import com.example.geosamplemanager.data.settings.AppTheme
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
 import com.example.geosamplemanager.ui.navigation.AppScaffold
 import com.example.geosamplemanager.ui.navigation.Screen
@@ -45,19 +47,14 @@ import com.example.geosamplemanager.ui.navigation.SimpleViewModelStoreOwner
 import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
 /**
- * FIX 5.9-logs-3:
- * Логируем onResume / onPause.
+ * FIX 5.9-logs-3: логируем onResume / onPause.
+ * FIX 5.9-settings-bt: запрашиваем BLUETOOTH_CONNECT (API 31+).
+ * FIX 5.9-settings-scale: масштаб интерфейса через LocalDensity.
+ * FIX 5.9-settings-scale-2: textFactor/densityFactor разделены.
  *
- * FIX 5.9-settings-bt:
- * При входе в приложение запрашиваем BLUETOOTH_CONNECT (API 31+).
- *
- * FIX 5.9-settings-scale:
- * Масштаб интерфейса применяется в ReadyContent через LocalDensity.
- *
- * FIX 5.9-settings-scale-2:
- * fontScale множится на textFactor (сильно — текст становится
- * крупнее), density — на densityFactor (слабо — отступы и иконки
- * растут умеренно, вёрстка не разваливается).
+ * FIX 5.9-settings-theme:
+ *  - тема (светлая / тёмная / системная) читается из
+ *    GeoSampleApp.appearance и передаётся в GeoSampleManagerTheme.
  */
 class MainActivity : ComponentActivity() {
 
@@ -70,8 +67,19 @@ class MainActivity : ComponentActivity() {
 
         requestBluetoothIfNeeded()
 
+        val app = application as GeoSampleApp
+
         setContent {
-            GeoSampleManagerTheme {
+            // FIX 5.9-settings-theme: подписка на appearance,
+            // чтобы при смене темы весь UI пересобрался.
+            val appearance by app.appearance.collectAsState()
+            val useDark = when (appearance.theme) {
+                AppTheme.SYSTEM -> isSystemInDarkTheme()
+                AppTheme.LIGHT -> false
+                AppTheme.DARK -> true
+            }
+
+            GeoSampleManagerTheme(darkTheme = useDark) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -140,14 +148,6 @@ private fun AppRoot() {
     }
 }
 
-/**
- * FIX 5.9-db-soft-restart:
- * Поддерево, которое пересоздаётся при смене restart-tick.
- *
- * FIX 5.9-settings-scale-2:
- * LocalDensity переопределяется по настройке масштаба.
- * fontScale — для текста, density — для элементов.
- */
 @Composable
 private fun ReadyContent(app: GeoSampleApp) {
     val restartRequest by app.restartRequest.collectAsState()

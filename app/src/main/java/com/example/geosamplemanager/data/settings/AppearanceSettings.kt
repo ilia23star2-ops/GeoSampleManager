@@ -6,16 +6,18 @@ import java.io.File
 
 /**
  * FIX 5.9-settings-scale:
- * Настройки внешнего вида. Пока — только масштаб интерфейса.
+ * Настройки внешнего вида. Масштаб интерфейса.
  *
  * FIX 5.9-settings-scale-2:
  * Разделены множители: textFactor (fontScale) и densityFactor (density).
- * Множить одну density — плохо: при крупном масштабе растут отступы
- * и высоты, элементы уезжают за экран. fontScale даёт крупный текст,
- * density чуть увеличивает сами элементы.
+ *
+ * FIX 5.9-settings-theme:
+ * Добавлено поле theme (AppTheme). Применяется в MainActivity —
+ * передаётся в GeoSampleManagerTheme как darkTheme.
  */
 data class AppearanceSettings(
-    val scale: UiScale = UiScale.NORMAL
+    val scale: UiScale = UiScale.NORMAL,
+    val theme: AppTheme = AppTheme.SYSTEM
 )
 
 /**
@@ -37,14 +39,30 @@ enum class UiScale(
     HUGE("Крупный", 1.30f, 1.10f);
 
     companion object {
-        /**
-         * Безопасный разбор из строки: неизвестное значение →
-         * NORMAL. Нужно, если в JSON лежит устаревшее имя
-         * или мусор.
-         */
         fun fromName(name: String?): UiScale {
             if (name.isNullOrBlank()) return NORMAL
             return values().firstOrNull { it.name == name } ?: NORMAL
+        }
+    }
+}
+
+/**
+ * FIX 5.9-settings-theme:
+ * Тема оформления приложения.
+ *
+ * SYSTEM — следовать системной настройке (по умолчанию).
+ * LIGHT  — всегда светлая.
+ * DARK   — всегда тёмная.
+ */
+enum class AppTheme(val title: String) {
+    SYSTEM("Системная"),
+    LIGHT("Светлая"),
+    DARK("Тёмная");
+
+    companion object {
+        fun fromName(name: String?): AppTheme {
+            if (name.isNullOrBlank()) return SYSTEM
+            return values().firstOrNull { it.name == name } ?: SYSTEM
         }
     }
 }
@@ -68,9 +86,14 @@ class AppearanceSettingsRepository(context: Context) {
             val f = file
             if (!f.exists()) return AppearanceSettings()
             val parsed = gson.fromJson(f.readText(), AppearanceSettings::class.java)
-                ?: AppearanceSettings()
-            // Защита от некорректного значения scale.
-            parsed.copy(scale = UiScale.fromName(parsed.scale.name))
+                ?: return AppearanceSettings()
+            // Защита от некорректных значений: поле может быть null
+            // (например, старый JSON без этого поля) — тогда NPE
+            // поймается блоком catch, но лучше явно.
+            AppearanceSettings(
+                scale = UiScale.fromName(runCatching { parsed.scale.name }.getOrNull()),
+                theme = AppTheme.fromName(runCatching { parsed.theme.name }.getOrNull())
+            )
         } catch (e: Exception) {
             AppearanceSettings()
         }
