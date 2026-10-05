@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
+import com.example.geosamplemanager.data.logs.AppLog
+import com.example.geosamplemanager.data.logs.SampleRowDiff
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
@@ -2068,10 +2070,16 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     fun toggleFound(rowId: String) {
         state.toggleFound(rowId)
         val id = rowId.toLongOrNull() ?: return
-        val found = rowById(rowId)?.found ?: return
+        val row = rowById(rowId) ?: return
+        val found = row.found
+        val num = row.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.setFound(id, found) }
+                AppLog.mark("Проба $num ${if (found) "отмечена" else "снята"}")
+                    .detail("sample", num)
+                    .detail("found", found)
+                    .write()
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2169,6 +2177,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
      * Перед сохранением проверяем № по БД — если такой уже есть в
      * этом наряде (другая проба) — не сохраняем, показываем понятный
      * текст. При ошибке БД — откатываем state.
+     *
+     * FIX 5.9-logs-4b:
+     * После успешного сохранения пишем в журнал перечень изменённых
+     * полей: «Проба X: номер с «03» на «05», вес с 2.5 на 3».
      */
     fun saveEditedRow(updated: SampleRow) {
         val old = state.rowById(updated.id) ?: return
@@ -2190,6 +2202,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 // 2. Применяем state и сохраняем.
                 state.replaceRowFully(updated.id, updated)
                 withContext(Dispatchers.IO) { repo.saveRows(listOf(updated)) }
+
+                // FIX 5.9-logs-4b: журнал изменённых полей.
+                val diff = SampleRowDiff.diff(old, updated)
+                if (diff != null) {
+                    AppLog.edit("Проба ${old.sampleNumber}: $diff")
+                        .detail("sample_id", old.id)
+                        .detail("sample_before", old.sampleNumber)
+                        .detail("sample_after", updated.sampleNumber)
+                        .detail("diff", diff)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
                 // Откатываем state — правка не прошла в БД.
@@ -2236,6 +2259,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             groupId, controlWeights, blankWeights, postponedActions
         )
         persistGroup(groupId)
+        if (marked > 0) {
+            val g = state.groups.firstOrNull { it.id == groupId }
+            val orderTitle = g?.orderTitle ?: "?"
+            AppLog.mark("Массовая отметка: $marked проб в наряде «$orderTitle»")
+                .detail("count", marked)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .write()
+        }
         return marked
     }
 
@@ -2250,32 +2282,77 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             groupId, rowIds, controlWeights, blankWeights, postponedActions
         )
         persistGroup(groupId)
+        if (marked > 0) {
+            val g = state.groups.firstOrNull { it.id == groupId }
+            val orderTitle = g?.orderTitle ?: "?"
+            AppLog.mark("Массовая отметка выбранных: $marked проб в наряде «$orderTitle»")
+                .detail("count", marked)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .detail("rows", rowIds.size)
+                .write()
+        }
         return marked
     }
 
     fun clearAllFoundForRows(groupId: String, rowIds: Set<String>) {
+        val foundBefore = state.groups.firstOrNull { it.id == groupId }
+            ?.rows?.count { it.found && it.id in rowIds } ?: 0
         state.clearAllFoundForRows(groupId, rowIds)
         persistGroup(groupId)
+        if (foundBefore > 0) {
+            AppLog.mark("Массовое снятие выбранных: $foundBefore проб")
+                .detail("count", foundBefore)
+                .detail("group", groupId)
+                .write()
+        }
     }
 
     fun clearAllFound(groupId: String) {
+        val group = state.groups.firstOrNull { it.id == groupId }
+        val foundBefore = group?.rows?.count { it.found } ?: 0
         state.clearAllFound(groupId)
         persistGroup(groupId)
+        if (foundBefore > 0) {
+            val orderTitle = group?.orderTitle ?: "?"
+            AppLog.mark("Массовое снятие: $foundBefore проб в наряде «$orderTitle»")
+                .detail("count", foundBefore)
+                .detail("group", groupId)
+                .detail("order", orderTitle)
+                .write()
+        }
     }
 
     fun deleteRow(rowId: String, recalc: Boolean) {
         val id = rowId.toLongOrNull() ?: return
+        val num = state.rowById(rowId)?.sampleNumber
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { repo.deleteSampleWithRenumber(id, recalc) }
                 state.deleteRow(rowId, recalc)
+                if (num != null) {
+                    val suffix = if (recalc) " (с пересчётом номеров)" else ""
+                    AppLog.edit("Проба $num удалена$suffix")
+                        .detail("sample", num)
+                        .detail("recalc", recalc)
+                        .write()
+                }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка удаления: ${e.message}" }
         }
     }
 
-    fun undo() { state.undo(); persistAll() }
-    fun redo() { state.redo(); persistAll() }
+    fun undo() {
+        state.undo()
+        persistAll()
+        AppLog.edit("Отменено действие").write()
+    }
+
+    fun redo() {
+        state.redo()
+        persistAll()
+        AppLog.edit("Повторено действие").write()
+    }
 
     fun applyBlankSettingsForOrder(orderTitle: String, settings: BlankWeightSettings): Int {
         val changed = state.applyBlankSettingsForOrder(orderTitle, settings)
@@ -2319,6 +2396,9 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun saveNoteText(sampleId: Long, text: String): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
+            val isDeleting = text.trim().isEmpty()
+
             withContext(Dispatchers.IO) {
                 val trimmed = text.trim()
                 if (trimmed.isEmpty()) repo.deleteNote(sampleId)
@@ -2340,6 +2420,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     }
                 }
             }
+
+            // FIX 5.9-logs-4b
+            if (sampleNum != null) {
+                val verb = if (isDeleting) "Заметка удалена для пробы" else "Заметка сохранена для пробы"
+                AppLog.edit("$verb $sampleNum")
+                    .detail("sample", sampleNum)
+                    .detail("deleted", isDeleting)
+                    .write()
+            }
             true
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
@@ -2350,12 +2439,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun addPhoto(sampleId: Long, sourceUri: Uri): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
             val ctx = getApplication<Application>()
             val path = withContext(Dispatchers.IO) { PhotoStorage.compressAndSave(ctx, sourceUri) }
             if (path == null) { _message.value = "Не удалось обработать фото"; return false }
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
+            }
+            // FIX 5.9-logs-4b
+            if (sampleNum != null) {
+                AppLog.edit("Добавлено фото к пробе $sampleNum")
+                    .detail("sample", sampleNum)
+                    .write()
             }
             true
         } catch (e: CancellationException) { throw e
@@ -2367,12 +2463,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun addPhotoFromFile(sampleId: Long, tempFile: File): Boolean {
         return try {
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
             val ctx = getApplication<Application>()
             val path = withContext(Dispatchers.IO) { PhotoStorage.compressAndSaveFromFile(ctx, tempFile) }
             if (path == null) { _message.value = "Не удалось обработать фото"; return false }
             withContext(Dispatchers.IO) {
                 repo.addPhoto(sampleId, path)
                 refreshSampleFlagsInternal(sampleId)
+            }
+            // FIX 5.9-logs-4b
+            if (sampleNum != null) {
+                AppLog.edit("Добавлено фото к пробе $sampleNum (из файла)")
+                    .detail("sample", sampleNum)
+                    .detail("source", "file")
+                    .write()
             }
             true
         } catch (e: CancellationException) { throw e
@@ -2384,11 +2488,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
     suspend fun deletePhoto(imageId: Long, sampleId: Long): Boolean {
         return try {
-            withContext(Dispatchers.IO) {
-                val ok = repo.deletePhoto(imageId, sampleId)
-                if (ok) refreshSampleFlagsInternal(sampleId)
-                ok
+            val sampleNum = state.rowById(sampleId.toString())?.sampleNumber
+            val ok = withContext(Dispatchers.IO) {
+                val result = repo.deletePhoto(imageId, sampleId)
+                if (result) refreshSampleFlagsInternal(sampleId)
+                result
             }
+            // FIX 5.9-logs-4b
+            if (ok && sampleNum != null) {
+                AppLog.edit("Удалено фото у пробы $sampleNum")
+                    .detail("sample", sampleNum)
+                    .detail("image_id", imageId)
+                    .write()
+            }
+            ok
         } catch (e: CancellationException) { throw e
         } catch (e: Exception) {
             _message.value = "Ошибка удаления фото: ${e.message}"
