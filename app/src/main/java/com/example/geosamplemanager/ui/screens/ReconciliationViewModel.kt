@@ -93,6 +93,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     private var orderInfoByComposite: Map<String, OrderInfo> = emptyMap()
     private var searchJob: Job? = null
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Последний залогированный поисковый запрос — чтобы не спамить
+     * журнал при каждом нажатии клавиши. Логируем только когда
+     * оператор остановился (debounce 500 мс) и после поиска.
+     */
+    private var lastLoggedQuery: String? = null
+
     private val voiceCommandLikeWords = setOf(
         "стоп", "хватит", "пауза", "паузу", "продолжить", "продолжай",
         "отмена", "отменить", "верни", "назад", "повтори", "вперёд", "вперед",
@@ -263,12 +271,28 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Выбор участка логируется. Это контекст — без него
+     * непонятно, что искали и в каком контексте.
+     */
     fun setSelectedArea(area: String?) {
         state.selectedArea = area
         state.selectedOrder = null
+
+        if (area != null) {
+            AppLog.nav("Выбран участок «$area»")
+                .detail("area", area)
+                .write()
+        }
+
         refreshMultiQueryIfNeeded()
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Выбор наряда логируется с контекстом участка.
+     */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
         val info = resolveOrderInfo(orderTitle)
@@ -277,6 +301,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         } else if (orderTitle != null) {
             Log.w(TAG, "setSelectedOrder: нет orderInfo для «$orderTitle»")
         }
+
+        if (orderTitle != null) {
+            AppLog.nav("Выбран наряд «$orderTitle»")
+                .detail("order", orderTitle)
+                .detail("area", state.selectedArea)
+                .write()
+        }
+
         refreshMultiQueryIfNeeded()
     }
 
@@ -296,6 +328,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         searchJob = viewModelScope.launch { buildMultiQueryGroups(tokens) }
     }
 
+    /**
+     * FIX 5.9-logs-8a:
+     * Ручной поиск — в журнал. Логируем только успешный результат
+     * дебаунса, чтобы не спамить: каждое нажатие клавиши не пишем.
+     * Сравниваем с lastLoggedQuery — если запрос тот же, не пишем
+     * повторно.
+     */
     fun setQuery(query: String) {
         if (voiceSession.isPinned || voiceSession.hasQueue) {
             voiceSession.unpin()
@@ -308,6 +347,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         if (query.isBlank()) {
             state.queryTokens = emptyList()
             state.clearQueryGroups()
+            lastLoggedQuery = null
             return
         }
 
@@ -329,14 +369,41 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     state.queryTokens = listOf(requestStr)
                     state.clearQueryGroups()
                     loadGroupsForQueryNew(request)
+                    logSearchQuiet(query, listOf(requestStr))
                 }
                 else -> {
                     val oldTokens = requests.map { req -> buildQueryString(req) }
                     state.queryTokens = oldTokens.take(MAX_QUERY_TOKENS)
                     buildMultiQueryGroups(oldTokens)
+                    logSearchQuiet(query, oldTokens)
                 }
             }
         }
+    }
+
+    /**
+     * FIX 5.9-logs-8a:
+     * Логирование поиска. Не пишем повторно то же самое —
+     * защита от многократного вызова с одинаковой строкой.
+     */
+    private fun logSearchQuiet(raw: String, tokens: List<String>) {
+        val key = raw.trim()
+        if (key.isEmpty() || key == lastLoggedQuery) return
+        lastLoggedQuery = key
+
+        val queryCount = tokens.size
+        val summary = if (queryCount == 1) {
+            "Поиск: «${tokens.first()}»"
+        } else {
+            "Поиск ($queryCount запросов): «${tokens.joinToString(" ", "«", "»")}»"
+        }
+
+        AppLog.search(summary)
+            .detail("raw", raw)
+            .detail("tokens", tokens.joinToString(" "))
+            .detail("context_area", state.selectedArea)
+            .detail("context_order", state.selectedOrder)
+            .write()
     }
 
     private fun splitIntoRequests(tokens: List<QueryToken>): List<List<QueryToken>> =
@@ -2085,12 +2152,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * setFound вызывается из голосовых команд (applyMarkDecision,
-     * voiceClearOrdinal, voiceClearLast, voiceClearAll и др.).
-     * Теперь отмечается в журнале.
-     */
     fun setFound(rowId: String, value: Boolean) {
         state.setFound(rowId, value)
         val id = rowId.toLongOrNull() ?: return
@@ -2109,10 +2170,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * Отметка весового контроля с записью в журнал.
-     */
     fun setControlWeightAndFound(rowId: String, weight: Double) {
         state.setControlWeightAndFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
@@ -2144,10 +2201,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * Холостая с весом + отметка — с записью в журнал.
-     */
     fun setBlankWeightAndMarkFound(rowId: String, weight: Double) {
         state.setBlankWeightAndMarkFound(rowId, weight)
         val id = rowId.toLongOrNull() ?: return
@@ -2179,10 +2232,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * Отложить / снять с отложения — с записью в журнал.
-     */
     fun setPostponed(rowId: String, value: Boolean) {
         state.setPostponed(rowId, value)
         val id = rowId.toLongOrNull() ?: return
@@ -2203,10 +2252,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * Переключение ВК — с записью в журнал.
-     */
     fun toggleWeightControl(rowId: String): Boolean {
         val ok = state.toggleWeightControl(rowId)
         if (ok) {
@@ -2228,20 +2273,6 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         return ok
     }
 
-    /**
-     * FIX 5.9-edit-search-save-fix:
-     * Сохранить правку пробы, сделанную в EditSampleDialog.
-     * Обновляет state и пишет в БД.
-     *
-     * FIX 5.9-edit-save-guard:
-     * Перед сохранением проверяем № по БД — если такой уже есть в
-     * этом наряде (другая проба) — не сохраняем, показываем понятный
-     * текст. При ошибке БД — откатываем state.
-     *
-     * FIX 5.9-logs-4b:
-     * После успешного сохранения пишем в журнал перечень изменённых
-     * полей.
-     */
     fun saveEditedRow(updated: SampleRow) {
         val old = state.rowById(updated.id) ?: return
         viewModelScope.launch {
