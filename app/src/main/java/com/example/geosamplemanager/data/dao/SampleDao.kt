@@ -187,4 +187,34 @@ interface SampleDao {
         """
     )
     suspend fun getAllForVoiceSearch(): List<VoiceSampleHit>
+
+    // ================================================================
+    // Диагностика (5.9-db-diagnostics)
+    // ================================================================
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Все пробы списком (не Flow) — для движка диагностики.
+     * Порядок — по id, чтобы результат был стабилен.
+     */
+    @Query("SELECT * FROM samples ORDER BY id")
+    suspend fun getAllSamplesList(): List<SampleEntity>
+
+    /**
+     * FIX 5.9-db-diagnostics:
+     * Пробы, чей order_id не существует в orders.
+     *
+     * FK с CASCADE обычно это предотвращает, но при прямой
+     * правке SQLite-файла или восстановлении из повреждённого
+     * бэкапа такая ситуация возможна.
+     */
+    @Query(
+        """
+        SELECT s.* FROM samples s
+        LEFT JOIN orders o ON o.id = s.order_id
+        WHERE o.id IS NULL
+        ORDER BY s.id
+        """
+    )
+    suspend fun findOrphanSamples(): List<SampleEntity>
 }
