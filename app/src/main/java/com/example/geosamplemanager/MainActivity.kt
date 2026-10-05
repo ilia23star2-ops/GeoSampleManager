@@ -48,13 +48,13 @@ import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
 
 /**
  * FIX 5.9-logs-3: логируем onResume / onPause.
- * FIX 5.9-settings-bt: запрашиваем BLUETOOTH_CONNECT (API 31+).
- * FIX 5.9-settings-scale: масштаб интерфейса через LocalDensity.
- * FIX 5.9-settings-scale-2: textFactor/densityFactor разделены.
+ * FIX 5.9-settings-bt: BLUETOOTH_CONNECT (API 31+).
+ * FIX 5.9-settings-scale/scale-2: масштаб через LocalDensity.
+ * FIX 5.9-settings-theme: тема из GeoSampleApp.appearance.
  *
- * FIX 5.9-settings-theme:
- *  - тема (светлая / тёмная / системная) читается из
- *    GeoSampleApp.appearance и передаётся в GeoSampleManagerTheme.
+ * FIX 5.9-exit:
+ *  - в ReadyContent прокидываем onExitApp в AppScaffold —
+ *    finishAffinity() закрывает всё приложение.
  */
 class MainActivity : ComponentActivity() {
 
@@ -70,8 +70,6 @@ class MainActivity : ComponentActivity() {
         val app = application as GeoSampleApp
 
         setContent {
-            // FIX 5.9-settings-theme: подписка на appearance,
-            // чтобы при смене темы весь UI пересобрался.
             val appearance by app.appearance.collectAsState()
             val useDark = when (appearance.theme) {
                 AppTheme.SYSTEM -> isSystemInDarkTheme()
@@ -156,6 +154,10 @@ private fun ReadyContent(app: GeoSampleApp) {
 
     val appearance by app.appearance.collectAsState()
 
+    // FIX 5.9-exit: получаем Activity, чтобы вызвать finishAffinity().
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+
     key(tick) {
         val owner = remember { SimpleViewModelStoreOwner() }
         DisposableEffect(owner) {
@@ -174,7 +176,10 @@ private fun ReadyContent(app: GeoSampleApp) {
             LocalViewModelStoreOwner provides owner,
             LocalDensity provides scaledDensity
         ) {
-            AppScaffold(initialRoute = initialRoute)
+            AppScaffold(
+                initialRoute = initialRoute,
+                onExitApp = { activity?.finishAffinity() }
+            )
         }
     }
 }
