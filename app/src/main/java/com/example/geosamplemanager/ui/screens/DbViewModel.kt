@@ -30,6 +30,7 @@ import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsState
 import com.example.geosamplemanager.data.entity.AreaEntity
 import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.entity.SampleEntity
+import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.merge.FieldOwner
 import com.example.geosamplemanager.data.merge.FieldResolution
 import com.example.geosamplemanager.data.merge.MassStrategy
@@ -177,10 +178,16 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _diagnosticsState.value = DbDiagnosticsState.Idle
     }
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Логируем в журнал: сколько проблем выбрано, сколько исправлено,
+     * либо ошибку.
+     */
     fun applyDiagnosticsFixes() {
         val s = _diagnosticsState.value as? DbDiagnosticsState.Ready ?: return
         if (s.selectedIds.isEmpty()) return
         val toFix = s.issues.filter { it.id in s.selectedIds }
+        val selectedCount = toFix.size
 
         viewModelScope.launch {
             try {
@@ -199,10 +206,19 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) { rotateAllBackups() }
                 _diagnosticsState.value = DbDiagnosticsState.Done(fixed)
                 _message.value = "Исправлено: $fixed"
+
+                // FIX 5.9-logs-4c: журнал — исправление проблем БД.
+                AppLog.db("Исправлено проблем БД: $fixed")
+                    .detail("selected", selectedCount)
+                    .detail("fixed", fixed)
+                    .write()
             } catch (e: Exception) {
                 _diagnosticsState.value = DbDiagnosticsState.Error(
                     e.message ?: "Ошибка исправления"
                 )
+                AppLog.error("Ошибка исправления проблем БД: ${e.message}", e)
+                    .detail("selected", selectedCount)
+                    .write()
             }
         }
     }
@@ -742,6 +758,10 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         runMerge(finalMap)
     }
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Логируем слияние: файл, статистику, успех/ошибку.
+     */
     private fun runMerge(resolutions: Map<Long, FieldResolution>) {
         val state = _mergeState.value
         val preview: MergePreview = when (state) {
@@ -753,6 +773,7 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
             _mergeState.value = MergeWizardState.Error("Потерян архив")
             return
         }
+        val fileName = preview.fileName
 
         viewModelScope.launch {
             try {
@@ -772,11 +793,20 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 cleanupMergeHandle()
                 _mergeState.value = MergeWizardState.Done(stats)
                 _message.value = "Слияние завершено"
+
+                // FIX 5.9-logs-4c: журнал — успешное слияние.
+                AppLog.db("Слияние выполнено: $fileName")
+                    .detail("file", fileName)
+                    .detail("stats", stats.toString())
+                    .write()
             } catch (e: Exception) {
                 cleanupMergeHandle()
                 _mergeState.value = MergeWizardState.Error(
                     e.message ?: "Ошибка слияния"
                 )
+                AppLog.error("Ошибка слияния: ${e.message}", e)
+                    .detail("file", fileName)
+                    .write()
             }
         }
     }
@@ -811,6 +841,10 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _lastExportUri.value = null
     }
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Логируем экспорт в публичные Загрузки: имя файла + успех/ошибка.
+     */
     fun exportToDownloads(name: String) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -830,14 +864,24 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _lastExportUri.value = uri
                 _message.value = "Сохранено в Загрузки/GeoSampleManager: $name"
+                AppLog.db("Экспорт бэкапа: $name")
+                    .detail("name", name)
+                    .write()
             } catch (e: Exception) {
                 _message.value = "Ошибка бэкапа: ${e.message}"
+                AppLog.error("Ошибка экспорта бэкапа: ${e.message}", e)
+                    .detail("name", name)
+                    .write()
             } finally {
                 _exporting.value = false
             }
         }
     }
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Логируем экспорт через системный диалог.
+     */
     fun exportToUri(uri: Uri) {
         if (_exporting.value) return
         viewModelScope.launch {
@@ -850,8 +894,13 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                     } ?: throw IllegalStateException("Не удалось открыть файл")
                 }
                 _message.value = "Бэкап сохранён"
+                AppLog.db("Бэкап сохранён через системный диалог")
+                    .detail("uri", uri.toString())
+                    .write()
             } catch (e: Exception) {
                 _message.value = "Ошибка бэкапа: ${e.message}"
+                AppLog.error("Ошибка сохранения бэкапа: ${e.message}", e)
+                    .write()
             } finally {
                 _exporting.value = false
             }
@@ -979,6 +1028,10 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
         _cleanState.value = RestoreState.Idle
     }
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Логируем очистку БД.
+     */
     fun cleanDatabase() {
         if (_cleanState.value is RestoreState.InProgress) return
 
@@ -998,10 +1051,13 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
                 withContext(Dispatchers.IO) { rotateAllBackups() }
                 _cleanState.value = RestoreState.Done
+
+                AppLog.db("База данных очищена").write()
             } catch (e: Exception) {
                 _cleanState.value = RestoreState.Error(
                     e.message ?: "Ошибка очистки"
                 )
+                AppLog.error("Ошибка очистки БД: ${e.message}", e).write()
             }
         }
     }
@@ -1010,6 +1066,13 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
     // Общая цепочка замены БД
     // ================================================================
 
+    /**
+     * FIX 5.9-logs-4c:
+     * Единая точка логирования для restore и rollback. Фраза
+     * собирается по [autoBackupOperation]:
+     *  - restore → «Импорт бэкапа выполнен»
+     *  - rollback → «Откат к бэкапу выполнен»
+     */
     private fun performReplacement(
         stateFlow: MutableStateFlow<RestoreState>,
         autoBackupOperation: String,
@@ -1050,12 +1113,44 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
                 app.resetRepository()
                 withContext(Dispatchers.IO) { rotateAllBackups() }
                 stateFlow.value = RestoreState.Done
+
+                // FIX 5.9-logs-4c
+                AppLog.db(logSuccessPhrase(autoBackupOperation))
+                    .detail("operation", autoBackupOperation)
+                    .write()
             } catch (e: Exception) {
                 stateFlow.value = RestoreState.Error(
                     e.message ?: errorMessage
                 )
+                // FIX 5.9-logs-4c
+                AppLog.error(
+                    "${logErrorPhrase(autoBackupOperation)}: ${e.message}",
+                    e
+                )
+                    .detail("operation", autoBackupOperation)
+                    .write()
             }
         }
+    }
+
+    /**
+     * FIX 5.9-logs-4c:
+     * Русская фраза для успешного завершения операции.
+     */
+    private fun logSuccessPhrase(operation: String): String = when (operation) {
+        AUTO_BACKUP_OP_RESTORE -> "Импорт бэкапа выполнен"
+        AUTO_BACKUP_OP_ROLLBACK -> "Откат к бэкапу выполнен"
+        else -> "Операция с БД выполнена: $operation"
+    }
+
+    /**
+     * FIX 5.9-logs-4c:
+     * Русская фраза для ошибки операции.
+     */
+    private fun logErrorPhrase(operation: String): String = when (operation) {
+        AUTO_BACKUP_OP_RESTORE -> "Ошибка импорта бэкапа"
+        AUTO_BACKUP_OP_ROLLBACK -> "Ошибка отката к бэкапу"
+        else -> "Ошибка операции с БД: $operation"
     }
 
     // ================================================================
