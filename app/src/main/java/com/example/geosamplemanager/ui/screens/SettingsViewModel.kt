@@ -32,9 +32,7 @@ enum class SettingsCategory(val title: String) {
 }
 
 /**
- * FIX 5.9-settings: раздел «Голос» наполнен.
- * FIX 5.9-settings-bt: раздел «Bluetooth» наполнен.
- * FIX 5.9-settings-sound: раздел «Звук» наполнен.
+ * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -88,7 +86,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** Перечитать настройки из файлов. Вызывается при открытии экрана. */
     fun reload() {
         _settings.value = repo.load()
         viewModelScope.launch {
@@ -240,6 +237,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         persistVoice(_voiceSettings.value.copy(ttsVolume = volume))
     }
 
+    /**
+     * FIX 5.9-settings-sound-3-fix-2: значение приходит со слайдера.
+     * Ограничиваем допустимым диапазоном.
+     */
+    fun setTtsSpeed(speed: Float) {
+        val clamped = speed.coerceIn(
+            VoiceSettings.MIN_TTS_SPEED,
+            VoiceSettings.MAX_TTS_SPEED
+        )
+        persistVoice(_voiceSettings.value.copy(ttsSpeedValue = clamped))
+    }
+
     fun setFeedbackEnabled(value: Boolean) {
         persistVoice(_voiceSettings.value.copy(feedbackEnabled = value))
     }
@@ -252,6 +261,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         persistVoice(
             _voiceSettings.value.copy(
                 ttsVolume = TtsVolume.NORMAL,
+                ttsSpeedValue = VoiceSettings.DEFAULT_TTS_SPEED,
                 feedbackEnabled = true,
                 feedbackVolume = SoundLevel.NORMAL
             )

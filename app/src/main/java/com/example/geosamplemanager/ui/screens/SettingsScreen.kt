@@ -33,12 +33,11 @@ import com.example.geosamplemanager.data.voice.SoundLevel
 import com.example.geosamplemanager.data.voice.SoundTestUtil
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
+import com.example.geosamplemanager.data.voice.VoiceSettings
+import kotlin.math.roundToInt
 
 /**
- * FIX 5.9-logs-5: журнал открывается поверх Настроек.
- * FIX 5.9-settings: разделы «Голос» и «О приложении» заполнены.
- * FIX 5.9-settings-bt: раздел «Bluetooth» + тест микрофона.
- * FIX 5.9-settings-sound: раздел «Звук».
+ * FIX 5.9-settings-sound-3-fix-2: скорость TTS — ползунок 0.5..2.0.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -181,10 +180,6 @@ private fun CategoryContent(
 // РАЗДЕЛ «ЗВУК»
 // ============================================================
 
-/**
- * FIX 5.9-settings-sound:
- * Раздел «Звук». Громкость TTS + сигналы + тесты.
- */
 @Composable
 private fun SoundSettingsContent(
     viewModel: SettingsViewModel,
@@ -203,11 +198,10 @@ private fun SoundSettingsContent(
             fontWeight = FontWeight.Bold
         )
 
-        // Озвучка TTS
         InfoCard(
             title = "Озвучка ответов",
             help = "Голосовой помощник произносит ответы через синтезатор речи. " +
-                    "«Выкл» — полное молчание."
+                    "«Выкл» — полное молчание. Скорость 1.0 — обычная."
         ) {
             Text("Громкость", style = MaterialTheme.typography.bodyMedium)
             ChoiceRow(
@@ -220,19 +214,68 @@ private fun SoundSettingsContent(
                 selected = vs.ttsVolume,
                 onSelect = { viewModel.setTtsVolume(it) }
             )
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = {
-                    SoundTestUtil.speakTest(context, vs.ttsVolume)
-                },
-                enabled = vs.ttsVolume != TtsVolume.OFF,
-                modifier = Modifier.fillMaxWidth()
+
+            Spacer(Modifier.height(12.dp))
+
+            // FIX 5.9-settings-sound-3-fix-2: скорость ползунком.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Скорость",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "%.2f×".format(vs.ttsSpeedValue),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Slider(
+                value = vs.ttsSpeedValue,
+                onValueChange = { viewModel.setTtsSpeed(it) },
+                valueRange = VoiceSettings.MIN_TTS_SPEED..VoiceSettings.MAX_TTS_SPEED,
+                steps = 14   // 0.5, 0.6, ..., 2.0 — 15 позиций
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("Проверить озвучку")
+                Text("0.5×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("1.0×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("2.0×", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.speakTest(
+                            context,
+                            vs.ttsVolume,
+                            VoiceSettings.DEFAULT_TTS_SPEED
+                        )
+                    },
+                    enabled = vs.ttsVolume != TtsVolume.OFF,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Обычно") }
+                OutlinedButton(
+                    onClick = {
+                        SoundTestUtil.speakTest(
+                            context,
+                            vs.ttsVolume,
+                            vs.ttsSpeedValue
+                        )
+                    },
+                    enabled = vs.ttsVolume != TtsVolume.OFF,
+                    modifier = Modifier.weight(1f)
+                ) { Text("Проверить") }
             }
         }
 
-        // Сигналы
         InfoCard(
             title = "Звуковые сигналы",
             help = "Короткие бипы-подтверждения: успех, внимание, ошибка. " +

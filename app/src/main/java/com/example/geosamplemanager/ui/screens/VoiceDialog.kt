@@ -42,13 +42,13 @@ private const val LOG_TAG = "VoiceDialog"
 private const val TIMEOUT_TICK_MS = 250L
 
 /**
- * FIX 5.9-settings-bt: принимает BluetoothSettings и передаёт
- * их в VoiceController.
+ * FIX 5.9-settings-bt: BluetoothSettings → VoiceController.
+ * FIX 5.9-settings-sound: ttsVolume → VoiceController.
  *
- * FIX 5.9-settings-sound:
- *  - принимает VoiceSettings;
- *  - применяет ttsVolume к VoiceController;
- *  - применяет feedbackEnabled/feedbackVolume к VoiceFeedback.
+ * FIX 5.9-settings-sound-3-fix-2:
+ *  - в VoiceController теперь передаётся ttsSpeed (был пропущен);
+ *  - добавлен лог с фактическими настройками, чтобы видеть в logcat,
+ *    какие значения ушли в контроллер.
  */
 @Composable
 fun VoiceDialog(
@@ -70,7 +70,13 @@ fun VoiceDialog(
     var expanded by remember { mutableStateOf(true) }
 
     DisposableEffect(Unit) {
-        Log.e(LOG_TAG, "DisposableEffect: НАЧАЛО")
+        Log.e(
+            LOG_TAG,
+            "НАЧАЛО: voiceSettings.ttsVolume=${voiceSettings.ttsVolume}, " +
+                    "ttsSpeedValue=${voiceSettings.ttsSpeedValue}, " +
+                    "feedbackEnabled=${voiceSettings.feedbackEnabled}, " +
+                    "feedbackVolume=${voiceSettings.feedbackVolume}"
+        )
 
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -83,7 +89,6 @@ fun VoiceDialog(
         }
 
         val fb = VoiceFeedback(context)
-        // FIX 5.9-settings-sound: применить настройки к сигналам.
         fb.applySettings(voiceSettings)
         feedback = fb
 
@@ -183,14 +188,24 @@ fun VoiceDialog(
         }
 
         val btController = BluetoothController(context)
+
+        // FIX 5.9-settings-sound-3-fix-2: передаём ttsSpeed.
         val c = VoiceController(
             context = context,
             callback = callback,
             btSettings = btSettings,
             btController = btController,
-            ttsVolume = voiceSettings.ttsVolume
+            ttsVolume = voiceSettings.ttsVolume,
+            ttsSpeed = voiceSettings.ttsSpeedValue
         )
         controller = c
+
+        Log.e(
+            LOG_TAG,
+            "VoiceController создан: volume=${voiceSettings.ttsVolume}, " +
+                    "speed=${voiceSettings.ttsSpeedValue}"
+        )
+
         c.startListening()
 
         onDispose {
