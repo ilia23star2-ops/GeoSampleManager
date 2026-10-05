@@ -5,11 +5,7 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -18,8 +14,8 @@ import androidx.compose.material.icons.filled.Compare
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Merge
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
@@ -30,18 +26,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.DbInfo
 import com.example.geosamplemanager.data.backup.BackupManifest
 import com.example.geosamplemanager.data.backup.BackupSource
 import com.example.geosamplemanager.data.backup.GsmBackupWriter
 import com.example.geosamplemanager.data.backup.PublicBackup
 import com.example.geosamplemanager.data.backup.RollbackBackup
 import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsState
-import com.example.geosamplemanager.data.entity.AreaEntity
-import com.example.geosamplemanager.data.entity.OrderEntity
-import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.merge.MergeWizardState
 import com.example.geosamplemanager.ui.navigation.Screen
 import kotlinx.coroutines.delay
@@ -53,10 +48,13 @@ import java.util.Locale
 /**
  * FIX 5.9-db-restructure-edit:
  * Создание и удаление участков/нарядов перенесено во вкладку
- * «Редактирование». Здесь остались только операции с БД —
- * импорт, экспорт, откат, очистка, слияние, сравнение,
- * диагностика, инфо. Список участков/нарядов — только для
- * просмотра.
+ * «Редактирование». Здесь — только операции с БД.
+ *
+ * FIX 5.9-db-restructure-edit-2:
+ *  - список участков/нарядов/проб убран — вместо него инфо-панель;
+ *  - кнопка «Инфо» убрана — диалог заменён встроенной панелью;
+ *  - DbInfoDialog.kt удалён, formatBytes переехал сюда;
+ *  - loadDbInfo вызывается автоматически при заходе на вкладку.
  */
 @Composable
 fun DbScreen(viewModel: DbViewModel = viewModel()) {
@@ -64,11 +62,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     val app = context.applicationContext as GeoSampleApp
     val scope = rememberCoroutineScope()
 
-    val areas by viewModel.areas.collectAsState()
-    val selectedArea by viewModel.selectedArea.collectAsState()
-    val orders by viewModel.orders.collectAsState()
-    val selectedOrder by viewModel.selectedOrder.collectAsState()
-    val samples by viewModel.samples.collectAsState()
     val message by viewModel.message.collectAsState()
     val dbInfo by viewModel.dbInfo.collectAsState()
     val dbInfoLoading by viewModel.dbInfoLoading.collectAsState()
@@ -101,6 +94,11 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         viewModel.migrateOldPublicBackupsIfNeeded()
     }
 
+    // FIX 5.9-db-restructure-edit-2: инфо загружается при заходе на вкладку.
+    LaunchedEffect(Unit) {
+        viewModel.loadDbInfo()
+    }
+
     LaunchedEffect(Unit) {
         val doneMessage = app.consumeRestartMessage()
         if (doneMessage != null) {
@@ -115,7 +113,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         }
     }
 
-    var showDbInfoDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
 
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
@@ -135,10 +132,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     var showBackupManagerDialog by remember { mutableStateOf(false) }
 
     var showDiagnosticsDialog by remember { mutableStateOf(false) }
-
-    LaunchedEffect(showDbInfoDialog) {
-        if (showDbInfoDialog) viewModel.loadDbInfo()
-    }
 
     LaunchedEffect(showRollbackDialog) {
         if (showRollbackDialog) viewModel.loadRollbackBackups()
@@ -280,6 +273,7 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+            // Ряд 1: Экспорт / Импорт / Откат / Бэкапы
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -312,20 +306,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Text("Импорт", maxLines = 1)
                 }
                 OutlinedButton(
-                    onClick = { showDbInfoDialog = true },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Info, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(2.dp))
-                    Text("Инфо", maxLines = 1)
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                OutlinedButton(
                     onClick = { showRollbackDialog = true },
                     enabled = rollbackState is RestoreState.Idle,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
@@ -344,6 +324,13 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Spacer(Modifier.width(2.dp))
                     Text("Бэкапы", maxLines = 1)
                 }
+            }
+
+            // Ряд 2: Слияние / Сравнить / Диагностика / Очистить БД
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 OutlinedButton(
                     onClick = {
                         viewModel.startMergeWizard()
@@ -376,11 +363,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                     Spacer(Modifier.width(2.dp))
                     Text("Сравнить", maxLines = 1)
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
                 OutlinedButton(
                     onClick = { showDiagnosticsDialog = true },
                     enabled = diagnosticsState !is DbDiagnosticsState.Applying,
@@ -402,67 +384,19 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
                 ) {
                     Icon(Icons.Default.DeleteSweep, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Очистить БД", maxLines = 1)
+                    Text("Очистить", maxLines = 1)
                 }
             }
 
             HorizontalDivider()
 
-            BoxWithConstraints(modifier = Modifier.weight(1f)) {
-                val isWide = maxWidth >= 600.dp
-
-                if (isWide) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AreasList(
-                            areas = areas,
-                            selectedArea = selectedArea,
-                            onSelect = { viewModel.selectArea(it) },
-                            modifier = Modifier.weight(1f).fillMaxHeight()
-                        )
-                        OrdersList(
-                            selectedArea = selectedArea,
-                            orders = orders,
-                            selectedOrder = selectedOrder,
-                            onSelect = { viewModel.selectOrder(it) },
-                            modifier = Modifier.weight(1f).fillMaxHeight()
-                        )
-                    }
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        AreasList(
-                            areas = areas,
-                            selectedArea = selectedArea,
-                            onSelect = { viewModel.selectArea(it) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OrdersList(
-                            selectedArea = selectedArea,
-                            orders = orders,
-                            selectedOrder = selectedOrder,
-                            onSelect = { viewModel.selectOrder(it) },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
-
-            val order = selectedOrder
-            if (order != null) {
-                HorizontalDivider()
-                SamplesList(
-                    order = order,
-                    samples = samples,
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp)
-                )
-            }
+            // FIX 5.9-db-restructure-edit-2: инфо-панель вместо списка.
+            DbInfoPanel(
+                info = dbInfo,
+                loading = dbInfoLoading,
+                onRefresh = { viewModel.loadDbInfo() },
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            )
         }
 
         SnackbarHost(
@@ -502,15 +436,6 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
         DbCompareScreen(
             result = result,
             onClose = { viewModel.resetCompareState() }
-        )
-    }
-
-    if (showDbInfoDialog) {
-        DbInfoDialog(
-            info = dbInfo,
-            loading = dbInfoLoading,
-            onRefresh = { viewModel.loadDbInfo() },
-            onDismiss = { showDbInfoDialog = false }
         )
     }
 
@@ -666,6 +591,133 @@ fun DbScreen(viewModel: DbViewModel = viewModel()) {
     }
 }
 
+// ============================================================
+// ИНФО-ПАНЕЛЬ
+// ============================================================
+
+/**
+ * FIX 5.9-db-restructure-edit-2:
+ * Постоянная инфо-панель на вкладке БД. Заменяет старый диалог
+ * DbInfoDialog. Заголовок + кнопка «Обновить», ниже — сводка.
+ */
+@Composable
+private fun DbInfoPanel(
+    info: DbInfo?,
+    loading: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dateFormat = remember {
+        SimpleDateFormat("dd.MM.yyyy, HH:mm", Locale("ru", "RU"))
+    }
+
+    Card(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Информация о базе данных",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                if (loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    IconButton(
+                        onClick = onRefresh,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Обновить",
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            if (info == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (loading) "Загрузка…" else "Нет данных",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                InfoLine("Путь", info.dbPath, ellipsis = true)
+                InfoLine("Размер БД", formatBytes(info.dbSizeBytes))
+                InfoLine("Размер фото", formatBytes(info.photosSizeBytes))
+                InfoLine(
+                    "Обновлено",
+                    if (info.lastModified > 0)
+                        dateFormat.format(Date(info.lastModified))
+                    else "—"
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                InfoLine("Участков", info.areasCount.toString())
+                InfoLine("Нарядов", info.ordersCount.toString())
+                InfoLine("Скважин", info.wellsCount.toString())
+                InfoLine("Проб", info.samplesCount.toString())
+                InfoLine("Фото", info.photosCount.toString())
+                InfoLine("Заметок", info.notesCount.toString())
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoLine(
+    label: String,
+    value: String,
+    ellipsis: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(120.dp)
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = if (ellipsis) TextOverflow.Ellipsis else TextOverflow.Clip,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+// ============================================================
+// OVERLAY
+// ============================================================
+
 @Composable
 private fun ProgressOverlay(message: String) {
     Surface(
@@ -692,208 +744,20 @@ private fun ProgressOverlay(message: String) {
 }
 
 // ============================================================
-// ПОДКОМПОНЕНТЫ
+// УТИЛИТЫ
 // ============================================================
 
-@Composable
-private fun AreasList(
-    areas: List<AreaEntity>,
-    selectedArea: AreaEntity?,
-    onSelect: (AreaEntity) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                "Участки (${areas.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(4.dp))
-            if (areas.isEmpty()) {
-                Text(
-                    "Пусто. Добавить участок — во вкладке «Редактирование».",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 220.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    items(areas, key = { it.id }) { area ->
-                        ListRow(
-                            text = area.areaName,
-                            selected = selectedArea?.id == area.id,
-                            onClick = { onSelect(area) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun OrdersList(
-    selectedArea: AreaEntity?,
-    orders: List<OrderEntity>,
-    selectedOrder: OrderEntity?,
-    onSelect: (OrderEntity) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                "Наряды (${orders.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(4.dp))
-            when {
-                selectedArea == null -> Text(
-                    "Выберите участок слева",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                orders.isEmpty() -> Text(
-                    "Пусто. Добавить наряд — во вкладке «Редактирование».",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                else -> LazyColumn(
-                    modifier = Modifier.heightIn(max = 220.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    items(orders, key = { it.id }) { order ->
-                        ListRow(
-                            text = order.orderNumber,
-                            selected = selectedOrder?.id == order.id,
-                            onClick = { onSelect(order) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SamplesList(
-    order: OrderEntity,
-    samples: List<SampleEntity>,
-    modifier: Modifier = Modifier
-) {
-    Card(modifier = modifier) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                "Пробы наряда «${order.orderNumber}» (${samples.size})",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(4.dp))
-            if (samples.isEmpty()) {
-                Text(
-                    "Нет проб в этом наряде",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    items(samples, key = { it.id }) { sample ->
-                        SampleRow(sample)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SampleRow(sample: SampleEntity) {
-    val intervalText = if (sample.intervalFrom != null && sample.intervalTo != null) {
-        "${sample.intervalFrom}–${sample.intervalTo}"
-    } else "—"
-
-    val statusText = when (sample.status) {
-        "blank" -> "Холостая"
-        "control" -> "ВК"
-        else -> when (sample.sampleType) {
-            "auger" -> "Шнековая"
-            "channel" -> "Бороздовая"
-            "cobra" -> "Кобра"
-            else -> sample.sampleType
-        }
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                when (sample.status) {
-                    "blank" -> Color(0x33FFD700)
-                    "control" -> Color(0x33DDA0DD)
-                    else -> Color.Transparent
-                }
-            )
-            .padding(vertical = 4.dp, horizontal = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            sample.sampleNumber,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1.2f)
-        )
-        Text(
-            sample.wellNumber,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            intervalText,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            sample.weight?.toString() ?: "—",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.weight(0.8f)
-        )
-        Text(
-            statusText,
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.weight(1f)
-        )
-        Text(
-            if (sample.found) "✓" else "—",
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (sample.found) Color(0xFF2E7D32)
-            else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun ListRow(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                if (selected) MaterialTheme.colorScheme.primaryContainer
-                else Color.Transparent
-            )
-            .clickable(onClick = onClick)
-            .padding(vertical = 6.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.weight(1f)
-        )
+/**
+ * FIX 5.9-db-restructure-edit-2:
+ * Перенесено из удалённого DbInfoDialog.kt.
+ * Форматирование размера: Б / КБ / МБ / ГБ.
+ */
+internal fun formatBytes(bytes: Long): String {
+    return when {
+        bytes < 0 -> "—"
+        bytes < 1024 -> "$bytes Б"
+        bytes < 1024L * 1024 -> "%.1f КБ".format(bytes / 1024.0)
+        bytes < 1024L * 1024 * 1024 -> "%.1f МБ".format(bytes / (1024.0 * 1024))
+        else -> "%.2f ГБ".format(bytes / (1024.0 * 1024 * 1024))
     }
 }

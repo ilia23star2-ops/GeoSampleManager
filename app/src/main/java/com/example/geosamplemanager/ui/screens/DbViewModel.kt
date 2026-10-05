@@ -27,9 +27,6 @@ import com.example.geosamplemanager.data.compare.CompareEngine
 import com.example.geosamplemanager.data.compare.CompareResult
 import com.example.geosamplemanager.data.compare.ConflictInfo
 import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsState
-import com.example.geosamplemanager.data.entity.AreaEntity
-import com.example.geosamplemanager.data.entity.OrderEntity
-import com.example.geosamplemanager.data.entity.SampleEntity
 import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.merge.FieldOwner
 import com.example.geosamplemanager.data.merge.FieldResolution
@@ -43,15 +40,10 @@ import com.example.geosamplemanager.data.merge.SampleConflict
 import com.example.geosamplemanager.data.merge.SampleField
 import com.example.geosamplemanager.data.merge.TempDatabaseHandle
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -69,37 +61,18 @@ sealed class RestoreState {
 /**
  * FIX 5.9-db-restructure-edit:
  * Методы создания и удаления участков/нарядов перенесены в
- * EditViewModel. Здесь остались только операции с БД (импорт /
- * экспорт / откат / очистка / слияние / сравнение / диагностика).
+ * EditViewModel.
+ *
+ * FIX 5.9-db-restructure-edit-2:
+ *  - убраны стейты areas / orders / samples и их селекторы —
+ *    список участков/нарядов/проб в БД больше не нужен,
+ *    на его месте — инфо-панель;
+ *  - DbInfo загружается автоматически при заходе на вкладку.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as GeoSampleApp
     private val repo = app.repository
-
-    val areas: StateFlow<List<AreaEntity>> = repo.getAreasFlow()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    private val _selectedArea = MutableStateFlow<AreaEntity?>(null)
-    val selectedArea: StateFlow<AreaEntity?> = _selectedArea.asStateFlow()
-
-    val orders: StateFlow<List<OrderEntity>> = _selectedArea
-        .flatMapLatest { area ->
-            if (area == null) flowOf(emptyList())
-            else repo.getOrdersForArea(area.id)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    private val _selectedOrder = MutableStateFlow<OrderEntity?>(null)
-    val selectedOrder: StateFlow<OrderEntity?> = _selectedOrder.asStateFlow()
-
-    val samples: StateFlow<List<SampleEntity>> = _selectedOrder
-        .flatMapLatest { order ->
-            if (order == null) flowOf(emptyList())
-            else repo.getSamplesForOrder(order.id)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -1219,19 +1192,6 @@ class DbViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun deleteQuietly(f: File) {
         try { if (f.exists()) f.delete() } catch (_: Exception) {}
-    }
-
-    // ================================================================
-    // Выбор
-    // ================================================================
-
-    fun selectArea(area: AreaEntity?) {
-        _selectedArea.value = area
-        _selectedOrder.value = null
-    }
-
-    fun selectOrder(order: OrderEntity?) {
-        _selectedOrder.value = order
     }
 
     companion object {
