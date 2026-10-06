@@ -11,7 +11,7 @@
 local.properties
 
 # Vosk-модель (~50 МБ, не коммитим — качается в CI отдельно)
-/app/src/main/assets/
+/app/src/main/assets/vosk-model-small-ru*/
 
 # Локальный конфиг Gradle Daemon JVM
 /gradle/gradle-daemon-jvm.properties
