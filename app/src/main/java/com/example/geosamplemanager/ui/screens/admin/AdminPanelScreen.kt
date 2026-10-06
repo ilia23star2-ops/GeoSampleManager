@@ -26,9 +26,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-ui-5a: блок «Незавершённые».
  * FIX 5.10-stat-admin-v2-nav: табы, таймлайн, Back.
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
+ * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  *
- * FIX 5.10-stat-admin-v2-orders-b:
- *  - таб «Наряды» подключает OrdersTab вместо заглушки.
+ * FIX 5.10-stat-admin-v2-details-a:
+ *  - SessionDetail и VisitDetail подключают реальные экраны
+ *    вместо заглушек.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,14 +109,38 @@ fun AdminPanelScreen(
                 )
             }
 
-            is AdminPanelRoute.SessionDetail -> StubTab(
-                title = "Сессия #${r.sessionId}",
-                hint = "Таймлайн вкладок внутри сессии — следующая пачка."
-            )
-            is AdminPanelRoute.VisitDetail -> StubTab(
-                title = "Визит #${r.visitId}",
-                hint = "Список действий визита — следующая пачка."
-            )
+            is AdminPanelRoute.SessionDetail -> {
+                val session = dayView?.sessions?.firstOrNull { it.id == r.sessionId }
+                if (session != null) {
+                    SessionDetailScreen(
+                        session = session,
+                        onOpenVisit = { sid, fromTs -> viewModel.openVisit(sid, fromTs) }
+                    )
+                } else {
+                    StubTab(
+                        title = "Сессия #${r.sessionId}",
+                        hint = "Данные сессии не загружены."
+                    )
+                }
+            }
+
+            is AdminPanelRoute.VisitDetail -> {
+                val visit = dayView?.sessions
+                    ?.firstOrNull { it.id == r.sessionId }
+                    ?.visits
+                    ?.firstOrNull { it.fromTs == r.fromTs }
+                if (visit != null) {
+                    VisitDetailScreen(
+                        visit = visit,
+                        allEvents = dayView?.events.orEmpty()
+                    )
+                } else {
+                    StubTab(
+                        title = "Визит",
+                        hint = "Данные визита не загружены."
+                    )
+                }
+            }
         }
     }
 }
@@ -194,7 +220,7 @@ private fun DayTab(
                 UnfinishedOrdersBlock(orders = v.unfinishedOrders)
                 ProblemsBlock(
                     problems = v.problems,
-                    onOpenDiagnostics = { /* заглушка — пачка v2-details */ }
+                    onOpenDiagnostics = { /* заглушка — пачка v2-details-b */ }
                 )
                 if (v.sessions.isNotEmpty()) {
                     Text(
