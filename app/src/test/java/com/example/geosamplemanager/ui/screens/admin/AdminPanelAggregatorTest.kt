@@ -1,5 +1,8 @@
 package com.example.geosamplemanager.ui.screens.admin
 
+import com.example.geosamplemanager.data.dao.OrderSampleCounts
+import com.example.geosamplemanager.data.entity.AreaEntity
+import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.stats.EventCategory
 import com.example.geosamplemanager.data.stats.EventEntity
 import com.example.geosamplemanager.data.stats.EventLevel
@@ -9,13 +12,15 @@ import com.example.geosamplemanager.data.stats.SessionEntity
 import com.example.geosamplemanager.data.stats.TabKind
 import com.example.geosamplemanager.data.stats.TabVisitEntity
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * FIX 5.10-stat-admin-ui-1: тесты агрегатора.
- * FIX 5.10-stat-admin-ui-5a: тесты незавершённых.
- * FIX 5.10-stat-admin-v2-nav: тесты timeline-сегментов.
+ * FIX 5.10-stat-admin-ui-5a: незавершённые.
+ * FIX 5.10-stat-admin-v2-nav: timeline-сегменты.
+ * FIX 5.10-stat-admin-v2-orders-a: список нарядов, статус, фильтр.
  */
 class AdminPanelAggregatorTest {
 
@@ -297,7 +302,7 @@ class AdminPanelAggregatorTest {
     }
 
     // ============================================================
-    // computeTimelineSegments (FIX 5.10-stat-admin-v2-nav)
+    // computeTimelineSegments
     // ============================================================
 
     @Test
@@ -347,7 +352,6 @@ class AdminPanelAggregatorTest {
     @Test
     fun timeline_sessionClampedByDayBounds() {
         val (dayStart, dayEnd) = AdminPanelDateUtils.dayBounds("2026-10-06")
-        // Сессия началась до дня и закончилась после.
         val s = AdminPanelAggregator.computeTimelineSegments(
             sessions = listOf(
                 SessionEntity(
@@ -379,5 +383,279 @@ class AdminPanelAggregatorTest {
             now = dayStart
         )
         assertTrue(s.isEmpty())
+    }
+
+    // ============================================================
+    // classifyOrderStatus (FIX 5.10-stat-admin-v2-orders-a)
+    // ============================================================
+
+    @Test
+    fun classifyStatus_notStarted_noWork_noFound() {
+        assertEquals(
+            AdminOrderStatus.NOT_STARTED,
+            AdminPanelAggregator.classifyOrderStatus(
+                totalSamples = 10,
+                foundSamples = 0,
+                hasWork = false
+            )
+        )
+    }
+
+    @Test
+    fun classifyStatus_done_allFound() {
+        assertEquals(
+            AdminOrderStatus.DONE,
+            AdminPanelAggregator.classifyOrderStatus(
+                totalSamples = 10,
+                foundSamples = 10,
+                hasWork = true
+            )
+        )
+    }
+
+    @Test
+    fun classifyStatus_inProgress_partiallyFound() {
+        assertEquals(
+            AdminOrderStatus.IN_PROGRESS,
+            AdminPanelAggregator.classifyOrderStatus(
+                totalSamples = 10,
+                foundSamples = 3,
+                hasWork = true
+            )
+        )
+    }
+
+    @Test
+    fun classifyStatus_inProgress_zeroFoundButHasWork() {
+        assertEquals(
+            AdminOrderStatus.IN_PROGRESS,
+            AdminPanelAggregator.classifyOrderStatus(
+                totalSamples = 10,
+                foundSamples = 0,
+                hasWork = true
+            )
+        )
+    }
+
+    @Test
+    fun classifyStatus_emptyOrder_notStarted() {
+        assertEquals(
+            AdminOrderStatus.NOT_STARTED,
+            AdminPanelAggregator.classifyOrderStatus(
+                totalSamples = 0,
+                foundSamples = 0,
+                hasWork = false
+            )
+        )
+    }
+
+    // ============================================================
+    // buildOrdersSummary (FIX 5.10-stat-admin-v2-orders-a)
+    // ============================================================
+
+    private fun area(id: Long, name: String) =
+        AreaEntity(id = id, areaName = name)
+
+    private fun order(id: Long, areaId: Long, number: String, created: Long) =
+        OrderEntity(
+            id = id,
+            areaId = areaId,
+            orderNumber = number,
+            createdDate = created
+        )
+
+    @Test
+    fun ordersSummary_emptyOrders_emptyResult() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = emptyList(),
+            countsByOrder = emptyList(),
+            workByOrder = emptyMap()
+        )
+        assertTrue(r.isEmpty())
+    }
+
+    @Test
+    fun ordersSummary_notStarted_noCountsNoWork() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = listOf(order(10, 1, "27", 1000)),
+            countsByOrder = emptyList(),
+            workByOrder = emptyMap()
+        )
+        assertEquals(1, r.size)
+        assertEquals(AdminOrderStatus.NOT_STARTED, r[0].status)
+        assertEquals("Коптеловский", r[0].areaTitle)
+        assertEquals("Наряд №27", r[0].orderTitle)
+        assertEquals(0, r[0].totalSamples)
+        assertEquals(0, r[0].foundSamples)
+        assertNull(r[0].searchSec)
+        assertNull(r[0].verifySec)
+        assertEquals(false, r[0].hasWork)
+    }
+
+    @Test
+    fun ordersSummary_inProgress_partial() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = listOf(order(10, 1, "27", 1000)),
+            countsByOrder = listOf(
+                OrderSampleCounts(orderId = 10, totalSamples = 15, foundSamples = 7)
+            ),
+            workByOrder = mapOf(
+                10L to listOf(
+                    OrderWorkEntity(
+                        id = 1, sessionId = 1, orderId = 10,
+                        areaTitle = "Коптеловский", orderTitle = "Наряд №27",
+                        startedAt = 0, endedAt = 0,
+                        searchSec = 30, verifySec = 60,
+                        status = "half_done",
+                        totalSamples = 15, foundSamples = 7
+                    )
+                )
+            )
+        )
+        assertEquals(1, r.size)
+        assertEquals(AdminOrderStatus.IN_PROGRESS, r[0].status)
+        assertEquals(15, r[0].totalSamples)
+        assertEquals(7, r[0].foundSamples)
+        assertEquals(30, r[0].searchSec)
+        assertEquals(60, r[0].verifySec)
+        assertEquals(90, r[0].totalSec)
+        assertEquals(46, r[0].percent)  // 7/15 = 46
+    }
+
+    @Test
+    fun ordersSummary_done_sumsWorkFromMultipleSessions() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = listOf(order(10, 1, "27", 1000)),
+            countsByOrder = listOf(
+                OrderSampleCounts(orderId = 10, totalSamples = 15, foundSamples = 15)
+            ),
+            workByOrder = mapOf(
+                10L to listOf(
+                    OrderWorkEntity(
+                        id = 1, sessionId = 1, orderId = 10,
+                        areaTitle = "Коптеловский", orderTitle = "Наряд №27",
+                        startedAt = 0, endedAt = 0,
+                        searchSec = 30, verifySec = 60,
+                        status = "half_done",
+                        totalSamples = 15, foundSamples = 7
+                    ),
+                    OrderWorkEntity(
+                        id = 2, sessionId = 2, orderId = 10,
+                        areaTitle = "Коптеловский", orderTitle = "Наряд №27",
+                        startedAt = 0, endedAt = 0,
+                        searchSec = 10, verifySec = 20,
+                        status = "done",
+                        totalSamples = 15, foundSamples = 15
+                    )
+                )
+            )
+        )
+        assertEquals(1, r.size)
+        assertEquals(AdminOrderStatus.DONE, r[0].status)
+        assertEquals(40, r[0].searchSec)   // 30 + 10
+        assertEquals(80, r[0].verifySec)   // 60 + 20
+        assertEquals(100, r[0].percent)
+    }
+
+    @Test
+    fun ordersSummary_sortedByCreatedDesc() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = listOf(
+                order(10, 1, "20", 1_000),
+                order(11, 1, "21", 3_000),
+                order(12, 1, "22", 2_000)
+            ),
+            countsByOrder = emptyList(),
+            workByOrder = emptyMap()
+        )
+        assertEquals(3, r.size)
+        assertEquals(11L, r[0].orderId)
+        assertEquals(12L, r[1].orderId)
+        assertEquals(10L, r[2].orderId)
+    }
+
+    @Test
+    fun ordersSummary_limitApplied() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = listOf(area(1, "Коптеловский")),
+            orders = (1L..50L).map { order(it, 1, "$it", it * 100) },
+            countsByOrder = emptyList(),
+            workByOrder = emptyMap(),
+            limit = 10
+        )
+        assertEquals(10, r.size)
+    }
+
+    @Test
+    fun ordersSummary_unknownArea_fallback() {
+        val r = AdminPanelAggregator.buildOrdersSummary(
+            areas = emptyList(),
+            orders = listOf(order(10, 99, "27", 1000)),
+            countsByOrder = emptyList(),
+            workByOrder = emptyMap()
+        )
+        assertEquals(1, r.size)
+        assertEquals("—", r[0].areaTitle)
+    }
+
+    // ============================================================
+    // filterOrders (FIX 5.10-stat-admin-v2-orders-a)
+    // ============================================================
+
+    @Test
+    fun filterOrders_empty_returnsAll() {
+        val list = listOf(
+            AdminOrderSummary(1, "Коптеловский", "Наряд №27", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null),
+            AdminOrderSummary(2, "Актайский", "Наряд №14", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null)
+        )
+        assertEquals(2, AdminPanelAggregator.filterOrders(list, null).size)
+        assertEquals(2, AdminPanelAggregator.filterOrders(list, "").size)
+        assertEquals(2, AdminPanelAggregator.filterOrders(list, "  ").size)
+    }
+
+    @Test
+    fun filterOrders_byArea() {
+        val list = listOf(
+            AdminOrderSummary(1, "Коптеловский", "Наряд №27", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null),
+            AdminOrderSummary(2, "Актайский", "Наряд №14", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null)
+        )
+        val r = AdminPanelAggregator.filterOrders(list, "коптел")
+        assertEquals(1, r.size)
+        assertEquals(1L, r[0].orderId)
+    }
+
+    @Test
+    fun filterOrders_byOrderNumber() {
+        val list = listOf(
+            AdminOrderSummary(1, "Коптеловский", "Наряд №27", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null),
+            AdminOrderSummary(2, "Актайский", "Наряд №14", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null)
+        )
+        val r = AdminPanelAggregator.filterOrders(list, "14")
+        assertEquals(1, r.size)
+        assertEquals(2L, r[0].orderId)
+    }
+
+    @Test
+    fun filterOrders_byOrderId() {
+        val list = listOf(
+            AdminOrderSummary(100, "Коптеловский", "Наряд №27", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null),
+            AdminOrderSummary(200, "Актайский", "Наряд №14", 0, 0, 0,
+                AdminOrderStatus.NOT_STARTED, null, null)
+        )
+        val r = AdminPanelAggregator.filterOrders(list, "200")
+        assertEquals(1, r.size)
+        assertEquals(200L, r[0].orderId)
     }
 }

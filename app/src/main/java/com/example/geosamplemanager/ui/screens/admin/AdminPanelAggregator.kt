@@ -1,5 +1,8 @@
 package com.example.geosamplemanager.ui.screens.admin
 
+import com.example.geosamplemanager.data.dao.OrderSampleCounts
+import com.example.geosamplemanager.data.entity.AreaEntity
+import com.example.geosamplemanager.data.entity.OrderEntity
 import com.example.geosamplemanager.data.stats.DailySummaryEntity
 import com.example.geosamplemanager.data.stats.EventCategory
 import com.example.geosamplemanager.data.stats.EventEntity
@@ -11,16 +14,13 @@ import com.example.geosamplemanager.data.stats.TabKind
 import com.example.geosamplemanager.data.stats.TabVisitEntity
 
 /**
- * FIX 5.10-stat-admin-ui-1:
- * Чистая логика агрегации дня для админ-панели. Не зависит от Android
- * и Room — тестируется в JVM.
+ * FIX 5.10-stat-admin-ui-1: агрегация дня.
+ * FIX 5.10-stat-admin-ui-5a: незавершённые.
+ * FIX 5.10-stat-admin-v2-nav: timeline-сегменты.
  *
- * FIX 5.10-stat-admin-ui-5a:
- *  - DayView.unfinishedOrders — незавершённые наряды (§7.6);
- *  - сортировка: % found убыв → время последнего действия убыв → orderId.
- *
- * FIX 5.10-stat-admin-v2-nav:
- *  - computeTimelineSegments — сессии как полосы на таймлайне дня.
+ * FIX 5.10-stat-admin-v2-orders-a:
+ *  - buildOrdersSummary — список всех нарядов из основной БД
+ *    с прогрессом и временем из order_work.
  */
 object AdminPanelAggregator {
 
@@ -93,13 +93,114 @@ object AdminPanelAggregator {
     }
 
     /**
-     * FIX 5.10-stat-admin-v2-nav:
-     * Сессии дня как сегменты таймлайна. Время обрезается по
-     * границам дня — сессия, начавшаяся вчера или тянущаяся до
-     * следующего утра, не «вылезает» за шкалу.
+     * FIX 5.10-stat-admin-v2-orders-a:
+     * Список всех нарядов с прогрессом и временем.
      *
-     * Открытые сессии (ended_at = null) закрываются на `now`,
-     * но не позже конца дня.
+     * Вход:
+     *  - areas — все участки (для areaTitle);
+     *  - orders — все наряды (основная БД);
+     *  - countsByOrder — счётчики проб по order_id (может быть
+     *    неполным: нет записей для нарядов без проб);
+     *  - workByOrder — все записи order_work за всё время, уже
+     *    сгруппированные по order_id.
+     *
+     * Сортировка: created_date убыв (свежие сверху).
+     *
+     * Статус:
+     *  - NOT_STARTED — нет order_work и found = 0;
+     *  - DONE — found == total (и total > 0);
+     *  - IN_PROGRESS — во всех остальных случаях.
+     *
+     * Время:
+     *  - searchSec / verifySec — суммы по всем order_work;
+     *  - null, если ни одной записи order_work нет.
+     */
+    fun buildOrdersSummary(
+        areas: List<AreaEntity>,
+        orders: List<OrderEntity>,
+        countsByOrder: List<OrderSampleCounts>,
+        workByOrder: Map<Long, List<OrderWorkEntity>>,
+        limit: Int = 30
+    ): List<AdminOrderSummary> {
+        if (orders.isEmpty()) return emptyList()
+
+        val areaById = areas.associateBy { it.id }
+        val countsByOrderId = countsByOrder.associateBy { it.orderId }
+
+        val result = orders.map { order ->
+            val area = areaById[order.areaId]
+            val counts = countsByOrderId[order.id]
+            val total = counts?.totalSamples ?: 0
+            val found = counts?.foundSamples ?: 0
+            val work = workByOrder[order.id].orEmpty()
+
+            val search: Int? = if (work.isEmpty()) null
+            else work.sumOf { it.searchSec }
+            val verify: Int? = if (work.isEmpty()) null
+            else work.sumOf { it.verifySec }
+
+            val status = classifyOrderStatus(
+                totalSamples = total,
+                foundSamples = found,
+                hasWork = work.isNotEmpty()
+            )
+
+            AdminOrderSummary(
+                orderId = order.id,
+                areaTitle = area?.areaName ?: "—",
+                orderTitle = "Наряд №${order.orderNumber}",
+                createdDate = order.createdDate,
+                totalSamples = total,
+                foundSamples = found,
+                status = status,
+                searchSec = search,
+                verifySec = verify
+            )
+        }
+
+        return result
+            .sortedByDescending { it.createdDate }
+            .take(limit.coerceAtLeast(1))
+    }
+
+    /**
+     * FIX 5.10-stat-admin-v2-orders-a:
+     * Статус наряда. Правила — в KDoc buildOrdersSummary.
+     */
+    fun classifyOrderStatus(
+        totalSamples: Int,
+        foundSamples: Int,
+        hasWork: Boolean
+    ): AdminOrderStatus {
+        if (totalSamples > 0 && foundSamples >= totalSamples) {
+            return AdminOrderStatus.DONE
+        }
+        if (hasWork || foundSamples > 0) {
+            return AdminOrderStatus.IN_PROGRESS
+        }
+        return AdminOrderStatus.NOT_STARTED
+    }
+
+    /**
+     * Фильтр по строке: участок / название наряда / orderId.
+     * Пустой query — вернуть всё. Регистр не важен.
+     */
+    fun filterOrders(
+        orders: List<AdminOrderSummary>,
+        query: String?
+    ): List<AdminOrderSummary> {
+        val q = query?.trim()?.lowercase()
+        if (q.isNullOrEmpty()) return orders
+        return orders.filter { o ->
+            o.areaTitle.lowercase().contains(q) ||
+                    o.orderTitle.lowercase().contains(q) ||
+                    o.orderId.toString() == q
+        }
+    }
+
+    /**
+     * FIX 5.10-stat-admin-v2-nav:
+     * Сессии дня как сегменты таймлайна.
      */
     fun computeTimelineSegments(
         sessions: List<SessionEntity>,
@@ -120,9 +221,6 @@ object AdminPanelAggregator {
         }.sortedBy { it.fromTs }
     }
 
-    /**
-     * Незавершённые наряды (§7.6).
-     */
     fun computeUnfinishedOrders(sessions: List<SessionView>): List<OrderWorkView> {
         return sessions
             .flatMap { it.orderWorks }
