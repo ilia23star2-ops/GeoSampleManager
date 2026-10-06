@@ -3,8 +3,10 @@ package com.example.geosamplemanager.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -37,6 +39,7 @@ import com.example.geosamplemanager.data.voice.SoundTestUtil
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
 import com.example.geosamplemanager.data.voice.VoiceSettings
+import com.example.geosamplemanager.ui.screens.admin.AdminPanelScreen
 import kotlin.math.roundToInt
 
 /**
@@ -44,6 +47,11 @@ import kotlin.math.roundToInt
  * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле.
  * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
  * FIX 5.9-settings-help-1: раздел «Справка» + открытие HelpScreen.
+ *
+ * FIX 5.10-stat-admin-ui-3:
+ *  - долгий тап на версии в «О приложении» открывает AdminPanelScreen;
+ *  - быстрый тап — no-op;
+ *  - флаг открытия — локальный state, VM не трогаем.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -53,6 +61,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
 
     var openedLogs by remember { mutableStateOf(false) }
     var openedHelp by remember { mutableStateOf(false) }
+    var openAdminPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.reload() }
 
@@ -61,6 +70,13 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
             viewModel.clearMessage()
         }
+    }
+
+    // FIX 5.10-stat-admin-ui-3: админ-панель перекрывает весь экран
+    // Настроек. Открытие — только долгим тапом на версии.
+    if (openAdminPanel) {
+        AdminPanelScreen(onClose = { openAdminPanel = false })
+        return
     }
 
     if (openedLogs) {
@@ -90,6 +106,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                     viewModel = viewModel,
                     onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
+                    onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
             }
@@ -102,6 +119,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                     viewModel = viewModel,
                     onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
+                    onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -182,6 +200,7 @@ private fun CategoryContent(
     viewModel: SettingsViewModel,
     onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
+    onOpenAdminPanel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (category) {
@@ -191,7 +210,7 @@ private fun CategoryContent(
         SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
         SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
         SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
-        SettingsCategory.ABOUT -> AboutContent(modifier)
+        SettingsCategory.ABOUT -> AboutContent(modifier, onOpenAdminPanel)
         SettingsCategory.HELP -> HelpSettingsContent(modifier, onOpenHelp)
     }
 }
@@ -791,8 +810,18 @@ private fun BluetoothSettingsContent(
 // РАЗДЕЛ «О ПРИЛОЖЕНИИ»
 // ============================================================
 
+/**
+ * FIX 5.10-stat-admin-ui-3:
+ *  - долгий тап на строке версии открывает админ-панель;
+ *  - быстрый тап — no-op (не путать ОП);
+ *  - при успешном долгом тапе — короткий Toast.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AboutContent(modifier: Modifier = Modifier) {
+private fun AboutContent(
+    modifier: Modifier = Modifier,
+    onOpenAdminPanel: () -> Unit
+) {
     val context = LocalContext.current
     val versionName = remember {
         try {
@@ -826,11 +855,27 @@ private fun AboutContent(modifier: Modifier = Modifier) {
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
-        Text(
-            "Версия $versionName",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box(
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = { /* быстрый тап — no-op */ },
+                    onLongClick = {
+                        Toast.makeText(
+                            context,
+                            "Админ-панель",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        onOpenAdminPanel()
+                    }
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Text(
+                "Версия $versionName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Spacer(Modifier.height(16.dp))
         Text(
             "Приложение для управления геохимическими пробами " +
