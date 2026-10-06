@@ -3,31 +3,34 @@
 Одна страница «где мы сейчас». Обновляется в конце каждой сессии.
 Новый ИИ читает вторым после `AI_RULES.md`.
 
-**Дата обновления:** 2026-10-05
+**Дата обновления:** 2026-10-06
 
 ## Где мы
 
 **Дома:** Android Studio. **На работе:** тоже Android Studio + git
 в терминале.
-**Фича в работе:** `feature/5.9-full-project` — серия 5.9 на выходе.
+**Фича в работе:** `feature/5.10-shadow-stats` — теневая статистика
+(скрытый от ОП инструмент админа).
 
-**Все вкладки закрыты:**
-- ✅ Статистика.
-- ✅ Редактирование.
-- ✅ БД (19 пачек).
-- ✅ Настройки (внешний вид, тема, справка, звук, голос, Bluetooth).
-- ✅ Главная (сводка, продолжить, незавершённые, проблемы, отчёт).
-- ✅ Журнал аудита (logs, 9 подзаходов).
+**Спецификация:** `docs/SHADOW_STATS.md` — утверждена.
 
-**Отдельные фиксы:**
-- sort-normalize, tts-audio-mode, tts-audio-mode-fix-normal,
-  settings-sound-3, settings-scale, settings-scale-2, settings-theme,
-  settings-help-1/2a/2b, main-a/main-b/main-fix, exit.
+**Закрыто в 5.10:**
+- ✅ `5.10-stat-model` — модель и БД (`StatsDatabase`, 5 сущностей, `StatsDao`).
+- ✅ `5.10-stat-session` — сессии (`SessionTracker`, `SessionTimeAccumulator`).
+- ✅ `5.10-stat-activity-a` — активность, batch insert.
+- ✅ `5.10-stat-activity-b` — фазы наряда (`OrderWorkTracker`, `OrderWorkPhaseLogic`).
+- ✅ `5.10-stat-tabs` — визиты вкладок (`TabVisitTracker`).
+- ✅ `5.10-stat-errors-a` — правила авто-повышения (`AutoWarnRules`).
+- ✅ `5.10-stat-errors-b` — интеграция авто-повышения в `voiceSearch` и `LogWriter`.
 
-**Осталось в 5.9:**
-- `docs/5.9-final` — доки + правила (текущий заход).
-- **PR фичи `5.9-full-project` в `main`.**
-- `5.9-mass-add` — в долгом ящике.
+**Осталось в 5.10:**
+- `5.10-stat-admin-ui` — экран админа.
+- `5.10-stat-daily-file` — `.stats/*.json`, ротация, удаление `logs.db`.
+- `5.10-pr` — PR фичи в `main`.
+
+**Архив (не удалять):**
+- `feature/5.9-full-project` — готова, PR ещё не сделан.
+- `feature/5.8.11-e4-voice-v2` — архив.
 
 ## Известные грабли (важно!)
 
@@ -102,6 +105,21 @@
 - **`LogWriter` использует `trySend`.**
 - **Батч: 50 записей или раз в 500 мс.**
 - **Файловый архив — `Downloads/GeoSampleManager/.logs/YYYY-MM-DD.log`.**
+- **Удаление `logs.db` запланировано в `5.10-stat-daily-file`.**
+
+### Теневая статистика (5.10)
+- **`stats.db` — отдельная БД.** Файл: `filesDir/stats/active.db`.
+- **5 таблиц:** `sessions`, `tab_visits`, `order_work`, `events`,
+  `daily_summary`. Все дочерние — FK на `sessions.id` с CASCADE.
+- **`SessionTracker.onAppStart`** открывает новую сессию; висящая
+  закрывается как `crash`.
+- **`OrderWorkTracker`** держит один активный наряд в памяти;
+  время фазы копится **на каждом событии** (не только при смене).
+- **`TabVisitTracker`** закрывает предыдущий визит при смене
+  вкладки; `Mutex` защищает от гонок.
+- **`AutoWarnRules`:** 5+ неудачных поисков подряд, 3+ одинаковых
+  ошибки подряд; `reset()` при старте сессии.
+- **`LogWriter.flush`** → `stats.db.events` (batch) + `AutoWarnRules.onError`.
 
 ### Настройки (5.9-settings)
 - **`AppearanceSettings`** — `scale` + `theme`. Хранится в
@@ -132,6 +150,7 @@
 
 - Схема основной БД (version = 2).
 - `AI_RULES.md` — актуален.
+- Спецификация `docs/SHADOW_STATS.md` — утверждена.
 
 ## Правила текущей сессии
 
