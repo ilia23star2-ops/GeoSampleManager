@@ -1,7 +1,8 @@
 package com.example.geosamplemanager.ui.screens.admin
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -19,22 +20,49 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * FIX 5.10-stat-admin-v2-details-a:
- * Строка события с раскрытием detailsJson по тапу.
+ * FIX 5.10-stat-admin-v2-details-a: строка события с раскрытием.
+ * FIX 5.10-stat-admin-v2-details-a (фикс компиляции): уникальные имена.
  *
- * FIX 5.10-stat-admin-v2-details-a (фикс компиляции):
- *  - функции переименованы (levelColor → eventLevelColor,
- *    formatTime → formatEventTime), чтобы не конфликтовать с
- *    EventsList.kt, где уже есть private с теми же именами.
+ * FIX 5.10-stat-admin-v2-details-c:
+ *  - highlighted — фон под уровень события;
+ *  - onOpenDetail — долгий тап открывает контекст (±2 мин).
+ *    Если null — долгий тап ничего не делает.
+ *
+ * Обычный тап — раскрыть detailsJson.
+ * Долгий тап — открыть контекст вокруг события (если разрешено).
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun EventRowExpandable(event: EventView) {
+fun EventRowExpandable(
+    event: EventView,
+    highlighted: Boolean = false,
+    onOpenDetail: (() -> Unit)? = null
+) {
     var expanded by remember { mutableStateOf(false) }
+
+    val bg = if (highlighted) {
+        when (event.level) {
+            EventLevel.ERROR ->
+                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+            EventLevel.WARN ->
+                MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.4f)
+            EventLevel.INFO ->
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+        }
+    } else Color.Transparent
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(vertical = 4.dp)
+            .background(bg, RoundedCornerShape(4.dp))
+            .combinedClickable(
+                onClick = { expanded = !expanded },
+                onLongClick = { onOpenDetail?.invoke() }
+            )
+            .padding(
+                horizontal = if (highlighted) 6.dp else 0.dp,
+                vertical = 4.dp
+            )
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -52,6 +80,7 @@ fun EventRowExpandable(event: EventView) {
             Text(
                 event.summary,
                 style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (highlighted) FontWeight.SemiBold else FontWeight.Normal,
                 modifier = Modifier.weight(1f)
             )
             Spacer(Modifier.width(4.dp))
