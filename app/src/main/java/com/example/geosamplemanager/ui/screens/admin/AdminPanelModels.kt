@@ -9,10 +9,11 @@ import com.example.geosamplemanager.data.stats.TabKind
  * FIX 5.10-stat-admin-ui-1: UI-модели экрана админа.
  * FIX 5.10-stat-admin-ui-5a: DayView.unfinishedOrders.
  * FIX 5.10-stat-admin-v2-nav: TimelineSegment.
+ * FIX 5.10-stat-admin-v2-orders-a: AdminOrderStatus, AdminOrderSummary.
  *
- * FIX 5.10-stat-admin-v2-orders-a:
- *  - AdminOrderStatus — статус наряда для таба «Наряды»;
- *  - AdminOrderSummary — строка списка нарядов.
+ * FIX 5.10-stat-admin-v2-details-b:
+ *  - EventView.sessionId — для навигации на EventDetail;
+ *  - EventsAroundView — контекст вокруг события (±окно).
  */
 
 data class DayView(
@@ -83,7 +84,13 @@ data class TabUsage(
     val percent: Int
 )
 
+/**
+ * FIX 5.10-stat-admin-v2-details-b:
+ * Событие дня. `sessionId` — для навигации на EventDetail и для
+ * группировки внутри экрана деталей.
+ */
 data class EventView(
+    val sessionId: Long,
     val atTs: Long,
     val level: EventLevel,
     val category: EventCategory,
@@ -100,9 +107,6 @@ data class ProblemsView(
         get() = orphanOrders == 0 && orphanSamples == 0 && brokenPhotos == 0
 }
 
-/**
- * FIX 5.10-stat-admin-v2-nav: сегмент таймлайна дня.
- */
 data class TimelineSegment(
     val sessionId: Long,
     val fromTs: Long,
@@ -110,30 +114,12 @@ data class TimelineSegment(
     val crashFlag: Boolean = false
 )
 
-/**
- * FIX 5.10-stat-admin-v2-orders-a:
- * Статус наряда для таба «Наряды». Отдельный от OrderWorkStatus:
- *  - OrderWorkStatus — фаза работы (поиск / сверка / done);
- *  - AdminOrderStatus — общий статус по данным двух БД.
- *
- * `NOT_STARTED` — наряд есть в основной БД, но в stats.db по нему
- * нет ни одной записи order_work.
- */
 enum class AdminOrderStatus(val label: String) {
     NOT_STARTED("не начат"),
     IN_PROGRESS("в работе"),
     DONE("готов")
 }
 
-/**
- * FIX 5.10-stat-admin-v2-orders-a:
- * Одна строка списка нарядов. Собирается из areas + orders
- * (основная БД) и order_work (stats.db).
- *
- * Поля времени:
- *  - null, если order_work по наряду нет — UI показывает «—»;
- *  - сумма по всем записям order_work за всё время.
- */
 data class AdminOrderSummary(
     val orderId: Long,
     val areaTitle: String,
@@ -142,9 +128,7 @@ data class AdminOrderSummary(
     val totalSamples: Int,
     val foundSamples: Int,
     val status: AdminOrderStatus,
-    /** Секунды в фазе «Поиск» (сумма по всем order_work). null если не работали. */
     val searchSec: Int?,
-    /** Секунды в фазе «Сверка». null если не работали. */
     val verifySec: Int?
 ) {
     val percent: Int
@@ -156,3 +140,22 @@ data class AdminOrderSummary(
     val totalSec: Int
         get() = (searchSec ?: 0) + (verifySec ?: 0)
 }
+
+/**
+ * FIX 5.10-stat-admin-v2-details-b:
+ * Окно событий вокруг выбранного (например, вокруг ошибки).
+ *
+ *  - `centerAtTs` — исходная точка (atTs ошибки);
+ *  - `centerSessionId` — сессия, к которой относится ошибка;
+ *  - `events` — все события в окне `[center-window, center+window]`,
+ *    отсортированы по atTs;
+ *  - `centerIndex` — индекс центрального события в списке
+ *    (или -1, если центр не найден — например, его исключили
+ *    фильтром по уровню).
+ */
+data class EventsAroundView(
+    val centerAtTs: Long,
+    val centerSessionId: Long,
+    val events: List<EventView>,
+    val centerIndex: Int
+)
