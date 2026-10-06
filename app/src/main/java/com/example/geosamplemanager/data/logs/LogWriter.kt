@@ -17,26 +17,21 @@ import java.util.UUID
 
 /**
  * FIX 5.9-logs-2: центральный писатель журнала.
- * FIX 5.9-logs-6: параллельно с logs.db — LogFileWriter.
+ * FIX 5.10-stat-activity-a: параллельно каждая запись — в stats.db.
+ * FIX 5.10-stat-errors-b: авто-повышение в warn через AutoWarnRules.
  *
- * FIX 5.10-stat-activity-a:
- *  - параллельно с logs.db каждая запись уходит в stats.db.events;
- *  - statsDao получаем один раз при старте runWriter;
- *  - запись в stats.db — одним batch insert (одна транзакция).
- *
- * FIX 5.10-stat-errors-b:
- *  - каждая ERROR-запись проходит через AutoWarnRules.onError;
- *  - при срабатывании порога (3+ одинаковых ошибки подряд)
- *    в тот же батч добавляется одна warn-запись с пометкой
- *    `auto_warn` в details.
+ * FIX 5.10-logs-cleanup-b:
+ *  - logs.db и LogFileWriter удалены. Единственное хранилище —
+ *    stats.db.events;
+ *  - убраны logDao, trimToMaxEntries, MAX_ENTRIES, TRIM_AFTER_WRITES;
+ *  - sessionId (UUID) остаётся: используется CrashHandler'ом для
+ *    метки crash_session.
  */
 object LogWriter {
 
     private const val CHANNEL_CAPACITY = 1000
     private const val BATCH_SIZE = 50
     private const val FLUSH_INTERVAL_MS = 500L
-    private const val MAX_ENTRIES = 10_000
-    private const val TRIM_AFTER_WRITES = 500
 
     private var appContext: Context? = null
     private var writerJob: Job? = null
@@ -78,12 +73,6 @@ object LogWriter {
     private suspend fun runWriter() {
         val ctx = appContext ?: return
 
-        val logDao = try {
-            LogsDatabase.getInstance(ctx).logDao()
-        } catch (_: Exception) {
-            return
-        }
-
         // FIX 5.10-stat-activity-a: один раз получаем statsDao.
         // Первое getInstance может занять время (открытие файла) —
         // это фон, не UI.
@@ -94,7 +83,6 @@ object LogWriter {
         }
 
         val buffer = mutableListOf<LogEntry>()
-        var writtenSinceTrim = 0
 
         while (true) {
             val entry = withTimeoutOrNull(FLUSH_INTERVAL_MS) {
@@ -103,37 +91,27 @@ object LogWriter {
             if (entry != null) {
                 buffer += entry
                 if (buffer.size >= BATCH_SIZE) {
-                    writtenSinceTrim += flush(ctx, logDao, statsDao, buffer)
-                    if (writtenSinceTrim >= TRIM_AFTER_WRITES) {
-                        try {
-                            logDao.trimToMaxEntries(MAX_ENTRIES)
-                        } catch (_: Exception) {
-                        }
-                        writtenSinceTrim = 0
-                    }
+                    flush(statsDao, buffer)
                 }
             } else {
                 if (buffer.isNotEmpty()) {
-                    writtenSinceTrim += flush(ctx, logDao, statsDao, buffer)
+                    flush(statsDao, buffer)
                 }
             }
         }
     }
 
     private suspend fun flush(
-        ctx: Context,
-        logDao: LogDao,
         statsDao: StatsDao?,
         buffer: MutableList<LogEntry>
-    ): Int {
-        if (buffer.isEmpty()) return 0
+    ) {
+        if (buffer.isEmpty()) return
         val batch = buffer.toList().toMutableList()
         buffer.clear()
 
         // FIX 5.10-stat-errors-b:
         // Проверяем каждую ERROR-запись. При срабатывании порога
-        // дописываем одну warn-запись в тот же батч — она пойдёт
-        // в logs.db, stats.db и файл одной транзакцией.
+        // дописываем одну warn-запись в тот же батч.
         val autoWarns = mutableListOf<LogEntry>()
         for (entry in batch) {
             if (entry.level == LogLevel.ERROR.code) {
@@ -146,14 +124,8 @@ object LogWriter {
             batch.addAll(autoWarns)
         }
 
-        val written = try {
-            logDao.insertAll(batch)
-            batch.size
-        } catch (_: Exception) {
-            0
-        }
-
-        // FIX 5.10-stat-activity-a: одна batch-вставка.
+        // FIX 5.10-logs-cleanup-b: единственное хранилище —
+        // stats.db.events. logs.db и файловый архив удалены.
         if (statsDao != null) {
             try {
                 val sid = SessionTracker.currentId() ?: 0L
@@ -173,13 +145,6 @@ object LogWriter {
             } catch (_: Exception) {
             }
         }
-
-        try {
-            LogFileWriter.appendBatch(ctx, batch)
-        } catch (_: Exception) {
-        }
-
-        return written
     }
 
     /**
