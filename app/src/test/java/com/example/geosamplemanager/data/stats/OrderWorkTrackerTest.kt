@@ -7,11 +7,10 @@ import org.junit.Test
  * FIX 5.10-stat-activity-b:
  * Тесты на computePhases — разложение действий на поиск / сверку.
  *
- * FIX 5.10-stat-activity-b (уточнение):
- * В verifyThenSixNonMarks_afterReturnSixthGoesToSearch исправлена
- * опечатка: цикл `1..6` даёт 6 non-mark, что не соответствует
- * ожиданию 0/50. Правильное число — 5 non-mark (`1..5`),
- * тогда 5 × 10s = 50s verify.
+ * FIX 5.10-stat-activity-b-2 (смена модели):
+ *  - правило «интервал идёт в фазу, которой начался»;
+ *  - фазу интервала определяет действие cur;
+ *  - удалены тесты про порог «5 событий без отметок».
  */
 class OrderWorkTrackerTest {
 
@@ -46,8 +45,21 @@ class OrderWorkTrackerTest {
     }
 
     @Test
-    fun searchThenMark_switchToVerify() {
-        // A1 (10s search) A2 mark (10s search) A3 mark (10s verify)
+    fun searchThenMark_firstIntervalIsSearch() {
+        // з1 → о1 — SEARCH (интервал начался с поиска).
+        val p = OrderWorkTracker.computePhases(
+            listOf(
+                OrderWorkTracker.Action(at = t0, isMark = false),
+                OrderWorkTracker.Action(at = t0 + 10_000L, isMark = true)
+            )
+        )
+        assertEquals(10, p.searchSec)
+        assertEquals(0, p.verifySec)
+    }
+
+    @Test
+    fun searchThenTwoMarks_secondIntervalIsVerify() {
+        // з1 → о1 — SEARCH, о1 → о2 — VERIFY.
         val p = OrderWorkTracker.computePhases(
             listOf(
                 OrderWorkTracker.Action(at = t0, isMark = false),
@@ -55,9 +67,58 @@ class OrderWorkTrackerTest {
                 OrderWorkTracker.Action(at = t0 + 20_000L, isMark = true)
             )
         )
-        // A1->A2 в поиске: +10s search. A2->A3 в сверке: +10s verify.
         assertEquals(10, p.searchSec)
         assertEquals(10, p.verifySec)
+    }
+
+    @Test
+    fun markThenSearch_markIntervalIsVerify() {
+        // о1 → з2 — VERIFY (интервал начался с отметки).
+        val p = OrderWorkTracker.computePhases(
+            listOf(
+                OrderWorkTracker.Action(at = t0, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 15_000L, isMark = false)
+            )
+        )
+        assertEquals(0, p.searchSec)
+        assertEquals(15, p.verifySec)
+    }
+
+    @Test
+    fun seriesOfMarks_allVerify() {
+        // о1 → о2 → о3 → о4 — всё VERIFY.
+        val p = OrderWorkTracker.computePhases(
+            listOf(
+                OrderWorkTracker.Action(at = t0, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 10_000L, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 20_000L, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 30_000L, isMark = true)
+            )
+        )
+        assertEquals(0, p.searchSec)
+        assertEquals(30, p.verifySec)
+    }
+
+    @Test
+    fun mixedWork_searchMarkMarkSearchMark() {
+        // з1 → з2 → о1 → о2 → з3 → о3
+        //  з1→з2: SEARCH 10s
+        //  з2→о1: SEARCH 10s
+        //  о1→о2: VERIFY 10s
+        //  о2→з3: VERIFY 10s
+        //  з3→о3: SEARCH 10s
+        val p = OrderWorkTracker.computePhases(
+            listOf(
+                OrderWorkTracker.Action(at = t0, isMark = false),
+                OrderWorkTracker.Action(at = t0 + 10_000L, isMark = false),
+                OrderWorkTracker.Action(at = t0 + 20_000L, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 30_000L, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 40_000L, isMark = false),
+                OrderWorkTracker.Action(at = t0 + 50_000L, isMark = true)
+            )
+        )
+        assertEquals(30, p.searchSec)
+        assertEquals(20, p.verifySec)
     }
 
     @Test
@@ -68,47 +129,20 @@ class OrderWorkTrackerTest {
                 OrderWorkTracker.Action(at = t0 + 120_000L, isMark = false)
             )
         )
-        // gap 120s ≥60s → никуда не идёт.
         assertEquals(0, p.searchSec)
         assertEquals(0, p.verifySec)
     }
 
     @Test
-    fun verifyThenFiveNonMarks_returnToSearch() {
-        // A1 mark (t0), затем 4 non-mark (по 10s), затем — 5-й non-mark.
-        // Порог 5: после 5-го non-mark фаза → поиск.
-        val actions = mutableListOf<OrderWorkTracker.Action>()
-        actions.add(OrderWorkTracker.Action(at = t0, isMark = true))
-        for (i in 1..4) {
-            actions.add(OrderWorkTracker.Action(at = t0 + 10_000L * i, isMark = false))
-        }
-        // К этому моменту 4 non-mark, ещё в сверке.
-        // Ещё один non-mark — 5-й.
-        actions.add(OrderWorkTracker.Action(at = t0 + 50_000L, isMark = false))
-
-        val p = OrderWorkTracker.computePhases(actions)
-        // A1->A2: в сверке (10s verify). A2->A3: verify. A3->A4: verify.
-        // A4->A5: verify. A5->A6: всё ещё verify (переключение после).
-        // Итого: 50 сек verify.
+    fun largeGapBetweenMarks_notCounted() {
+        val p = OrderWorkTracker.computePhases(
+            listOf(
+                OrderWorkTracker.Action(at = t0, isMark = true),
+                OrderWorkTracker.Action(at = t0 + 120_000L, isMark = true)
+            )
+        )
         assertEquals(0, p.searchSec)
-        assertEquals(50, p.verifySec)
-    }
-
-    @Test
-    fun verifyThenSixNonMarks_afterReturnSixthGoesToSearch() {
-        // A1 mark. Затем 5 non-mark по 10s.
-        // После 5-го — фаза поиск. Дельта A5->A6 — уже в поиске,
-        // но следующего действия нет, поэтому в поиск ничего не идёт.
-        val actions = mutableListOf<OrderWorkTracker.Action>()
-        actions.add(OrderWorkTracker.Action(at = t0, isMark = true))
-        for (i in 1..5) {
-            actions.add(OrderWorkTracker.Action(at = t0 + 10_000L * i, isMark = false))
-        }
-
-        val p = OrderWorkTracker.computePhases(actions)
-        // A1->A2..A5->A6 — все в verify: 5 шагов * 10s = 50s verify.
-        assertEquals(0, p.searchSec)
-        assertEquals(50, p.verifySec)
+        assertEquals(0, p.verifySec)
     }
 
     @Test

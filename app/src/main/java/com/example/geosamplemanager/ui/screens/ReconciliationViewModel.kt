@@ -297,12 +297,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     /**
      * FIX 5.9-logs-8a:
      * Выбор наряда логируется с контекстом участка.
+     *
+     * FIX 5.10-stat-activity-b-2:
+     * Выбор наряда из dropdown — тоже событие поиска. Правила
+     * времени общие с голосом и ручным вводом.
      */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
         val info = resolveOrderInfo(orderTitle)
         if (info != null) {
-            viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
+            viewModelScope.launch {
+                ensureOrderSamplesLoaded(info.orderId)
+                notifyOrderSearch(info.orderId, info.areaTitle, info.orderTitle)
+            }
         } else if (orderTitle != null) {
             Log.w(TAG, "setSelectedOrder: нет orderInfo для «$orderTitle»")
         }
@@ -440,6 +447,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         is QueryToken.Unknown -> t.raw
     }
 
+    /**
+     * FIX 5.10-stat-activity-b-2:
+     * Ручной поиск одного запроса — событие наряда.
+     *
+     * Если попадание многозначное — оператор ещё не выбрал наряд,
+     * трекер не трогаем. Если уникальное — грузим группу и зовём
+     * OrderWorkTracker.onSearch через notifyOrderSearch.
+     *
+     * Это делает ручной ввод равноправным с голосом. Правила
+     * накопления времени — общие (OrderWorkTracker).
+     */
     private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
         try {
             val groups: List<DigitGroup> = DigitGrouper.group(tokens)
@@ -455,8 +473,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (result !is SearchResult.Found) return
 
-            result.hits.map { it.orderId }.distinct().take(MAX_SEARCH_ORDERS)
-                .forEach { ensureOrderSamplesLoaded(it) }
+            if (result.isUnique) {
+                val hit = result.hits.first()
+                ensureOrderSamplesLoaded(hit.orderId)
+
+                // FIX 5.10-stat-activity-b-2: ручной поиск — событие наряда.
+                notifyOrderSearch(
+                    orderId = hit.orderId,
+                    areaTitle = hit.areaTitle,
+                    orderTitle = "Наряд №${hit.orderNumber}"
+                )
+            } else {
+                result.hits.map { it.orderId }.distinct().take(MAX_SEARCH_ORDERS)
+                    .forEach { ensureOrderSamplesLoaded(it) }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -464,6 +494,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.10-stat-activity-b-2:
+     * Ручной множественный поиск — каждое попадание = событие наряда.
+     * Учитываем первый orderId в каждом токене (совпадает с
+     * «первым показанным» в UI). Остальные в этом же токене — это
+     * альтернативы, оператор их не выбрал.
+     */
     private suspend fun buildMultiQueryGroups(tokens: List<String>) {
         try {
             val settings = withContext(Dispatchers.IO) { settingsRepo.load() }
@@ -474,6 +511,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     resolveTokenToOrderIds(token, settings)
                 }
                 orderIds.forEach { ensureOrderSamplesLoaded(it) }
+
+                // FIX 5.10-stat-activity-b-2: ручной множественный
+                // поиск — событие наряда по первому orderId токена.
+                orderIds.firstOrNull()?.let { orderId ->
+                    val info = orderInfoById[orderId]
+                    if (info != null) {
+                        notifyOrderSearch(orderId, info.areaTitle, info.orderTitle)
+                    }
+                }
 
                 val variants = orderIds.mapNotNull { orderId ->
                     val info = orderInfoById[orderId] ?: return@mapNotNull null
@@ -2661,9 +2707,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     /**
      * FIX 5.9-main-a:
      * Применить одноразовый запрос «открыть Сверку с нарядом X»,
-     * который сохранила Главная. Если запрос есть — выбрать участок
-     * и наряд. ReconciliationState.selectedArea/selectedOrder —
-     * это и есть «открытая вкладка Сверка с конкретным нарядом».
+     * который сохранила Главная.
+     *
+     * FIX 5.10-stat-activity-b-2: setSelectedOrder зовёт
+     * notifyOrderSearch, так что переход с Главной тоже учитывается.
      */
     private fun applyPendingSearchRequest() {
         val app = getApplication<Application>() as GeoSampleApp
@@ -2691,9 +2738,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     // ================================================================
 
     /**
-     * Событие поиска — «упоминание наряда». Зовётся из voiceSearch
-     * и voiceNextInQueue после того, как группа наряда загружена
-     * в state.
+     * Событие поиска — «упоминание наряда».
+     *
+     * Вызывается из всех путей, где оператор получил попадание
+     * по наряду:
+     *  - голосовой поиск (voiceSearch);
+     *  - переход по очереди (voiceNextInQueue);
+     *  - ручной ввод одного запроса (loadGroupsForQueryNew);
+     *  - ручной ввод нескольких запросов (buildMultiQueryGroups);
+     *  - выбор наряда из dropdown (setSelectedOrder);
+     *  - переход с Главной (applyPendingSearchRequest → setSelectedOrder).
+     *
+     * Правила накопления времени — те же, что для onMark
+     * (OrderWorkTracker.accumulateCurrentPhase).
      */
     private fun notifyOrderSearch(
         orderId: Long,

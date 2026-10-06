@@ -22,10 +22,17 @@
 - ✅ `5.10-stat-tabs` — визиты вкладок (`TabVisitTracker`).
 - ✅ `5.10-stat-errors-a` — правила авто-повышения (`AutoWarnRules`).
 - ✅ `5.10-stat-errors-b` — интеграция авто-повышения в `voiceSearch` и `LogWriter`.
+- ✅ `5.10-stat-admin-ui-1` — модель и агрегаты админ-панели.
+- ✅ `5.10-stat-admin-ui-2` — UI экрана админа.
+- ✅ `5.10-stat-admin-ui-3` — интеграция (долгий тап в Настройках).
+- ✅ `5.10-stat-admin-ui-4` — выбор дня.
+- ✅ `5.10-stat-admin-ui-5a` — блок «Незавершённые».
+- 🟡 `5.10-stat-activity-b-2` — фазы наряда v2 (последнее событие). В работе.
 
 **Осталось в 5.10:**
-- `5.10-stat-admin-ui` — экран админа.
-- `5.10-stat-daily-file` — `.stats/*.json`, ротация, удаление `logs.db`.
+- `5.10-stat-admin-ui-5a-2` — агрегация дублей «Незавершённые» по `orderId`.
+- `5.10-stat-admin-ui-5b` — кнопка «Проверить БД» (ProblemsView).
+- `5.10-stat-daily-file-1` / `-2` — экспорт и ротация.
 - `5.10-pr` — PR фичи в `main`.
 
 **Архив (не удалять):**
@@ -71,9 +78,12 @@
   `AnimatedContent` ломает Compose Runtime при вложенности:
   `ArrayIndexOutOfBoundsException` в `SlotTableKt.key`. Внутренний
   экран — `Box` + `Column`, `SnackbarHost` вручную.
-- **`return@Column` в Compose — нестабильно.** Заменять на `when` /
-  `if-else`. Количество вызовов между рекомпозициями должно быть
-  стабильным.
+- **`return@Column` в Composable-лямбде — нельзя.** Падает с
+  `IndexOutOfBoundsException: Index -1 out of bounds for length 0`
+  в `androidx.compose.runtime.Stack.pop`. Composer не может
+  закрыть группу. Заменять на `when` / `if-else` с двумя
+  полными ветками. `return` из **самой** Composable-функции
+  (до первого `@Composable`-вызова) — безопасен.
 - **KDoc и `/*`.** Внутри `/**…*/` нельзя `/*` — ломает парсер.
   Ссылки на glob-паттерны писать без звёздочки: «папка assets/help»,
   не «assets/help/*.md».
@@ -113,13 +123,19 @@
   `daily_summary`. Все дочерние — FK на `sessions.id` с CASCADE.
 - **`SessionTracker.onAppStart`** открывает новую сессию; висящая
   закрывается как `crash`.
-- **`OrderWorkTracker`** держит один активный наряд в памяти;
-  время фазы копится **на каждом событии** (не только при смене).
+- **`OrderWorkTracker`** держит один активный наряд в памяти.
+  **Модель фаз «последнее событие»:** поиск → SEARCH,
+  отметка → VERIFY. Каждый интервал идёт в ту фазу, которой
+  начался. Пауза ≥ 60 сек в фазу не идёт; ≥ 30 мин — закрывает
+  наряд.
 - **`TabVisitTracker`** закрывает предыдущий визит при смене
   вкладки; `Mutex` защищает от гонок.
 - **`AutoWarnRules`:** 5+ неудачных поисков подряд, 3+ одинаковых
   ошибки подряд; `reset()` при старте сессии.
 - **`LogWriter.flush`** → `stats.db.events` (batch) + `AutoWarnRules.onError`.
+- **Админ-панель:** вход — долгий тап на версии в «О приложении»;
+  выбор дня — dropdown (список из `sessions`); блок «Незавершённые»
+  на экране; блок «Требует внимания» — заглушка (нули).
 
 ### Настройки (5.9-settings)
 - **`AppearanceSettings`** — `scale` + `theme`. Хранится в
