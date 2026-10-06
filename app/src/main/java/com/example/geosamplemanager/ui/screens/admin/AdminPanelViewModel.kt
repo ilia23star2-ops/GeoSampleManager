@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.diagnostics.DbIssue
 import com.example.geosamplemanager.data.stats.EventCategory
 import com.example.geosamplemanager.data.stats.StatsDatabase
 import kotlinx.coroutines.CancellationException
@@ -21,11 +22,12 @@ import kotlinx.coroutines.withContext
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  * FIX 5.10-stat-admin-v2-details-a: openVisit.
+ * FIX 5.10-stat-admin-v2-details-c: openEvent, фильтр категорий.
  *
- * FIX 5.10-stat-admin-v2-details-c:
- *  - openEvent(sessionId, atTs);
- *  - eventsFilterCategory — фильтр по категории на табе «Ошибки»;
- *  - goBack из EventDetail возвращает на таб «Ошибки».
+ * FIX 5.10-stat-daily-file-1:
+ *  - exportDay() — экспорт дня в filesDir/stats/exports/;
+ *  - диагностика запускается перед экспортом (У5=В);
+ *  - _exportMessage + clearExportMessage для UI-подсказки.
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -61,6 +63,9 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     private val _eventsFilterCategory = MutableStateFlow<EventCategory?>(null)
     val eventsFilterCategory: StateFlow<EventCategory?> = _eventsFilterCategory.asStateFlow()
 
+    private val _exportMessage = MutableStateFlow<String?>(null)
+    val exportMessage: StateFlow<String?> = _exportMessage.asStateFlow()
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
@@ -75,6 +80,10 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearMessage() {
         _message.value = null
+    }
+
+    fun clearExportMessage() {
+        _exportMessage.value = null
     }
 
     // ============================================================
@@ -96,10 +105,6 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         _route.value = AdminPanelRoute.VisitDetail(sessionId, fromTs)
     }
 
-    /**
-     * FIX 5.10-stat-admin-v2-details-c:
-     * Открыть событие в контексте ±2 мин. Источник — таб «Ошибки».
-     */
     fun openEvent(sessionId: Long, atTs: Long) {
         _route.value = AdminPanelRoute.EventDetail(sessionId, atTs)
     }
@@ -192,12 +197,67 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // ============================================================
-    // Ошибки (FIX 5.10-stat-admin-v2-details-c)
+    // Ошибки
     // ============================================================
 
     /** null — все категории. */
     fun setEventsFilterCategory(category: EventCategory?) {
         _eventsFilterCategory.value = category
+    }
+
+    // ============================================================
+    // Экспорт дня (FIX 5.10-stat-daily-file-1)
+    // ============================================================
+
+    /**
+     * Экспорт текущего дня в filesDir/stats/exports/YYYY-MM-DD.json.
+     * Перед экспортом запускает диагностику БД, чтобы блок
+     * db_problems в JSON содержал реальные счётчики (У5=В).
+     */
+    fun exportDay() {
+        viewModelScope.launch {
+            try {
+                val dv = _dayView.value
+                if (dv == null) {
+                    _exportMessage.value = "Данные дня не загружены"
+                    return@launch
+                }
+
+                val app = getApplication<Application>() as GeoSampleApp
+                val repo = app.repository
+
+                val problems = withContext(Dispatchers.IO) {
+                    val issues = repo.runDiagnostics()
+                    var orphanOrders = 0
+                    var orphanSamples = 0
+                    var brokenPhotos = 0
+                    for (i in issues) {
+                        when (i) {
+                            is DbIssue.OrphanOrder -> orphanOrders++
+                            is DbIssue.OrphanSample -> orphanSamples++
+                            is DbIssue.BrokenPhotoLink,
+                            is DbIssue.PhotoFlagMismatch -> brokenPhotos++
+                        }
+                    }
+                    ProblemsView(
+                        orphanOrders = orphanOrders,
+                        orphanSamples = orphanSamples,
+                        brokenPhotos = brokenPhotos
+                    )
+                }
+
+                val file = StatsExporter.export(app, dv, problems)
+                _exportMessage.value = if (file != null) {
+                    "Экспорт сохранён: ${file.name}"
+                } else {
+                    "Не удалось сохранить экспорт"
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _exportMessage.value = "Ошибка экспорта: ${e.message}"
+            }
+        }
     }
 
     private suspend fun refreshAvailableDates(today: String) {

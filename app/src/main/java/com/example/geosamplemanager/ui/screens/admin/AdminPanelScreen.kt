@@ -1,5 +1,6 @@
 package com.example.geosamplemanager.ui.screens.admin
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,11 +11,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -28,10 +31,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  * FIX 5.10-stat-admin-v2-details-a: провалы.
+ * FIX 5.10-stat-admin-v2-details-c: таб «Ошибки» + EventDetail.
  *
- * FIX 5.10-stat-admin-v2-details-c:
- *  - таб «Ошибки» подключает ErrorsTab;
- *  - EventDetail подключает EventDetailScreen.
+ * FIX 5.10-stat-daily-file-1:
+ *  - кнопка «Экспорт дня» (Icons.Default.Share) в TopAppBar;
+ *  - Toast по завершении экспорта.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +43,8 @@ fun AdminPanelScreen(
     onClose: () -> Unit,
     viewModel: AdminPanelViewModel = viewModel()
 ) {
+    val context = LocalContext.current
+
     val dayView by viewModel.dayView.collectAsState()
     val availableDates by viewModel.availableDates.collectAsState()
     val selectedDate by viewModel.selectedDate.collectAsState()
@@ -49,10 +55,18 @@ fun AdminPanelScreen(
     val allOrders by viewModel.allOrders.collectAsState()
     val ordersFilterInput by viewModel.ordersFilterInput.collectAsState()
     val eventsFilterCategory by viewModel.eventsFilterCategory.collectAsState()
+    val exportMessage by viewModel.exportMessage.collectAsState()
 
     var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
     LaunchedEffect(Unit) { viewModel.loadToday() }
+
+    LaunchedEffect(exportMessage) {
+        exportMessage?.let {
+            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            viewModel.clearExportMessage()
+        }
+    }
 
     BackHandler(enabled = viewModel.canGoBack()) {
         viewModel.goBack()
@@ -72,6 +86,9 @@ fun AdminPanelScreen(
                 }
             },
             actions = {
+                IconButton(onClick = { viewModel.exportDay() }) {
+                    Icon(Icons.Default.Share, contentDescription = "Экспорт дня")
+                }
                 IconButton(onClick = { viewModel.loadToday() }) {
                     Icon(Icons.Default.Refresh, contentDescription = "Обновить")
                 }
