@@ -17,10 +17,11 @@ import com.example.geosamplemanager.data.stats.TabVisitEntity
  * FIX 5.10-stat-admin-ui-1: агрегация дня.
  * FIX 5.10-stat-admin-ui-5a: незавершённые.
  * FIX 5.10-stat-admin-v2-nav: timeline-сегменты.
+ * FIX 5.10-stat-admin-v2-orders-a: список нарядов.
  *
- * FIX 5.10-stat-admin-v2-orders-a:
- *  - buildOrdersSummary — список всех нарядов из основной БД
- *    с прогрессом и временем из order_work.
+ * FIX 5.10-stat-admin-v2-details-b:
+ *  - EventView.sessionId заполняется при сборке дня;
+ *  - computeEventsAround — окно событий вокруг выбранного.
  */
 object AdminPanelAggregator {
 
@@ -73,6 +74,7 @@ object AdminPanelAggregator {
         val unfinished = computeUnfinishedOrders(sessionViews)
         val eventViews = events.map { e ->
             EventView(
+                sessionId = e.sessionId,
                 atTs = e.atTs,
                 level = EventLevel.fromCode(e.level),
                 category = EventCategory.fromCode(e.category) ?: EventCategory.APP,
@@ -93,113 +95,46 @@ object AdminPanelAggregator {
     }
 
     /**
-     * FIX 5.10-stat-admin-v2-orders-a:
-     * Список всех нарядов с прогрессом и временем.
+     * FIX 5.10-stat-admin-v2-details-b:
+     * Окно событий вокруг выбранного. Все события в интервале
+     * [centerAtTs - windowMs, centerAtTs + windowMs] из любой сессии
+     * дня, отсортированные по atTs. Центр — событие с atTs,
+     * максимально близким к centerAtTs (обычно self).
      *
-     * Вход:
-     *  - areas — все участки (для areaTitle);
-     *  - orders — все наряды (основная БД);
-     *  - countsByOrder — счётчики проб по order_id (может быть
-     *    неполным: нет записей для нарядов без проб);
-     *  - workByOrder — все записи order_work за всё время, уже
-     *    сгруппированные по order_id.
-     *
-     * Сортировка: created_date убыв (свежие сверху).
-     *
-     * Статус:
-     *  - NOT_STARTED — нет order_work и found = 0;
-     *  - DONE — found == total (и total > 0);
-     *  - IN_PROGRESS — во всех остальных случаях.
-     *
-     * Время:
-     *  - searchSec / verifySec — суммы по всем order_work;
-     *  - null, если ни одной записи order_work нет.
+     * Если centerAtTs не найден среди events (например, событие
+     * отфильтровано) — centerIndex = -1, но окно всё равно вернём.
      */
-    fun buildOrdersSummary(
-        areas: List<AreaEntity>,
-        orders: List<OrderEntity>,
-        countsByOrder: List<OrderSampleCounts>,
-        workByOrder: Map<Long, List<OrderWorkEntity>>,
-        limit: Int = 30
-    ): List<AdminOrderSummary> {
-        if (orders.isEmpty()) return emptyList()
-
-        val areaById = areas.associateBy { it.id }
-        val countsByOrderId = countsByOrder.associateBy { it.orderId }
-
-        val result = orders.map { order ->
-            val area = areaById[order.areaId]
-            val counts = countsByOrderId[order.id]
-            val total = counts?.totalSamples ?: 0
-            val found = counts?.foundSamples ?: 0
-            val work = workByOrder[order.id].orEmpty()
-
-            val search: Int? = if (work.isEmpty()) null
-            else work.sumOf { it.searchSec }
-            val verify: Int? = if (work.isEmpty()) null
-            else work.sumOf { it.verifySec }
-
-            val status = classifyOrderStatus(
-                totalSamples = total,
-                foundSamples = found,
-                hasWork = work.isNotEmpty()
-            )
-
-            AdminOrderSummary(
-                orderId = order.id,
-                areaTitle = area?.areaName ?: "—",
-                orderTitle = "Наряд №${order.orderNumber}",
-                createdDate = order.createdDate,
-                totalSamples = total,
-                foundSamples = found,
-                status = status,
-                searchSec = search,
-                verifySec = verify
+    fun computeEventsAround(
+        events: List<EventView>,
+        centerAtTs: Long,
+        centerSessionId: Long,
+        windowMs: Long
+    ): EventsAroundView {
+        if (events.isEmpty()) {
+            return EventsAroundView(
+                centerAtTs = centerAtTs,
+                centerSessionId = centerSessionId,
+                events = emptyList(),
+                centerIndex = -1
             )
         }
+        val lo = centerAtTs - windowMs
+        val hi = centerAtTs + windowMs
+        val filtered = events
+            .filter { it.atTs in lo..hi }
+            .sortedBy { it.atTs }
 
-        return result
-            .sortedByDescending { it.createdDate }
-            .take(limit.coerceAtLeast(1))
+        val centerIndex = filtered.indexOfFirst { it.atTs == centerAtTs }
+
+        return EventsAroundView(
+            centerAtTs = centerAtTs,
+            centerSessionId = centerSessionId,
+            events = filtered,
+            centerIndex = centerIndex
+        )
     }
 
     /**
-     * FIX 5.10-stat-admin-v2-orders-a:
-     * Статус наряда. Правила — в KDoc buildOrdersSummary.
-     */
-    fun classifyOrderStatus(
-        totalSamples: Int,
-        foundSamples: Int,
-        hasWork: Boolean
-    ): AdminOrderStatus {
-        if (totalSamples > 0 && foundSamples >= totalSamples) {
-            return AdminOrderStatus.DONE
-        }
-        if (hasWork || foundSamples > 0) {
-            return AdminOrderStatus.IN_PROGRESS
-        }
-        return AdminOrderStatus.NOT_STARTED
-    }
-
-    /**
-     * Фильтр по строке: участок / название наряда / orderId.
-     * Пустой query — вернуть всё. Регистр не важен.
-     */
-    fun filterOrders(
-        orders: List<AdminOrderSummary>,
-        query: String?
-    ): List<AdminOrderSummary> {
-        val q = query?.trim()?.lowercase()
-        if (q.isNullOrEmpty()) return orders
-        return orders.filter { o ->
-            o.areaTitle.lowercase().contains(q) ||
-                    o.orderTitle.lowercase().contains(q) ||
-                    o.orderId.toString() == q
-        }
-    }
-
-    /**
-     * FIX 5.10-stat-admin-v2-nav:
      * Сессии дня как сегменты таймлайна.
      */
     fun computeTimelineSegments(
@@ -279,6 +214,81 @@ object AdminPanelAggregator {
                     percent = (sec * 100) / total
                 )
             }
+    }
+
+    fun buildOrdersSummary(
+        areas: List<AreaEntity>,
+        orders: List<OrderEntity>,
+        countsByOrder: List<OrderSampleCounts>,
+        workByOrder: Map<Long, List<OrderWorkEntity>>,
+        limit: Int = 30
+    ): List<AdminOrderSummary> {
+        if (orders.isEmpty()) return emptyList()
+
+        val areaById = areas.associateBy { it.id }
+        val countsByOrderId = countsByOrder.associateBy { it.orderId }
+
+        val result = orders.map { order ->
+            val area = areaById[order.areaId]
+            val counts = countsByOrderId[order.id]
+            val total = counts?.totalSamples ?: 0
+            val found = counts?.foundSamples ?: 0
+            val work = workByOrder[order.id].orEmpty()
+
+            val search: Int? = if (work.isEmpty()) null
+            else work.sumOf { it.searchSec }
+            val verify: Int? = if (work.isEmpty()) null
+            else work.sumOf { it.verifySec }
+
+            val status = classifyOrderStatus(
+                totalSamples = total,
+                foundSamples = found,
+                hasWork = work.isNotEmpty()
+            )
+
+            AdminOrderSummary(
+                orderId = order.id,
+                areaTitle = area?.areaName ?: "—",
+                orderTitle = "Наряд №${order.orderNumber}",
+                createdDate = order.createdDate,
+                totalSamples = total,
+                foundSamples = found,
+                status = status,
+                searchSec = search,
+                verifySec = verify
+            )
+        }
+
+        return result
+            .sortedByDescending { it.createdDate }
+            .take(limit.coerceAtLeast(1))
+    }
+
+    fun classifyOrderStatus(
+        totalSamples: Int,
+        foundSamples: Int,
+        hasWork: Boolean
+    ): AdminOrderStatus {
+        if (totalSamples > 0 && foundSamples >= totalSamples) {
+            return AdminOrderStatus.DONE
+        }
+        if (hasWork || foundSamples > 0) {
+            return AdminOrderStatus.IN_PROGRESS
+        }
+        return AdminOrderStatus.NOT_STARTED
+    }
+
+    fun filterOrders(
+        orders: List<AdminOrderSummary>,
+        query: String?
+    ): List<AdminOrderSummary> {
+        val q = query?.trim()?.lowercase()
+        if (q.isNullOrEmpty()) return orders
+        return orders.filter { o ->
+            o.areaTitle.lowercase().contains(q) ||
+                    o.orderTitle.lowercase().contains(q) ||
+                    o.orderId.toString() == q
+        }
     }
 
     fun formatDuration(sec: Int): String {

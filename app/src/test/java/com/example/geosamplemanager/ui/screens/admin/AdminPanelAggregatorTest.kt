@@ -21,6 +21,7 @@ import org.junit.Test
  * FIX 5.10-stat-admin-ui-5a: незавершённые.
  * FIX 5.10-stat-admin-v2-nav: timeline-сегменты.
  * FIX 5.10-stat-admin-v2-orders-a: список нарядов, статус, фильтр.
+ * FIX 5.10-stat-admin-v2-details-b: окно событий вокруг центра.
  */
 class AdminPanelAggregatorTest {
 
@@ -258,6 +259,7 @@ class AdminPanelAggregatorTest {
         assertEquals(1, v.events.size)
         assertEquals(EventLevel.INFO, v.events[0].level)
         assertEquals(EventCategory.APP, v.events[0].category)
+        assertEquals(1L, v.events[0].sessionId)
     }
 
     @Test
@@ -386,7 +388,7 @@ class AdminPanelAggregatorTest {
     }
 
     // ============================================================
-    // classifyOrderStatus (FIX 5.10-stat-admin-v2-orders-a)
+    // classifyOrderStatus
     // ============================================================
 
     @Test
@@ -450,7 +452,7 @@ class AdminPanelAggregatorTest {
     }
 
     // ============================================================
-    // buildOrdersSummary (FIX 5.10-stat-admin-v2-orders-a)
+    // buildOrdersSummary
     // ============================================================
 
     private fun area(id: Long, name: String) =
@@ -522,7 +524,7 @@ class AdminPanelAggregatorTest {
         assertEquals(30, r[0].searchSec)
         assertEquals(60, r[0].verifySec)
         assertEquals(90, r[0].totalSec)
-        assertEquals(46, r[0].percent)  // 7/15 = 46
+        assertEquals(46, r[0].percent)
     }
 
     @Test
@@ -556,8 +558,8 @@ class AdminPanelAggregatorTest {
         )
         assertEquals(1, r.size)
         assertEquals(AdminOrderStatus.DONE, r[0].status)
-        assertEquals(40, r[0].searchSec)   // 30 + 10
-        assertEquals(80, r[0].verifySec)   // 60 + 20
+        assertEquals(40, r[0].searchSec)
+        assertEquals(80, r[0].verifySec)
         assertEquals(100, r[0].percent)
     }
 
@@ -604,7 +606,7 @@ class AdminPanelAggregatorTest {
     }
 
     // ============================================================
-    // filterOrders (FIX 5.10-stat-admin-v2-orders-a)
+    // filterOrders
     // ============================================================
 
     @Test
@@ -657,5 +659,115 @@ class AdminPanelAggregatorTest {
         val r = AdminPanelAggregator.filterOrders(list, "200")
         assertEquals(1, r.size)
         assertEquals(200L, r[0].orderId)
+    }
+
+    // ============================================================
+    // computeEventsAround (FIX 5.10-stat-admin-v2-details-b)
+    // ============================================================
+
+    private fun eventView(sessionId: Long, atTs: Long, summary: String) =
+        EventView(
+            sessionId = sessionId,
+            atTs = atTs,
+            level = EventLevel.INFO,
+            category = EventCategory.APP,
+            summary = summary,
+            detailsJson = null
+        )
+
+    @Test
+    fun eventsAround_empty_returnsEmpty() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = emptyList(),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 1000
+        )
+        assertTrue(r.events.isEmpty())
+        assertEquals(-1, r.centerIndex)
+        assertEquals(1000L, r.centerAtTs)
+        assertEquals(1L, r.centerSessionId)
+    }
+
+    @Test
+    fun eventsAround_centerOnly() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = listOf(eventView(1, 1000, "center")),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 1000
+        )
+        assertEquals(1, r.events.size)
+        assertEquals(0, r.centerIndex)
+    }
+
+    @Test
+    fun eventsAround_windowExcludesFarEvents() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = listOf(
+                eventView(1, 100, "far before"),
+                eventView(1, 1000, "center"),
+                eventView(1, 5000, "far after")
+            ),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 500
+        )
+        assertEquals(1, r.events.size)
+        assertEquals("center", r.events[0].summary)
+        assertEquals(0, r.centerIndex)
+    }
+
+    @Test
+    fun eventsAround_windowIncludesNear() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = listOf(
+                eventView(1, 600, "before"),
+                eventView(1, 1000, "center"),
+                eventView(1, 1400, "after")
+            ),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 500
+        )
+        assertEquals(3, r.events.size)
+        assertEquals("before", r.events[0].summary)
+        assertEquals("center", r.events[1].summary)
+        assertEquals("after", r.events[2].summary)
+        assertEquals(1, r.centerIndex)
+    }
+
+    @Test
+    fun eventsAround_centerNotFound_indexMinusOne() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = listOf(
+                eventView(1, 900, "a"),
+                eventView(1, 1100, "b")
+            ),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 500
+        )
+        assertEquals(2, r.events.size)
+        assertEquals(-1, r.centerIndex)
+    }
+
+    @Test
+    fun eventsAround_sortedByAtTs() {
+        val r = AdminPanelAggregator.computeEventsAround(
+            events = listOf(
+                eventView(1, 1400, "third"),
+                eventView(1, 600, "first"),
+                eventView(1, 1000, "second")
+            ),
+            centerAtTs = 1000,
+            centerSessionId = 1,
+            windowMs = 500
+        )
+        assertEquals(3, r.events.size)
+        assertEquals("first", r.events[0].summary)
+        assertEquals("second", r.events[1].summary)
+        assertEquals("third", r.events[2].summary)
+        assertEquals(1, r.centerIndex)
     }
 }
