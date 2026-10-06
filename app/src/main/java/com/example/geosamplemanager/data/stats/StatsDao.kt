@@ -13,6 +13,10 @@ import androidx.room.Update
  * FIX 5.10-stat-activity-a:
  *  - @Transaction на insertEvents: одна транзакция на весь
  *    батч вместо N отдельных fsync-записей.
+ *
+ * FIX 5.10-stat-activity-b:
+ *  - getOrderWorkById — трекеру нужен доступ к строке order_work
+ *    по id, чтобы обновлять её после insert.
  */
 @Dao
 interface StatsDao {
@@ -72,6 +76,13 @@ interface StatsDao {
 
     @Update
     suspend fun updateOrderWork(work: OrderWorkEntity)
+
+    /**
+     * FIX 5.10-stat-activity-b: трекеру нужен доступ к строке
+     * order_work по id, чтобы обновлять её после insert.
+     */
+    @Query("SELECT * FROM order_work WHERE id = :id")
+    suspend fun getOrderWorkById(id: Long): OrderWorkEntity?
 
     @Query("SELECT * FROM order_work WHERE session_id = :sessionId ORDER BY started_at")
     suspend fun getOrderWorkForSession(sessionId: Long): List<OrderWorkEntity>

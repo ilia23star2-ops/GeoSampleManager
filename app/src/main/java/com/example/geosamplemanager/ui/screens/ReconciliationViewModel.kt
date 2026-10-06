@@ -15,6 +15,7 @@ import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
 import com.example.geosamplemanager.data.reconciliation.validateWeight
 import com.example.geosamplemanager.data.settings.ImportSettings
+import com.example.geosamplemanager.data.stats.OrderWorkTracker
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.ConfirmedAction
@@ -1240,6 +1241,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         state.query = displayQuery
                     }
 
+                    // FIX 5.10-stat-activity-b: поиск — событие наряда.
+                    notifyOrderSearch(
+                        orderId = hit.orderId,
+                        areaTitle = hit.areaTitle,
+                        orderTitle = "Наряд №${hit.orderNumber}"
+                    )
+
                     VoiceExecResult.FoundOne(
                         query = displayQuery,
                         orderTitle = voiceSession.currentOrderTitle ?: "",
@@ -1342,6 +1350,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 AnswerReason.FOUND_OTHER_ORDER
             else -> null
         }
+
+        // FIX 5.10-stat-activity-b: переход по очереди — событие наряда.
+        notifyOrderSearch(
+            orderId = next.orderId,
+            areaTitle = next.areaTitle,
+            orderTitle = next.orderTitle
+        )
 
         return VoiceExecResult.FoundOne(
             query = next.wellNumber,
@@ -2154,6 +2169,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     .detail("sample", num)
                     .detail("found", found)
                     .write()
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                if (found) notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2172,6 +2189,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("found", value)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                if (value) notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2193,6 +2212,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("control_weight", weight)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2224,6 +2245,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("blank_weight", weight)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2352,6 +2375,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .detail("group", groupId)
                 .detail("order", orderTitle)
                 .write()
+            // FIX 5.10-stat-activity-b: массовая отметка — событие наряда.
+            groupId.toLongOrNull()?.let { notifyOrderMarkByOrderId(it) }
         }
         return marked
     }
@@ -2376,6 +2401,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .detail("order", orderTitle)
                 .detail("rows", rowIds.size)
                 .write()
+            // FIX 5.10-stat-activity-b: массовая отметка — событие наряда.
+            groupId.toLongOrNull()?.let { notifyOrderMarkByOrderId(it) }
         }
         return marked
     }
@@ -2642,5 +2669,55 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
+    }
+
+    // ================================================================
+    // FIX 5.10-stat-activity-b: трекинг фаз наряда.
+    // ================================================================
+
+    /**
+     * Событие поиска — «упоминание наряда». Зовётся из voiceSearch
+     * и voiceNextInQueue после того, как группа наряда загружена
+     * в state.
+     */
+    private fun notifyOrderSearch(
+        orderId: Long,
+        areaTitle: String,
+        orderTitle: String
+    ) {
+        val group = state.groupById(orderId.toString()) ?: return
+        OrderWorkTracker.onSearch(
+            orderId = orderId,
+            areaTitle = areaTitle,
+            orderTitle = orderTitle,
+            totalSamples = group.rows.size,
+            foundSamples = group.rows.count { it.found }
+        )
+    }
+
+    /**
+     * Событие отметки — определяем наряд по строке пробы.
+     * Зовётся после успешного repo.setFound(id, true).
+     */
+    private fun notifyOrderMark(rowId: String) {
+        val row = state.rowById(rowId) ?: return
+        val orderId = row.groupId.toLongOrNull() ?: return
+        notifyOrderMarkByOrderId(orderId)
+    }
+
+    /**
+     * Событие отметки — когда id наряда известен из контекста
+     * (массовые операции).
+     */
+    private fun notifyOrderMarkByOrderId(orderId: Long) {
+        val info = orderInfoById[orderId] ?: return
+        val group = state.groupById(orderId.toString()) ?: return
+        OrderWorkTracker.onMark(
+            orderId = orderId,
+            areaTitle = info.areaTitle,
+            orderTitle = info.orderTitle,
+            totalSamples = group.rows.size,
+            foundSamples = group.rows.count { it.found }
+        )
     }
 }

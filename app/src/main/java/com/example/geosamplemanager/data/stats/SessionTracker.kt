@@ -9,13 +9,12 @@ import kotlinx.coroutines.launch
 
 /**
  * FIX 5.10-stat-session: трекер жизненного цикла сессии.
+ * FIX 5.10-stat-activity-a: active/idle по событиям.
  *
- * FIX 5.10-stat-activity-a:
- *  - при закрытии сессии active/idle пересчитываются по событиям
- *    сессии через ActivityAccumulator;
- *  - fg = время в foreground, active = активное внутри fg,
- *    idle = fg - active;
- *  - bg — отдельно.
+ * FIX 5.10-stat-activity-b:
+ *  - init OrderWorkTracker при старте сессии;
+ *  - bindSession при открытии новой сессии;
+ *  - closeCurrentWork при закрытии сессии.
  */
 object SessionTracker {
 
@@ -32,6 +31,7 @@ object SessionTracker {
     fun init(context: Context) {
         if (appContext != null) return
         appContext = context.applicationContext
+        OrderWorkTracker.init(context)
     }
 
     fun currentId(): Long? = currentSessionId
@@ -78,6 +78,7 @@ object SessionTracker {
                     )
                 )
                 currentSessionId = newId
+                OrderWorkTracker.bindSession(newId)
                 Log.i(TAG, "Сессия открыта id=$newId")
             } catch (e: Exception) {
                 Log.e(TAG, "onAppStart: ошибка", e)
@@ -123,6 +124,9 @@ object SessionTracker {
         val now = System.currentTimeMillis()
 
         accumulator.flush(now)
+
+        // FIX 5.10-stat-activity-b: закрыть открытый order_work.
+        OrderWorkTracker.closeCurrentWork()
 
         try {
             val dao = StatsDatabase.getInstance(ctx).statsDao()
