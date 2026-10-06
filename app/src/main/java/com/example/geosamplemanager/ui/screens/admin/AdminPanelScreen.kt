@@ -22,22 +22,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * Полноэкранный экран админ-панели. Открывается долгим тапом
  * на версии в Настройках → «О приложении».
  *
- * Структура (SHADOW_STATS §7.2–7.6):
- *  - TopAppBar с «Закрыть» и «Обновить»;
- *  - сводка дня;
- *  - timeline по вкладкам;
- *  - список сессий (свёрнуты, тап — раскрывает);
- *  - лента событий;
- *  - блок «Требует внимания».
- *
- * Важно: TopAppBar в Column, без вложенного Scaffold —
- * грабли из CONTEXT_BRIEF.
- *
  * FIX 5.10-stat-admin-ui-3 (уточнение):
  * убран `return@Column` при пустом дне. Compose Runtime падал
- * с `IndexOutOfBoundsException` в `Stack.pop` — Composer не мог
- * закрыть группу. Заменено на `when (dayView)` с двумя полными
- * ветками — Composer видит стабильное число вызовов.
+ * с `IndexOutOfBoundsException` в `Stack.pop`. Заменено на
+ * `when (dayView)` с двумя полными ветками.
+ *
+ * FIX 5.10-stat-admin-ui-4:
+ *  - выбор дня через ExposedDropdownMenuBox под TopAppBar;
+ *  - список доступных дат — из sessions (гибрид);
+ *  - «Обновить» сбрасывает выбор на сегодня.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,6 +39,8 @@ fun AdminPanelScreen(
     viewModel: AdminPanelViewModel = viewModel()
 ) {
     val dayView by viewModel.dayView.collectAsState()
+    val availableDates by viewModel.availableDates.collectAsState()
+    val selectedDate by viewModel.selectedDate.collectAsState()
 
     LaunchedEffect(Unit) { viewModel.loadToday() }
 
@@ -64,6 +59,12 @@ fun AdminPanelScreen(
             }
         )
 
+        DaySelectorRow(
+            dates = availableDates,
+            selected = selectedDate,
+            onSelect = { viewModel.selectDate(it) }
+        )
+
         when (val v = dayView) {
             null -> Box(
                 modifier = Modifier.fillMaxSize(),
@@ -79,7 +80,6 @@ fun AdminPanelScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                DayHeader(date = v.date)
                 TotalsCard(totals = v.totals)
                 if (v.tabUsage.isNotEmpty()) {
                     TabTimelineBar(usage = v.tabUsage)
@@ -106,13 +106,58 @@ fun AdminPanelScreen(
     }
 }
 
+/**
+ * FIX 5.10-stat-admin-ui-4:
+ * Строка выбора дня. Если дат нет или ничего не выбрано —
+ * компонент ничего не показывает. Пока не готовы daily_summary,
+ * список берётся из sessions + «сегодня».
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DayHeader(date: String) {
-    Text(
-        "Дата: $date",
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold
-    )
+private fun DaySelectorRow(
+    dates: List<String>,
+    selected: String?,
+    onSelect: (String) -> Unit
+) {
+    if (dates.isEmpty() || selected == null) return
+
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        OutlinedTextField(
+            value = AdminPanelDateUtils.label(selected),
+            onValueChange = { /* read-only */ },
+            readOnly = true,
+            singleLine = true,
+            label = { Text("Дата") },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor()
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            dates.forEach { d ->
+                DropdownMenuItem(
+                    text = { Text(AdminPanelDateUtils.label(d)) },
+                    onClick = {
+                        expanded = false
+                        onSelect(d)
+                    }
+                )
+            }
+        }
+    }
 }
 
 @Composable
