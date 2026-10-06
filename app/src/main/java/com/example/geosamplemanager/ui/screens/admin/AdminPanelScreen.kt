@@ -19,8 +19,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
  * FIX 5.10-stat-admin-ui-2:
- * Полноэкранный экран админ-панели. Открывается долгим тапом
- * на версии в Настройках → «О приложении».
+ * Полноэкранный экран админ-панели.
  *
  * FIX 5.10-stat-admin-ui-3 (уточнение):
  * убран `return@Column` при пустом дне. Compose Runtime падал
@@ -28,9 +27,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * `when (dayView)` с двумя полными ветками.
  *
  * FIX 5.10-stat-admin-ui-4:
- *  - выбор дня через ExposedDropdownMenuBox под TopAppBar;
- *  - список доступных дат — из sessions (гибрид);
- *  - «Обновить» сбрасывает выбор на сегодня.
+ * выбор дня через ExposedDropdownMenuBox под TopAppBar.
+ *
+ * FIX 5.10-stat-admin-ui-5a:
+ * блок «Незавершённые» (§7.6) между timeline и ProblemsBlock.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,9 +84,10 @@ fun AdminPanelScreen(
                 if (v.tabUsage.isNotEmpty()) {
                     TabTimelineBar(usage = v.tabUsage)
                 }
+                UnfinishedOrdersBlock(orders = v.unfinishedOrders)
                 ProblemsBlock(
                     problems = v.problems,
-                    onOpenDiagnostics = { /* заглушка — реально позже */ }
+                    onOpenDiagnostics = { /* заглушка — реально в -5b */ }
                 )
                 if (v.sessions.isNotEmpty()) {
                     Text(
@@ -108,9 +109,7 @@ fun AdminPanelScreen(
 
 /**
  * FIX 5.10-stat-admin-ui-4:
- * Строка выбора дня. Если дат нет или ничего не выбрано —
- * компонент ничего не показывает. Пока не готовы daily_summary,
- * список берётся из sessions + «сегодня».
+ * Строка выбора дня.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

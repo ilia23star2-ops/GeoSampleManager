@@ -15,16 +15,10 @@ import com.example.geosamplemanager.data.stats.TabVisitEntity
  * Чистая логика агрегации дня для админ-панели. Не зависит от Android
  * и Room — тестируется в JVM.
  *
- * Что делает:
- *  - собирает DayView из сущностей stats.db;
- *  - считает total active/idle и проценты;
- *  - суммирует время по вкладкам;
- *  - форматирует длительности.
- *
- * Что НЕ делает:
- *  - не грузит данные (это AdminPanelViewModel);
- *  - не работает с основной БД (проблемы — отдельный вход);
- *  - не парсит detailsJson (UI сам разберёт по необходимости).
+ * FIX 5.10-stat-admin-ui-5a:
+ *  - DayView.unfinishedOrders — незавершённые наряды (§7.6);
+ *  - сортировка: % found убыв → время последнего действия убыв →
+ *    orderId.
  */
 object AdminPanelAggregator {
 
@@ -74,6 +68,7 @@ object AdminPanelAggregator {
         val allVisits = sessionViews.flatMap { it.visits }
         val tabUsage = computeTabUsage(allVisits)
         val totals = computeTotals(sessions, events, dailySummary)
+        val unfinished = computeUnfinishedOrders(sessionViews)
         val eventViews = events.map { e ->
             EventView(
                 atTs = e.atTs,
@@ -89,9 +84,33 @@ object AdminPanelAggregator {
             sessions = sessionViews,
             totals = totals,
             tabUsage = tabUsage,
+            unfinishedOrders = unfinished,
             events = eventViews,
             problems = problems
         )
+    }
+
+    /**
+     * FIX 5.10-stat-admin-ui-5a:
+     * Незавершённые наряды (§7.6). Собираются со всех сессий дня,
+     * фильтруются по `status != DONE`. Сортировка:
+     *  1. % found убыв (сначала «близкие к завершению»);
+     *  2. время последнего действия убыв (endedAt ?: startedAt);
+     *  3. orderId возрастание (стабильный ключ).
+     *
+     * Дубликаты по orderId не схлопываются: если оператор сегодня
+     * дважды открывал один наряд, будет две строки — это видно
+     * в ленте и полезно.
+     */
+    fun computeUnfinishedOrders(sessions: List<SessionView>): List<OrderWorkView> {
+        return sessions
+            .flatMap { it.orderWorks }
+            .filter { it.status != OrderWorkStatus.DONE }
+            .sortedWith(
+                compareByDescending<OrderWorkView> { it.percent }
+                    .thenByDescending { it.endedAt ?: it.startedAt }
+                    .thenBy { it.orderId }
+            )
     }
 
     /**
