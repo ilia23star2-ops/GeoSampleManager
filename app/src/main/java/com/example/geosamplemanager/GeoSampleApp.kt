@@ -15,6 +15,7 @@ import com.example.geosamplemanager.data.settings.AppearanceSettingsRepository
 import com.example.geosamplemanager.data.settings.SettingsRepository
 import com.example.geosamplemanager.data.stats.SessionTracker
 import com.example.geosamplemanager.data.stats.StatsDatabase
+import com.example.geosamplemanager.data.stats.StatsRotator
 import com.example.geosamplemanager.data.voice.VoiceSettingsRepository
 import com.example.geosamplemanager.data.voice.VoiceTtsHolder
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.vosk.Model
 
 /**
@@ -37,11 +39,12 @@ import org.vosk.Model
  * FIX 5.9-main-b: pendingReportRequest.
  * FIX 5.10-stat-model: statsDatabase (ленивая).
  * FIX 5.10-stat-session: SessionTracker.init/onAppStart.
+ * FIX 5.10-logs-cleanup-b: LogsDbCleanup.cleanupIfNeeded.
  *
- * FIX 5.10-logs-cleanup-b:
- *  - LogsDatabase удалена. В onCreate — LogsDbCleanup.cleanupIfNeeded
- *    (одноразовое удаление файла logs.db при апдейте);
- *  - из onTerminate убран LogsDatabase.closeAndReset().
+ * FIX 5.10-stat-daily-file-2:
+ *  - StatsRotator.checkAndRotate() через runBlocking **до**
+ *    SessionTracker.onAppStart(). Порядок критичен: иначе новая
+ *    сессия уйдёт в active.db, который потом переедет в архив.
  */
 data class RestartRequest(val tick: Int, val route: String)
 
@@ -103,12 +106,20 @@ class GeoSampleApp : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // FIX 5.10-logs-cleanup-b: одноразовое удаление logs.db
-        // при апдейте. Идемпотентно — безопасно при каждом старте.
+        // FIX 5.10-logs-cleanup-b: одноразовое удаление logs.db.
         LogsDbCleanup.cleanupIfNeeded(this)
 
         LogWriter.init(this)
         CrashHandler.install(this)
+
+        // FIX 5.10-stat-daily-file-2: ротация stats.db по месяцам.
+        // runBlocking — чтобы гарантировать завершение до SessionTracker.
+        // Ротация — renam'ы файлов, обычно < 50 мс.
+        try {
+            runBlocking { StatsRotator.checkAndRotate(this@GeoSampleApp) }
+        } catch (e: Exception) {
+            android.util.Log.w("GeoSampleApp", "StatsRotator: ${e.message}")
+        }
 
         repository = DatabaseRepository(this)
         settingsRepository = SettingsRepository(this)
