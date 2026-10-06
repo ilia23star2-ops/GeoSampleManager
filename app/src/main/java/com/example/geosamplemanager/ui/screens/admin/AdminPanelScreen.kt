@@ -20,7 +20,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 /**
  * FIX 5.10-stat-admin-ui-2:
  * Полноэкранный экран админ-панели. Открывается долгим тапом
- * на версии в Настройках → «О приложении» (интеграция — в -3).
+ * на версии в Настройках → «О приложении».
  *
  * Структура (SHADOW_STATS §7.2–7.6):
  *  - TopAppBar с «Закрыть» и «Обновить»;
@@ -30,9 +30,14 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  *  - лента событий;
  *  - блок «Требует внимания».
  *
- * Важно: используется TopAppBar в Column, без вложенного Scaffold.
- * Это грабли из CONTEXT_BRIEF — вложенный Scaffold Material3 ломает
- * Compose Runtime.
+ * Важно: TopAppBar в Column, без вложенного Scaffold —
+ * грабли из CONTEXT_BRIEF.
+ *
+ * FIX 5.10-stat-admin-ui-3 (уточнение):
+ * убран `return@Column` при пустом дне. Compose Runtime падал
+ * с `IndexOutOfBoundsException` в `Stack.pop` — Composer не мог
+ * закрыть группу. Заменено на `when (dayView)` с двумя полными
+ * ветками — Composer видит стабильное число вызовов.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,46 +64,44 @@ fun AdminPanelScreen(
             }
         )
 
-        val v = dayView
-        if (v == null) {
-            Box(
+        when (val v = dayView) {
+            null -> Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator()
             }
-            return@Column
-        }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            DayHeader(date = v.date)
-            TotalsCard(totals = v.totals)
-            if (v.tabUsage.isNotEmpty()) {
-                TabTimelineBar(usage = v.tabUsage)
-            }
-            ProblemsBlock(
-                problems = v.problems,
-                onOpenDiagnostics = { /* заглушка — реально в -3 */ }
-            )
-            if (v.sessions.isNotEmpty()) {
-                Text(
-                    "Сессии",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                v.sessions.forEach { session ->
-                    SessionCard(session = session)
+            else -> Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                DayHeader(date = v.date)
+                TotalsCard(totals = v.totals)
+                if (v.tabUsage.isNotEmpty()) {
+                    TabTimelineBar(usage = v.tabUsage)
                 }
-            } else {
-                EmptyDayCard()
+                ProblemsBlock(
+                    problems = v.problems,
+                    onOpenDiagnostics = { /* заглушка — реально позже */ }
+                )
+                if (v.sessions.isNotEmpty()) {
+                    Text(
+                        "Сессии",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    v.sessions.forEach { session ->
+                        SessionCard(session = session)
+                    }
+                } else {
+                    EmptyDayCard()
+                }
+                EventsList(events = v.events)
             }
-            EventsList(events = v.events)
         }
     }
 }
