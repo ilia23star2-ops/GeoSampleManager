@@ -10,17 +10,14 @@ import androidx.room.Update
 /**
  * FIX 5.10-stat-model: DAO теневой статистики.
  *
- * FIX 5.10-stat-activity-a:
- *  - @Transaction на insertEvents: одна транзакция на весь
- *    батч вместо N отдельных fsync-записей.
+ * FIX 5.10-stat-activity-a: @Transaction на insertEvents.
+ * FIX 5.10-stat-activity-b: getOrderWorkById.
+ * FIX 5.10-stat-admin-ui-4: getDistinctSessionDates.
  *
- * FIX 5.10-stat-activity-b:
- *  - getOrderWorkById — трекеру нужен доступ к строке order_work
- *    по id, чтобы обновлять её после insert.
- *
- * FIX 5.10-stat-admin-ui-4:
- *  - getDistinctSessionDates — список дат, по которым есть сессии.
- *    Используется в dropdown выбора дня на экране админа.
+ * FIX 5.10-stat-admin-v2-orders-b:
+ *  - getAllOrderWork — все записи order_work за всё время.
+ *    Используется табом «Наряды» админ-панели для сводки по
+ *    нарядам (сумма секунд поиска/сверки).
  */
 @Dao
 interface StatsDao {
@@ -51,14 +48,6 @@ interface StatsDao {
     )
     suspend fun getSessionsBetween(fromTs: Long, toTs: Long): List<SessionEntity>
 
-    /**
-     * FIX 5.10-stat-admin-ui-4:
-     * Список уникальных дат (YYYY-MM-DD, локальная зона), по которым
-     * есть сессии. Сортировка — от свежих к старым.
-     *
-     * SQLite `date(ts, 'unixepoch', 'localtime')` возвращает
-     * YYYY-MM-DD с учётом локальной зоны устройства.
-     */
     @Query(
         "SELECT DISTINCT date(started_at / 1000, 'unixepoch', 'localtime') " +
                 "AS d FROM sessions ORDER BY started_at DESC"
@@ -95,15 +84,18 @@ interface StatsDao {
     @Update
     suspend fun updateOrderWork(work: OrderWorkEntity)
 
-    /**
-     * FIX 5.10-stat-activity-b: трекеру нужен доступ к строке
-     * order_work по id, чтобы обновлять её после insert.
-     */
     @Query("SELECT * FROM order_work WHERE id = :id")
     suspend fun getOrderWorkById(id: Long): OrderWorkEntity?
 
     @Query("SELECT * FROM order_work WHERE session_id = :sessionId ORDER BY started_at")
     suspend fun getOrderWorkForSession(sessionId: Long): List<OrderWorkEntity>
+
+    /**
+     * FIX 5.10-stat-admin-v2-orders-b:
+     * Все записи order_work за всё время. Для таба «Наряды».
+     */
+    @Query("SELECT * FROM order_work ORDER BY started_at DESC")
+    suspend fun getAllOrderWork(): List<OrderWorkEntity>
 
     @Query(
         "SELECT * FROM order_work " +
@@ -119,11 +111,6 @@ interface StatsDao {
     @Insert
     suspend fun insertEvent(event: EventEntity): Long
 
-    /**
-     * FIX 5.10-stat-activity-a:
-     * @Transaction — одна транзакция на весь список.
-     * Без аннотации Room мог выполнять N отдельных транзакций.
-     */
     @Transaction
     @Insert
     suspend fun insertEvents(events: List<EventEntity>): List<Long>

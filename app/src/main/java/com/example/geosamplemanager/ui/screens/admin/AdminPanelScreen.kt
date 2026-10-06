@@ -25,10 +25,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-ui-4: выбор дня.
  * FIX 5.10-stat-admin-ui-5a: блок «Незавершённые».
  * FIX 5.10-stat-admin-v2-nav: табы, таймлайн, Back.
+ * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
  *
- * FIX 5.10-stat-admin-v2-time-filter:
- *  - timeFilterInput / timeFilterResult прокидываются в DayTimelineBar;
- *  - клик на бейдж сводки → таб «Ошибки».
+ * FIX 5.10-stat-admin-v2-orders-b:
+ *  - таб «Наряды» подключает OrdersTab вместо заглушки.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +43,8 @@ fun AdminPanelScreen(
     val route by viewModel.route.collectAsState()
     val timeFilterInput by viewModel.timeFilterInput.collectAsState()
     val timeFilterResult by viewModel.timeFilterResult.collectAsState()
+    val allOrders by viewModel.allOrders.collectAsState()
+    val ordersFilterInput by viewModel.ordersFilterInput.collectAsState()
 
     var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
@@ -94,9 +96,10 @@ fun AdminPanelScreen(
                     onOpenSession = { viewModel.openSession(it) },
                     onOpenErrors = { viewModel.selectTab(AdminPanelTab.ERRORS) }
                 )
-                AdminPanelTab.ORDERS -> StubTab(
-                    title = "Наряды",
-                    hint = "Список нарядов с группировкой по участку — следующая пачка."
+                AdminPanelTab.ORDERS -> OrdersTab(
+                    allOrders = allOrders,
+                    filterInput = ordersFilterInput,
+                    onFilterChange = { viewModel.setOrdersFilter(it) }
                 )
                 AdminPanelTab.ERRORS -> StubTab(
                     title = "Ошибки",
