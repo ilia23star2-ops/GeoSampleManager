@@ -24,13 +24,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-ui-3: без return@Column, через when.
  * FIX 5.10-stat-admin-ui-4: выбор дня.
  * FIX 5.10-stat-admin-ui-5a: блок «Незавершённые».
+ * FIX 5.10-stat-admin-v2-nav: табы, таймлайн, Back.
  *
- * FIX 5.10-stat-admin-v2-nav:
- *  - табы: День / Наряды / Ошибки;
- *  - навигация по AdminPanelRoute (таб + детали);
- *  - BackHandler — возврат на уровень вверх;
- *  - DayTimelineBar 00:00–24:00 вместо процентной полосы;
- *  - кликабельная сводка: бейджи ошибок/warn → таб «Ошибки».
+ * FIX 5.10-stat-admin-v2-time-filter:
+ *  - timeFilterInput / timeFilterResult прокидываются в DayTimelineBar;
+ *  - клик на бейдж сводки → таб «Ошибки».
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,16 +41,16 @@ fun AdminPanelScreen(
     val selectedDate by viewModel.selectedDate.collectAsState()
     val timelineSegments by viewModel.timelineSegments.collectAsState()
     val route by viewModel.route.collectAsState()
+    val timeFilterInput by viewModel.timeFilterInput.collectAsState()
+    val timeFilterResult by viewModel.timeFilterResult.collectAsState()
 
     var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
     LaunchedEffect(Unit) { viewModel.loadToday() }
 
-    // Back внутри панели
     BackHandler(enabled = viewModel.canGoBack()) {
         viewModel.goBack()
     }
-    // Back на верхнем уровне — закрывает панель
     BackHandler(enabled = !viewModel.canGoBack()) {
         onClose()
     }
@@ -87,7 +85,11 @@ fun AdminPanelScreen(
                     availableDates = availableDates,
                     timelineSegments = timelineSegments,
                     timelineScale = timelineScale,
+                    timeFilterInput = timeFilterInput,
+                    timeFilterResult = timeFilterResult,
                     onScaleChange = { timelineScale = it },
+                    onFilterInputChange = { viewModel.setTimeFilterInput(it) },
+                    onClearFilter = { viewModel.clearTimeFilter() },
                     onSelectDate = { viewModel.selectDate(it) },
                     onOpenSession = { viewModel.openSession(it) },
                     onOpenErrors = { viewModel.selectTab(AdminPanelTab.ERRORS) }
@@ -137,7 +139,11 @@ private fun DayTab(
     availableDates: List<String>,
     timelineSegments: List<TimelineSegment>,
     timelineScale: TimelineScale,
+    timeFilterInput: String,
+    timeFilterResult: TimeFilterParseResult,
     onScaleChange: (TimelineScale) -> Unit,
+    onFilterInputChange: (String) -> Unit,
+    onClearFilter: () -> Unit,
     onSelectDate: (String) -> Unit,
     onOpenSession: (Long) -> Unit,
     onOpenErrors: () -> Unit
@@ -172,7 +178,11 @@ private fun DayTab(
                     date = v.date,
                     segments = timelineSegments,
                     scale = timelineScale,
+                    timeFilterInput = timeFilterInput,
+                    timeFilterResult = timeFilterResult,
                     onScaleChange = onScaleChange,
+                    onFilterInputChange = onFilterInputChange,
+                    onClearFilter = onClearFilter,
                     onSessionClick = onOpenSession
                 )
                 if (v.tabUsage.isNotEmpty()) {
@@ -365,9 +375,7 @@ private fun Badge(
     fg: Color,
     onClick: (() -> Unit)? = null
 ) {
-    val base = if (onClick != null) {
-        Modifier.clickable(onClick = onClick)
-    } else Modifier
+    val base = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
     Box(
         modifier = base
             .background(bg, RoundedCornerShape(6.dp))
