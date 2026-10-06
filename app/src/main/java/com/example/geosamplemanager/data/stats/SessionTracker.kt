@@ -20,6 +20,9 @@ import kotlinx.coroutines.launch
  *  - init TabVisitTracker при старте;
  *  - bindSession при открытии новой сессии;
  *  - closeCurrentVisit при закрытии сессии.
+ *
+ * FIX 5.10-stat-errors-b:
+ *  - AutoWarnRules.reset() при старте новой сессии.
  */
 object SessionTracker {
 
@@ -48,6 +51,10 @@ object SessionTracker {
 
         scope.launch {
             try {
+                // FIX 5.10-stat-errors-b: сброс счётчиков авто-повышения
+                // в warn при старте новой сессии.
+                AutoWarnRules.reset()
+
                 val dao = StatsDatabase.getInstance(ctx).statsDao()
 
                 dao.getOpenSession()?.let { old ->

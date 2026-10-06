@@ -9,12 +9,15 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import com.example.geosamplemanager.data.logs.AppLog
+import com.example.geosamplemanager.data.logs.LogCategory
+import com.example.geosamplemanager.data.logs.LogWriter
 import com.example.geosamplemanager.data.logs.SampleRowDiff
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
 import com.example.geosamplemanager.data.reconciliation.validateWeight
 import com.example.geosamplemanager.data.settings.ImportSettings
+import com.example.geosamplemanager.data.stats.AutoWarnRules
 import com.example.geosamplemanager.data.stats.OrderWorkTracker
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
@@ -1130,6 +1133,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             state.query = displayQuery
                         }
                     }
+                    // FIX 5.10-stat-errors-b: серия неудачных поисков
+                    // подряд. При достижении порога — warn в журнал.
+                    if (AutoWarnRules.onSearchNotFound()) {
+                        LogWriter.warn(
+                            LogCategory.SEARCH,
+                            "5 поисков подряд без результата"
+                        ).write()
+                    }
                     VoiceExecResult.NotFound
                 }
 
@@ -1139,6 +1150,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
 
                 is SearchResult.Found -> {
+                    // FIX 5.10-stat-errors-b: успешный поиск сбрасывает
+                    // серию неудач.
+                    AutoWarnRules.onSearchSuccess()
+
                     val hit = result.hits.first()
                     val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
 
