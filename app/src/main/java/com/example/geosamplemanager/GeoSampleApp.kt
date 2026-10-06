@@ -8,7 +8,7 @@ import com.example.geosamplemanager.data.logs.CrashHandler
 import com.example.geosamplemanager.data.logs.DeviceInfo
 import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.data.logs.LogWriter
-import com.example.geosamplemanager.data.logs.LogsDatabase
+import com.example.geosamplemanager.data.logs.LogsDbCleanup
 import com.example.geosamplemanager.data.session.SessionStateRepository
 import com.example.geosamplemanager.data.settings.AppearanceSettings
 import com.example.geosamplemanager.data.settings.AppearanceSettingsRepository
@@ -36,10 +36,12 @@ import org.vosk.Model
  * FIX 5.9-main-a: sessionStateRepository, pendingSearchRequest.
  * FIX 5.9-main-b: pendingReportRequest.
  * FIX 5.10-stat-model: statsDatabase (ленивая).
+ * FIX 5.10-stat-session: SessionTracker.init/onAppStart.
  *
- * FIX 5.10-stat-session:
- *  - SessionTracker.init(this) и SessionTracker.onAppStart() в onCreate.
- *    Открывает новую сессию (перед этим закрывает висящую как crash).
+ * FIX 5.10-logs-cleanup-b:
+ *  - LogsDatabase удалена. В onCreate — LogsDbCleanup.cleanupIfNeeded
+ *    (одноразовое удаление файла logs.db при апдейте);
+ *  - из onTerminate убран LogsDatabase.closeAndReset().
  */
 data class RestartRequest(val tick: Int, val route: String)
 
@@ -100,6 +102,10 @@ class GeoSampleApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+
+        // FIX 5.10-logs-cleanup-b: одноразовое удаление logs.db
+        // при апдейте. Идемпотентно — безопасно при каждом старте.
+        LogsDbCleanup.cleanupIfNeeded(this)
 
         LogWriter.init(this)
         CrashHandler.install(this)
@@ -192,7 +198,6 @@ class GeoSampleApp : Application() {
 
     override fun onTerminate() {
         super.onTerminate()
-        try { LogsDatabase.closeAndReset() } catch (_: Exception) {}
         try { StatsDatabase.closeAndReset() } catch (_: Exception) {}
     }
 
