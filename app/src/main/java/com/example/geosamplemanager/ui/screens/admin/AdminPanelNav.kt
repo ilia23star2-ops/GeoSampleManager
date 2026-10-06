@@ -1,17 +1,12 @@
 package com.example.geosamplemanager.ui.screens.admin
 
 /**
- * FIX 5.10-stat-admin-v2-nav:
- * Навигация внутри админ-панели. Панель открывается наложением
- * поверх Настроек (не через NavController), поэтому маршруты
- * живут локально.
+ * FIX 5.10-stat-admin-v2-nav: навигация внутри админ-панели.
  *
- * Уровни:
- *  - Tab(DAY | ORDERS | ERRORS) — верхние табы;
- *  - SessionDetail / VisitDetail — провалы (в пачке admin-v2-details).
- *
- * Back обрабатывается вручную в AdminPanelScreen: с деталей →
- * на предыдущий таб, с таба → на DAY, с DAY → закрытие панели.
+ * FIX 5.10-stat-admin-v2-details-a:
+ *  - VisitDetail теперь адресуется парой (sessionId, fromTs):
+ *    TabVisitView не имеет стабильного id, а fromTs уникален в
+ *    пределах сессии.
  */
 enum class AdminPanelTab(val title: String) {
     DAY("День"),
@@ -22,7 +17,7 @@ enum class AdminPanelTab(val title: String) {
 sealed class AdminPanelRoute {
     data class Tab(val tab: AdminPanelTab) : AdminPanelRoute()
     data class SessionDetail(val sessionId: Long) : AdminPanelRoute()
-    data class VisitDetail(val visitId: Long) : AdminPanelRoute()
+    data class VisitDetail(val sessionId: Long, val fromTs: Long) : AdminPanelRoute()
 
     companion object {
         val Default: AdminPanelRoute = Tab(AdminPanelTab.DAY)

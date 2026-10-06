@@ -14,17 +14,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.10-stat-admin-ui-1: ViewModel экрана админа.
+ * FIX 5.10-stat-admin-ui-1: ViewModel.
  * FIX 5.10-stat-admin-ui-4: выбор дня.
  * FIX 5.10-stat-admin-v2-nav: маршруты, таймлайн.
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
+ * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  *
- * FIX 5.10-stat-admin-v2-orders-b:
- *  - allOrders — список всех нарядов из основной БД + статистика
- *    из stats.db (order_work);
- *  - ordersFilterInput — фильтр по строке;
- *  - loadOrders — загрузка (лениво при выборе таба);
- *  - подключение DatabaseRepository через GeoSampleApp.
+ * FIX 5.10-stat-admin-v2-details-a:
+ *  - openVisit(sessionId, fromTs).
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -79,7 +76,6 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
 
     fun selectTab(tab: AdminPanelTab) {
         _route.value = AdminPanelRoute.Tab(tab)
-        // FIX 5.10-stat-admin-v2-orders-b: ленивая загрузка нарядов.
         if (tab == AdminPanelTab.ORDERS && _allOrders.value.isEmpty()) {
             loadOrders()
         }
@@ -89,8 +85,12 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         _route.value = AdminPanelRoute.SessionDetail(sessionId)
     }
 
-    fun openVisit(visitId: Long) {
-        _route.value = AdminPanelRoute.VisitDetail(visitId)
+    /**
+     * FIX 5.10-stat-admin-v2-details-a: открытие визита по паре
+     * (sessionId, fromTs).
+     */
+    fun openVisit(sessionId: Long, fromTs: Long) {
+        _route.value = AdminPanelRoute.VisitDetail(sessionId, fromTs)
     }
 
     fun canGoBack(): Boolean = _route.value != AdminPanelRoute.Default
@@ -98,8 +98,9 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     fun goBack() {
         val current = _route.value
         _route.value = when (current) {
-            is AdminPanelRoute.SessionDetail,
             is AdminPanelRoute.VisitDetail ->
+                AdminPanelRoute.SessionDetail(current.sessionId)
+            is AdminPanelRoute.SessionDetail ->
                 AdminPanelRoute.Tab(AdminPanelTab.DAY)
             is AdminPanelRoute.Tab -> AdminPanelRoute.Default
         }
@@ -139,21 +140,13 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // ============================================================
-    // Наряды (FIX 5.10-stat-admin-v2-orders-b)
+    // Наряды
     // ============================================================
 
     fun setOrdersFilter(input: String) {
         _ordersFilterInput.value = input
     }
 
-    /**
-     * Загрузка всех нарядов. Дёргается при первом переходе на
-     * таб «Наряды» (ленивая).
-     *
-     * Источники:
-     *  - DatabaseRepository (основная БД): areas, orders, samples-counts;
-     *  - StatsDatabase (stats.db): order_work за всё время.
-     */
     fun loadOrders() {
         viewModelScope.launch {
             try {
