@@ -9,35 +9,22 @@
 
 **Дома:** Android Studio. **На работе:** тоже Android Studio + git
 в терминале.
-**Фича в работе:** `feature/5.10-shadow-stats` — теневая статистика
-(скрытый от ОП инструмент админа).
 
-**Спецификация:** `docs/SHADOW_STATS.md` — утверждена.
-
-**Закрыто в 5.10:**
-- ✅ `5.10-stat-model` — модель и БД (`StatsDatabase`, 5 сущностей, `StatsDao`).
-- ✅ `5.10-stat-session` — сессии (`SessionTracker`, `SessionTimeAccumulator`).
-- ✅ `5.10-stat-activity-a` — активность, batch insert.
-- ✅ `5.10-stat-activity-b` — фазы наряда (`OrderWorkTracker`, `OrderWorkPhaseLogic`).
-- ✅ `5.10-stat-tabs` — визиты вкладок (`TabVisitTracker`).
-- ✅ `5.10-stat-errors-a` — правила авто-повышения (`AutoWarnRules`).
-- ✅ `5.10-stat-errors-b` — интеграция авто-повышения в `voiceSearch` и `LogWriter`.
-- ✅ `5.10-stat-admin-ui-1` — модель и агрегаты админ-панели.
-- ✅ `5.10-stat-admin-ui-2` — UI экрана админа.
-- ✅ `5.10-stat-admin-ui-3` — интеграция (долгий тап в Настройках).
-- ✅ `5.10-stat-admin-ui-4` — выбор дня.
-- ✅ `5.10-stat-admin-ui-5a` — блок «Незавершённые».
-- 🟡 `5.10-stat-activity-b-2` — фазы наряда v2 (последнее событие). В работе.
-
-**Осталось в 5.10:**
-- `5.10-stat-admin-ui-5a-2` — агрегация дублей «Незавершённые» по `orderId`.
-- `5.10-stat-admin-ui-5b` — кнопка «Проверить БД» (ProblemsView).
-- `5.10-stat-daily-file-1` / `-2` — экспорт и ротация.
-- `5.10-pr` — PR фичи в `main`.
+**Активной фичи нет.** Последняя крупная серия 5.10 (теневая
+статистика) закрыта и влита в `main` через PR #124.
 
 **Архив (не удалять):**
-- `feature/5.9-full-project` — готова, PR ещё не сделан.
-- `feature/5.8.11-e4-voice-v2` — архив.
+- `feature/5.10-shadow-stats` — теневая статистика. Реализовано,
+  влито в `main`.
+- `feature/5.9-full-project` — допиливание вкладок. Реализовано,
+  влито в `main`.
+- `feature/5.8.11-e4-voice-v2` — рефакторинг ГП. Архив.
+
+**Ближайшая работа — долги после 5.10.** См. `NEXT_STEPS.md`.
+
+**Спецификации:**
+- `docs/SHADOW_STATS.md` — теневая статистика (реализовано).
+- `docs/VOICE.md` — голосовой помощник.
 
 ## Известные грабли (важно!)
 
@@ -91,6 +78,11 @@
 ### Kotlin
 - **В KDoc нельзя `/*` внутри `/**…*/`.**
 
+### Dp / Float
+- **`Dp * Float` работает, `Float * Dp` — нет.** Менять порядок.
+- **`scrollState.scrollTo` — в px, `hourWidthDp` — в dp.**
+  Конвертация через `LocalDensity`.
+
 ### Восстановление БД
 - **Перед чтением файла `.db` — `PRAGMA wal_checkpoint(TRUNCATE)`.**
 - **Перед заменой — закрыть соединение и удалить `-wal`/`-shm`.**
@@ -111,16 +103,16 @@
   `(area_name, order_number, sample_number)`.
 
 ### Журнал
-- **`logs.db` — отдельная БД.**
-- **`LogWriter` использует `trySend`.**
-- **Батч: 50 записей или раз в 500 мс.**
-- **Файловый архив — `Downloads/GeoSampleManager/.logs/YYYY-MM-DD.log`.**
-- **Удаление `logs.db` запланировано в `5.10-stat-daily-file`.**
+- **`logs.db` удалена в 5.10.** Журнал переехал в `stats.db.events`.
+- **UI журнала из Настроек убран.** Просмотр — в панели админа.
+- **`LogWriter.flush`** → `stats.db.events` (batch).
+- **Файловый архив `.logs/` тоже вырезан.**
+- **`LogsDbCleanup.cleanupIfNeeded`** удаляет `logs.db` при апдейте.
 
-### Теневая статистика (5.10)
+### Теневая статистика (5.10) — реализовано
 - **`stats.db` — отдельная БД.** Файл: `filesDir/stats/active.db`.
 - **5 таблиц:** `sessions`, `tab_visits`, `order_work`, `events`,
-  `daily_summary`. Все дочерние — FK на `sessions.id` с CASCADE.
+  `daily_summary`.
 - **`SessionTracker.onAppStart`** открывает новую сессию; висящая
   закрывается как `crash`.
 - **`OrderWorkTracker`** держит один активный наряд в памяти.
@@ -132,27 +124,33 @@
   вкладки; `Mutex` защищает от гонок.
 - **`AutoWarnRules`:** 5+ неудачных поисков подряд, 3+ одинаковых
   ошибки подряд; `reset()` при старте сессии.
-- **`LogWriter.flush`** → `stats.db.events` (batch) + `AutoWarnRules.onError`.
-- **Админ-панель:** вход — долгий тап на версии в «О приложении»;
-  выбор дня — dropdown (список из `sessions`); блок «Незавершённые»
-  на экране; блок «Требует внимания» — заглушка (нули).
+- **Ротация `stats.db`:** `StatsRotator.checkAndRotate()` через
+  `runBlocking` в `onCreate`, **до** `SessionTracker.onAppStart`.
+  Месяц по `MAX(sessions.started_at)` (или mtime). Коллизия в
+  `archive/` → warn, не ротируем.
+- **Панель администратора:** вход — долгий тап на версии в
+  «О приложении» → пароль `0000` (`AdminPanelAuth.DEFAULT_PASSWORD`).
+- **Табы:** День / Наряды / Ошибки.
+- **`EventsList.kt`** — плоский список событий **на экране дня**,
+  с раскрытием `detailsJson`. `EventRowExpandable` — общий
+  компонент для дня / визита / ошибок.
+- **`ProblemsBlock`** пока с нулями (5.10-stat-admin-ui-5b
+  отложено).
 
 ### Настройки (5.9-settings)
 - **`AppearanceSettings`** — `scale` + `theme`. Хранится в
   `filesDir/appearance_settings.json`.
 - **Масштаб** — `textFactor` (fontScale) и `densityFactor` (density)
-  разделены. `fontScale` множится сильно, `density` слабо.
-- **Тема** — `AppTheme.SYSTEM/LIGHT/DARK`. Применяется в
-  `MainActivity.onCreate` через `app.appearance`.
+  разделены.
+- **Тема** — `AppTheme.SYSTEM/LIGHT/DARK`.
 - **Справка** — `assets/help/*.md`, парсится `HelpContentLoader`.
-  Рендер — `HelpBlocksView`. KDoc без звёздочки.
-- **`SettingsCategory`** — 8 пунктов, включая `HELP`.
+- **`SettingsCategory`** — 7 пунктов (`SYSTEM` удалён в 5.10).
 
 ### Главная (5.9-main)
 - **Сводка:** счётчики + прогресс + кнопка отчёта.
 - **Продолжить работу:** последний наряд из `SessionStateRepository`.
 - **Незавершённые:** сортировка `% убыв → время убыв → номер`.
-- **Требует внимания:** только сироты SQL (лёгкая проверка).
+- **Требует внимания:** только сироты SQL.
 - **Отчёт:** `pendingReportRequest` → `StatsScreen`.
 
 ### Выход (5.9-exit)
@@ -160,13 +158,12 @@
 - **Перезаписывается** при каждом выходе.
 - **Не участвует в ротации** и не удаляется из UI.
 - **Back на Главной** — диалог выхода.
-- **Операция в манифесте — `"exit"`.**
 
 ## Не трогать
 
 - Схема основной БД (version = 2).
-- `AI_RULES.md` — актуален.
-- Спецификация `docs/SHADOW_STATS.md` — утверждена.
+- `AI_RULES.md` — актуален (кроме §15 — отдельный долг).
+- Спецификации `docs/SHADOW_STATS.md`, `docs/VOICE.md`.
 
 ## Правила текущей сессии
 

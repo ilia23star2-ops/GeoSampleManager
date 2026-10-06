@@ -1,11 +1,13 @@
 # SHADOW_STATS.md — спецификация теневой статистики
 
-> **Статус:** 🟢 спецификация утверждена, готова к реализации.
+> **Статус:** 🟢 реализовано. Серия закрыта, merge в `main` через PR #124.
 > **Серия:** 5.10.
-> **Ветка:** `feature/5.10-shadow-stats`.
+> **Ветка:** `feature/5.10-shadow-stats` (архив).
 >
 > Цель: инструмент админа для проверки реальной работы ОП и
 > выявления багов. Скрыт от ОП.
+>
+> **Что осталось после 5.10** — см. `docs/NEXT_STEPS.md` §1–3.
 
 ---
 
@@ -382,7 +384,7 @@ LogsDbCleanup.cleanupIfNeeded(context) вызывается в GeoSampleApp.onCr
 
 Пароль (AdminPanelAuth.DEFAULT_PASSWORD = "0000").
 
-Открывает AdminPanelScreen. Без пароля на первой версии.
+Открывает AdminPanelScreen.
 
 7.2. Экран дня
 ┌──────────────────────────────────────────┐
@@ -486,7 +488,7 @@ logs.db удаляется при апдейте.
 Пока отложено.
 
 9. Разбивка на пачки
-Серия 5.10. Каждая пачка — отдельная ветка от feature/5.10-shadow-stats.
+Серия 5.10 закрыта. Ниже — историческая разбивка.
 
 9.1. 5.10-stat-model — модель и БД
 StatsDatabase.kt — Room-БД.
@@ -496,16 +498,10 @@ EventEntity.kt, DailySummaryEntity.kt — сущности.
 
 StatsDao.kt — DAO.
 
-StatsDatabaseTest.kt — миграции (device-check).
-
 9.2. 5.10-stat-session — сессии
 SessionTracker.kt — жизненный цикл сессии.
 
-AppLifecycleObserver — fg/bg/screen_off.
-
-SessionTrackerTest.kt.
-
-Правки GeoSampleApp.onCreate.
+SessionTimeAccumulator — fg/bg.
 
 9.3. 5.10-stat-activity — активность, вкладки, timeline
 ActivityAccumulator.kt — подсчёт active/idle.
@@ -514,31 +510,30 @@ TabVisitTracker.kt — визиты вкладок.
 
 OrderWorkTracker.kt — фазы наряда, статусы.
 
-OrderWorkTrackerTest.kt.
-
-Правки NavGraph / SearchScreen / EditScreen.
+OrderWorkPhaseLogic.kt — чистая логика фаз.
 
 9.4. 5.10-stat-errors — ошибки, флаги, авто-повышение
 AutoWarnRules.kt — правила авто-повышения.
 
-AutoWarnRulesTest.kt.
-
 Правки LogWriter.
 
-9.5. 5.10-stat-admin-ui — экран админа
-Разбита на 12 подзаходов:
+9.5. 5.10-stat-admin-ui — панель администратора
+Закрыта за 13 подзаходов:
 - 5.10-stat-admin-ui-1 — модель и агрегаты.
 - 5.10-stat-admin-ui-2 — UI экрана админа.
 - 5.10-stat-admin-ui-3 — интеграция (долгий тап).
 - 5.10-stat-admin-ui-4 — выбор дня.
 - 5.10-stat-admin-ui-5a — блок «Незавершённые».
-- 5.10-stat-admin-ui-5b — ProblemsView (в плане).
 - 5.10-stat-admin-v2-nav — каркас, табы, таймлайн дня.
 - 5.10-stat-admin-v2-time-filter — фильтр времени.
 - 5.10-stat-admin-v2-orders-a/-b — таб «Наряды».
 - 5.10-stat-admin-v2-details-a/-b/-c — провалы, ошибки.
 - 5.10-stat-admin-password — пароль.
-- 5.10-stat-daily-file-1/-2 — экспорт и ротация.
+
+Отложено:
+- 5.10-stat-admin-ui-5a-2 — агрегация дублей.
+- 5.10-stat-admin-ui-5b — ProblemsView реальные.
+- 5.10-stat-admin-pinch — пинч-масштаб.
 
 9.6. 5.10-stat-daily-file — .stats/ и ротация
 StatsExporter.kt — JSON дня.
@@ -547,7 +542,14 @@ StatsRotator.kt — месячная ротация.
 
 LogsDbCleanup.kt — удаление logs.db при апдейте.
 
-Правки GeoSampleApp.onCreate.
+9.7. 5.10-logs-cleanup — вырезание logs.db
+-a — удалены LogsScreen, LogsViewModel, SYSTEM.
+
+-b — удалены LogsDatabase, LogDao, LogFileWriter, LogsFilter;
+LogEntry без Room; LogWriter пишет только в stats.db.
+
+Отложено:
+- 5.10-logs-cleanup-c — LogFormatter + тест.
 
 10. Что решено и не обсуждается
 Модель: день → сессии → визиты → события.
