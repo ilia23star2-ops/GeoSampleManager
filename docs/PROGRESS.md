@@ -3,59 +3,90 @@
 ## 5.10 серия — теневая статистика
 
 **Дата:** 2026-10-06
-**Ветка:** `feature/5.10-shadow-stats`
-**Контекст:** скрытый от ОП инструмент админа — см.
-`docs/SHADOW_STATS.md`. Запись сессий, визитов вкладок, работы
-с нарядами и событий в отдельную `stats.db`.
+**Ветка:** `feature/5.10-shadow-stats` (архив, merge в `main` через PR #124)
+**Контекст:** скрытый от ОП инструмент админа. Запись сессий,
+визитов вкладок, работы с нарядами и событий в отдельную `stats.db`.
+UI — «панель администратора» по долгому тапу на версии + пароль.
+
+Спецификация: `docs/SHADOW_STATS.md`.
 
 ### Что закрыто в 5.10
 
-- ✅ **`5.10-stat-model`** — модель и БД: `StatsDatabase`, 5 сущностей,
-  `StatsDao`.
-- ✅ **`5.10-stat-session`** — сессии: `SessionTracker`, `SessionEntity`,
-  fg/bg/active/idle, `SessionTimeAccumulator`.
-- ✅ **`5.10-stat-activity-a`** — активность по событиям,
-  `ActivityAccumulator`, batch insert в `events` через `LogWriter`.
-- ✅ **`5.10-stat-activity-b`** — фазы наряда: `OrderWorkTracker`,
-  `OrderWorkPhaseLogic`, `order_work.search_sec / verify_sec / status`,
-  интеграция в `ReconciliationViewModel`. Фикс накопления фаз
-  (время считается на каждом событии, а не только при смене фазы).
-- ✅ **`5.10-stat-tabs`** — визиты вкладок: `TabVisitTracker`, правки
-  `SessionTracker` и `NavGraph`, тесты на чистую логику.
-- ✅ **`5.10-stat-errors-a`** — правила авто-повышения в `warn`:
-  `AutoWarnRules` (5+ неудачных поисков подряд; 3+ одинаковых
-  ошибки подряд). 12 юнит-тестов.
-- ✅ **`5.10-stat-errors-b`** — интеграция `AutoWarnRules`:
-  `SessionTracker.reset()` при старте сессии;
-  `ReconciliationViewModel.voiceSearch` → onSearchNotFound / Success;
-  `LogWriter.flush` → onError → дописывает `warn`-запись в тот же
-  батч.
+**Модель и запись:**
+- ✅ **`5.10-stat-model`** — `StatsDatabase`, 5 сущностей, `StatsDao`.
+- ✅ **`5.10-stat-session`** — `SessionTracker`, `SessionTimeAccumulator`,
+  fg/bg/active/idle.
+- ✅ **`5.10-stat-activity-a`** — `ActivityAccumulator`, batch insert
+  в `events` через `LogWriter`.
+- ✅ **`5.10-stat-activity-b`** — `OrderWorkTracker`, `OrderWorkPhaseLogic`,
+  фазы «Поиск / Сверка», интеграция в `ReconciliationViewModel`.
+- ✅ **`5.10-stat-activity-b-2`** — фазы v2 (модель «последнее событие»),
+  учёт ручного поиска, миллисекундная арифметика.
+- ✅ **`5.10-stat-tabs`** — `TabVisitTracker`, правки `SessionTracker`
+  и `NavGraph`, `Mutex` от гонок.
+- ✅ **`5.10-stat-errors-a`** — `AutoWarnRules` (5+ неудачных поисков,
+  3+ одинаковых ошибки).
+- ✅ **`5.10-stat-errors-b`** — интеграция `AutoWarnRules` в
+  `voiceSearch` и `LogWriter`.
 
-### Осталось в 5.10
+**Панель администратора:**
+- ✅ **`5.10-stat-admin-ui-1`** — `AdminPanelAggregator`, модели, агрегаты.
+- ✅ **`5.10-stat-admin-ui-2`** — `AdminPanelScreen` (TopAppBar + Column
+  без вложенного Scaffold).
+- ✅ **`5.10-stat-admin-ui-3`** — долгий тап на версии в «О приложении».
+  Фикс `return@Column` (Compose Stack.pop).
+- ✅ **`5.10-stat-admin-ui-4`** — выбор дня (`ExposedDropdownMenuBox`),
+  `getDistinctSessionDates`.
+- ✅ **`5.10-stat-admin-ui-5a`** — блок «Незавершённые».
+- ✅ **`5.10-stat-admin-v2-nav`** — табы День / Наряды / Ошибки,
+  таймлайн дня, BackHandler.
+- ✅ **`5.10-stat-admin-v2-time-filter`** — фильтр времени на таймлайне
+  (`12`, `12:30`, `12-13`, `12:00-13:30`), пресеты масштаба,
+  автоскролл, растяжка.
+- ✅ **`5.10-stat-admin-v2-orders-a`** — `OrderSampleCounts`,
+  `AdminOrderSummary`, `buildOrdersSummary`.
+- ✅ **`5.10-stat-admin-v2-orders-b`** — таб «Наряды» (свёрнутые секции
+  по участку, прогресс-бар, статусы, фильтр).
+- ✅ **`5.10-stat-admin-v2-details-a`** — провал в сессию и визит.
+- ✅ **`5.10-stat-admin-v2-details-b`** — `computeEventsAround` (±2 мин).
+- ✅ **`5.10-stat-admin-v2-details-c`** — таб «Ошибки», `EventDetailScreen`,
+  раскрытие `detailsJson`.
 
-- ⬜ **`5.10-stat-admin-ui`** — экран админа: `AdminPanelScreen`,
-  `AdminPanelViewModel`, компоненты (`SessionCard`, `TabTimelineBar`,
-  `EventsList`, `ProblemsBlock`). Вход — долгий тап на версии
-  в Настройках.
-- ⬜ **`5.10-stat-daily-file`** — `.stats/YYYY-MM-DD.json` (экспорт
-  дня), `StatsRotator` (месячная ротация `active.db` →
-  `archive/YYYY-MM.db`), `LogsDbCleanup` (удаление `logs.db` при
-  апдейте).
-- ⬜ **`5.10-pr`** — PR фичи `5.10-shadow-stats` в `main`.
+**Экспорт, ротация, пароль:**
+- ✅ **`5.10-stat-admin-password`** — `AdminPanelAuth` (пароль `0000`),
+  `AdminPanelUnlockScreen`, `lock()` при закрытии.
+- ✅ **`5.10-stat-daily-file-1`** — `StatsExporter`, `.stats/YYYY-MM-DD.json`,
+  кнопка «Экспорт дня».
+- ✅ **`5.10-stat-daily-file-2`** — `StatsRotator` (месячная ротация
+  `active.db` → `archive/YYYY-MM.db` через renameTo).
 
-### Отложено (после MVP)
+**Вырезание logs.db:**
+- ✅ **`5.10-logs-cleanup-a`** — убраны `LogsScreen`, `LogsViewModel`,
+  категория `SYSTEM` в Настройках.
+- ✅ **`5.10-logs-cleanup-b`** — `LogsDatabase`, `LogDao`, `LogFileWriter`,
+  `LogsFilter` удалены; `LogEntry` без Room; `LogWriter` пишет только
+  в `stats.db`; `LogsDbCleanup` при апдейте.
 
-- «Краш + удаление БД за 5 мин» → `warn`. Отдельной пачкой.
-- Immutability: хеш `stats.db`, метка последнего старта.
+### Отложено после 5.10
+
+- ⬜ **`5.10-stat-admin-ui-5a-2`** — агрегация дублей «Незавершённые»
+  по `orderId`.
+- ⬜ **`5.10-stat-admin-ui-5b`** — реальные проблемы БД в `ProblemsBlock`
+  (сейчас нули).
+- ⬜ **`5.10-logs-cleanup-c`** — удалить `LogFormatter` + тест.
+- ⬜ **`5.10-stat-admin-pinch`** — пинч-масштаб таймлайна.
+- ⬜ **Device-check ротации** `stats.db` (обещано прогнать).
+- ⬜ **Immutability** (хеш `stats.db`, метка старта).
+- ⬜ **«Краш + удаление БД за 5 мин» → warn**.
 
 ---
 
 ## 5.9 серия — допиливание вкладок
 
 **Дата:** 2026-09-29 … 2026-10-05
-**Ветка:** `feature/5.9-full-project`
-**Контекст:** после релизной серии 5.8.11 — планомерное закрытие
-всех вкладок, кроме сверки. Все вкладки и служебные серии закрыты.
+**Ветка:** `feature/5.9-full-project` (архив, merge в `main`)
+
+Полностью закрыта и влита в `main`.
 
 ### Что закрыто в 5.9
 
@@ -66,7 +97,7 @@
 - ✅ **Настройки** (внешний вид, тема, справка, звук, голос, Bluetooth).
 - ✅ **Главная** (сводка, продолжить, незавершённые, проблемы, отчёт).
 
-**Серия `logs`** — журнал аудита (9 подзаходов).
+**Серия `logs`** — журнал аудита (9 подзаходов; впоследствии удалён в 5.10).
 
 **Отдельные фиксы:**
 - ✅ `sort-normalize` — SORT пишет цифры, не фонетику.
@@ -85,14 +116,13 @@
 ### Осталось в 5.9
 
 - **`5.9-mass-add`** — в долгом ящике (по решению пользователя).
-- **PR `feature/5.9-full-project` → `main`.**
 
 ---
 
 ## 5.8.11 серия — рефакторинг голосового помощника
 
 **Дата:** 2026-09-24 … 2026-09-28
-**Ветка:** `feature/5.8.11-e4-voice-v2`
+**Ветка:** `feature/5.8.11-e4-voice-v2` (архив)
 
 Полный рефакторинг ГП: pin скважины, очередь мультизапроса, мимикрия
 TTS, честная ошибка вместо fallback, маркеры намерения,
@@ -125,7 +155,6 @@ TTS, честная ошибка вместо fallback, маркеры наме�
 
 - **И-24** — Vosk обрывает по короткой паузе.
 - **И-35** — Vosk путает «четвёртая» / «четырнадцатая».
-- **Docs + PR фичи `e4` в `main`.**
 
 ---
 
