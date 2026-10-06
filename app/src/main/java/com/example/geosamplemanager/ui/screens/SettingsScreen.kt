@@ -17,7 +17,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -48,13 +47,15 @@ import kotlin.math.roundToInt
  * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
  * FIX 5.9-settings-help-1: раздел «Справка» + открытие HelpScreen.
  *
- * FIX 5.10-stat-admin-ui-3:
- *  - долгий тап на версии в «О приложении» открывает AdminPanelScreen;
- *  - быстрый тап — no-op;
- *  - флаг открытия — локальный state, VM не трогаем.
+ * FIX 5.10-stat-admin-ui-3: долгий тап на версии открывает
+ * AdminPanelScreen.
  *
- * FIX 5.10-stat-admin-password:
- *  - Toast при долгом тапе — «Панель администратора».
+ * FIX 5.10-stat-admin-password: Toast «Панель администратора».
+ *
+ * FIX 5.10-logs-cleanup-a:
+ *  - убран раздел «Система» с кнопкой «Журнал событий»;
+ *  - убрано открытие LogsScreen;
+ *  - LogsScreen.kt и LogsViewModel.kt удалены.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -62,7 +63,6 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val message by viewModel.message.collectAsState()
     val selected by viewModel.selectedCategory.collectAsState()
 
-    var openedLogs by remember { mutableStateOf(false) }
     var openedHelp by remember { mutableStateOf(false) }
     var openAdminPanel by remember { mutableStateOf(false) }
 
@@ -79,11 +79,6 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     // Настроек. Открытие — только долгим тапом на версии.
     if (openAdminPanel) {
         AdminPanelScreen(onClose = { openAdminPanel = false })
-        return
-    }
-
-    if (openedLogs) {
-        LogsScreen(onClose = { openedLogs = false })
         return
     }
 
@@ -107,7 +102,6 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
-                    onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
                     onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
@@ -120,7 +114,6 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
-                    onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
                     onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxSize()
@@ -201,7 +194,6 @@ private fun CategoryChipsRow(
 private fun CategoryContent(
     category: SettingsCategory,
     viewModel: SettingsViewModel,
-    onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
     onOpenAdminPanel: () -> Unit,
     modifier: Modifier = Modifier
@@ -212,7 +204,6 @@ private fun CategoryContent(
         SettingsCategory.SOUND -> SoundSettingsContent(viewModel, modifier)
         SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
         SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
-        SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
         SettingsCategory.ABOUT -> AboutContent(modifier, onOpenAdminPanel)
         SettingsCategory.HELP -> HelpSettingsContent(modifier, onOpenHelp)
     }
@@ -807,12 +798,6 @@ private fun BluetoothSettingsContent(
 // РАЗДЕЛ «О ПРИЛОЖЕНИИ»
 // ============================================================
 
-/**
- * FIX 5.10-stat-admin-ui-3: долгий тап на версии открывает
- * админ-панель.
- *
- * FIX 5.10-stat-admin-password: Toast «Панель администратора».
- */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AboutContent(
@@ -883,54 +868,6 @@ private fun AboutContent(
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-// ============================================================
-// РАЗДЕЛ «СИСТЕМА»
-// ============================================================
-
-@Composable
-private fun SystemSettingsContent(
-    modifier: Modifier = Modifier,
-    onOpenLogs: () -> Unit
-) {
-    Column(
-        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            "Система",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    "Журнал событий",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "История действий в приложении: запуск, навигация, поиск, " +
-                            "отметки, операции с базой данных. Помогает понять, " +
-                            "что происходило в сессии, и разобрать ошибки.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onOpenLogs,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.List, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Открыть журнал событий")
-                }
-            }
-        }
     }
 }
 
