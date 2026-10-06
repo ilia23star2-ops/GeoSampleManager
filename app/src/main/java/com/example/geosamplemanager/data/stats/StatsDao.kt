@@ -4,14 +4,15 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 
 /**
- * FIX 5.10-stat-model:
- * DAO теневой статистики. Минимально нужный набор запросов
- * для пачек 5.10-stat-session / -activity / -errors / -admin-ui.
+ * FIX 5.10-stat-model: DAO теневой статистики.
  *
- * Что ещё понадобится — добавим в соответствующих пачках.
+ * FIX 5.10-stat-activity-a:
+ *  - @Transaction на insertEvents: одна транзакция на весь
+ *    батч вместо N отдельных fsync-записей.
  */
 @Dao
 interface StatsDao {
@@ -29,7 +30,6 @@ interface StatsDao {
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun getSessionById(id: Long): SessionEntity?
 
-    /** Незакрытая сессия — признак прошлого краша. */
     @Query(
         "SELECT * FROM sessions WHERE ended_at IS NULL " +
                 "ORDER BY started_at DESC LIMIT 1"
@@ -89,6 +89,15 @@ interface StatsDao {
 
     @Insert
     suspend fun insertEvent(event: EventEntity): Long
+
+    /**
+     * FIX 5.10-stat-activity-a:
+     * @Transaction — одна транзакция на весь список.
+     * Без аннотации Room мог выполнять N отдельных транзакций.
+     */
+    @Transaction
+    @Insert
+    suspend fun insertEvents(events: List<EventEntity>): List<Long>
 
     @Query("SELECT * FROM events WHERE session_id = :sessionId ORDER BY at_ts")
     suspend fun getEventsForSession(sessionId: Long): List<EventEntity>
