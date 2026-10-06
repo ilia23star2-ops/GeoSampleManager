@@ -2,41 +2,57 @@
 
 ## Текущий фокус
 
-**Фича `feature/5.9-full-project` — на выходе.**
+**Фича `feature/5.10-shadow-stats` — в работе.**
 
-Закрыты: **Статистика, Редактирование, БД, logs, Настройки,
-Главная, exit, sort-normalize, tts-audio-mode.**
+Закрыты: `stat-model`, `stat-session`, `stat-activity-a`,
+`stat-activity-b`, `stat-tabs`, `stat-errors-a`, `stat-errors-b`.
+
+Осталось: `stat-admin-ui`, `stat-daily-file`, `5.10-pr`.
+
+Спецификация — `docs/SHADOW_STATS.md`.
 
 ## Ближайшие заходы
 
-### 1. `docs/5.9-final` — доки + правила
+### 1. `5.10-stat-admin-ui` — экран админа
 
 Один заход:
-- правки в `AI_RULES.md` (термины «тесты зелёные» / «норм»,
-  одна незакрытая ветка, комментарии во время работы);
-- обновление `PROGRESS.md`, `NEXT_STEPS.md`, `CONTEXT_BRIEF.md`,
-  `TESTING.md`;
-- черновик `docs/SHADOW_STATS.md` — спецификация 5.10.
+- `AdminPanelScreen.kt` — экран дня (даты, сессии, timeline вкладок,
+  лента событий с фильтром по ошибкам).
+- `AdminPanelViewModel.kt` — загрузка дня из `stats.db`.
+- Компоненты: `SessionCard`, `TabTimelineBar`, `EventsList`,
+  `ProblemsBlock`.
+- Правки `SettingsScreen` — долгий тап на версии открывает админку.
 
-### 2. PR `feature/5.9-full-project` → `main`
+### 2. `5.10-stat-daily-file` — экспорт и ротация
 
-- Когда все заходы 5.9 закрыты.
+Один заход:
+- `StatsExporter.kt` — `.stats/YYYY-MM-DD.json` по кнопке в админке.
+- `StatsRotator.kt` — месячная ротация `active.db` →
+  `filesDir/stats/archive/YYYY-MM.db`.
+- `LogsDbCleanup.kt` — удаление `logs.db` при апдейте.
+- Правки `GeoSampleApp.onCreate`.
+
+### 3. `5.10-pr` — PR фичи в main
+
+- Когда все пачки 5.10 закрыты.
 - PR через github.com в браузере.
 - Unit-тесты авто на PR.
 - Ветку фичи **не удалять** после merge (архив).
-
-### 3. `feature/5.10-shadow-stats` — теневая статистика
-
-- Сначала — полная спецификация в `docs/SHADOW_STATS.md`.
-- Потом — пачки по модели, записи сессий, UI админа.
-- Скрытая от ОП, вход — долгий тап на версии.
 
 ### 4. `5.9-mass-add` — в долгом ящике
 
 По решению пользователя — отложено до лучших времён.
 
+### 5. Долг — PR `feature/5.9-full-project` → `main`
+
+Фича 5.9 готова, но PR ещё не сделан. Ждёт своего окна.
+
 ## Отложенные задачи
 
+- **5.10 immutability.** Хеш `stats.db` + метка последнего старта.
+  После MVP.
+- **5.10 «краш + удаление БД за 5 мин» → warn.** Правило из §4.7
+  спеки. После MVP.
 - **И-24.** Vosk обрывает длинные номера. До `e4d`.
 - **И-35.** Vosk путает «четвёртая» / «четырнадцатая». До `e4d`.
 - **D.** Команды выбора наряда/участка голосом.
