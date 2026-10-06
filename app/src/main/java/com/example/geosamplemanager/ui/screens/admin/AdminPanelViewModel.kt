@@ -23,13 +23,22 @@ import kotlinx.coroutines.withContext
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  * FIX 5.10-stat-admin-v2-details-a: openVisit.
  * FIX 5.10-stat-admin-v2-details-c: openEvent, фильтр категорий.
+ * FIX 5.10-stat-daily-file-1: exportDay.
  *
- * FIX 5.10-stat-daily-file-1:
- *  - exportDay() — экспорт дня в filesDir/stats/exports/;
- *  - диагностика запускается перед экспортом (У5=В);
- *  - _exportMessage + clearExportMessage для UI-подсказки.
+ * FIX 5.10-stat-admin-password:
+ *  - isAuthenticated — открыт ли доступ;
+ *  - passwordInput — то, что вводит админ;
+ *  - tryUnlock / lock / setPasswordInput;
+ *  - У9=А: пароль спрашивается при каждом открытии панели
+ *    (lock() вызывается из UI при закрытии).
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val _isAuthenticated = MutableStateFlow(false)
+    val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
+    private val _passwordInput = MutableStateFlow("")
+    val passwordInput: StateFlow<String> = _passwordInput.asStateFlow()
 
     private val _dayView = MutableStateFlow<DayView?>(null)
     val dayView: StateFlow<DayView?> = _dayView.asStateFlow()
@@ -70,12 +79,8 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     val message: StateFlow<String?> = _message.asStateFlow()
 
     init {
-        viewModelScope.launch {
-            val today = AdminPanelDateUtils.today()
-            _selectedDate.value = today
-            refreshAvailableDates(today)
-            loadDayInternal(today)
-        }
+        // FIX 5.10-stat-admin-password: пока не авторизован,
+        // данные не грузим — экономия.
     }
 
     fun clearMessage() {
@@ -84,6 +89,51 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
 
     fun clearExportMessage() {
         _exportMessage.value = null
+    }
+
+    // ============================================================
+    // Авторизация (FIX 5.10-stat-admin-password)
+    // ============================================================
+
+    fun setPasswordInput(input: String) {
+        _passwordInput.value = input
+    }
+
+    /**
+     * Попытка входа. При верном пароле — переключает
+     * isAuthenticated в true и стартует загрузку данных.
+     * При неверном — очищает поле (У10=А).
+     */
+    fun tryUnlock() {
+        if (AdminPanelAuth.checkPassword(_passwordInput.value)) {
+            _isAuthenticated.value = true
+            _passwordInput.value = ""
+            onUnlocked()
+        } else {
+            _passwordInput.value = ""
+        }
+    }
+
+    /**
+     * Сброс авторизации. Зовётся из UI при закрытии панели,
+     * чтобы следующее открытие снова спросило пароль.
+     */
+    fun lock() {
+        _isAuthenticated.value = false
+        _passwordInput.value = ""
+    }
+
+    /**
+     * Однократный старт работы после входа: подгрузка сегодняшнего
+     * дня и списка дат.
+     */
+    private fun onUnlocked() {
+        viewModelScope.launch {
+            val today = AdminPanelDateUtils.today()
+            _selectedDate.value = today
+            refreshAvailableDates(today)
+            loadDayInternal(today)
+        }
     }
 
     // ============================================================
@@ -129,6 +179,7 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     // ============================================================
 
     fun loadToday() {
+        if (!_isAuthenticated.value) return
         viewModelScope.launch {
             val today = AdminPanelDateUtils.today()
             _selectedDate.value = today
@@ -138,6 +189,7 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun selectDate(date: String) {
+        if (!_isAuthenticated.value) return
         if (date == _selectedDate.value) return
         _selectedDate.value = date
         viewModelScope.launch { loadDayInternal(date) }
@@ -166,6 +218,7 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun loadOrders() {
+        if (!_isAuthenticated.value) return
         viewModelScope.launch {
             try {
                 val app = getApplication<Application>() as GeoSampleApp
@@ -206,15 +259,11 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // ============================================================
-    // Экспорт дня (FIX 5.10-stat-daily-file-1)
+    // Экспорт дня
     // ============================================================
 
-    /**
-     * Экспорт текущего дня в filesDir/stats/exports/YYYY-MM-DD.json.
-     * Перед экспортом запускает диагностику БД, чтобы блок
-     * db_problems в JSON содержал реальные счётчики (У5=В).
-     */
     fun exportDay() {
+        if (!_isAuthenticated.value) return
         viewModelScope.launch {
             try {
                 val dv = _dayView.value
