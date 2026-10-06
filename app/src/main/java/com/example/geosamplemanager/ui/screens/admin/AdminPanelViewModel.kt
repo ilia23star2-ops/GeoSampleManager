@@ -11,114 +11,136 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Calendar
 
 /**
  * FIX 5.10-stat-admin-ui-1:
- * ViewModel экрана админа. Грузит сегодняшний день из stats.db
- * и собирает DayView через AdminPanelAggregator.
+ * ViewModel экрана админа. Грузит день из stats.db и собирает
+ * DayView через AdminPanelAggregator.
  *
- * Особенности:
- *  - открытые визиты «дозакрываются» на момент чтения: иначе
- *    duration_sec в БД ещё нулевой;
- *  - ProblemsView на первой версии — нули. Реальная загрузка
- *    диагностики подключается отдельно.
+ * FIX 5.10-stat-admin-ui-4:
+ *  - выбор дня: availableDates + selectedDate + selectDate;
+ *  - по умолчанию — сегодня; сбрасывается при пересоздании VM;
+ *  - список дат — из sessions (гибрид), daily_summary позже.
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _dayView = MutableStateFlow<DayView?>(null)
     val dayView: StateFlow<DayView?> = _dayView.asStateFlow()
 
+    private val _availableDates = MutableStateFlow<List<String>>(emptyList())
+    val availableDates: StateFlow<List<String>> = _availableDates.asStateFlow()
+
+    private val _selectedDate = MutableStateFlow<String?>(null)
+    val selectedDate: StateFlow<String?> = _selectedDate.asStateFlow()
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
     init {
-        loadToday()
+        viewModelScope.launch {
+            val today = AdminPanelDateUtils.today()
+            _selectedDate.value = today
+            refreshAvailableDates(today)
+            loadDayInternal(today)
+        }
     }
 
     fun clearMessage() {
         _message.value = null
     }
 
+    /**
+     * Обновить текущий день (кнопка «Обновить» и pull при открытии).
+     * Сбрасывает выбор на сегодня, потому что админ чаще смотрит
+     * свежие данные.
+     */
     fun loadToday() {
-        loadDay(formatDate(System.currentTimeMillis()))
-    }
-
-    fun loadDay(date: String) {
         viewModelScope.launch {
-            try {
-                val ctx = getApplication<Application>()
-                val (start, end) = dayBounds(date)
-                val now = System.currentTimeMillis()
-
-                val view = withContext(Dispatchers.IO) {
-                    val dao = StatsDatabase.getInstance(ctx).statsDao()
-
-                    val sessions = dao.getSessionsBetween(start, end)
-
-                    val visitsBySession = sessions.associate { s ->
-                        s.id to dao.getVisitsForSession(s.id).map { v ->
-                            if (v.toTs == null) {
-                                v.copy(
-                                    toTs = now,
-                                    durationSec = ((now - v.fromTs) / 1000L).toInt()
-                                )
-                            } else v
-                        }
-                    }
-
-                    val orderWorkBySession = sessions.associate { s ->
-                        s.id to dao.getOrderWorkForSession(s.id)
-                    }
-
-                    val events = dao.getEventsBetween(start, end)
-                    val summary = dao.getDailySummary(date)
-
-                    AdminPanelAggregator.buildDayView(
-                        date = date,
-                        sessions = sessions,
-                        visitsBySession = visitsBySession,
-                        orderWorkBySession = orderWorkBySession,
-                        events = events,
-                        dailySummary = summary,
-                        problems = ProblemsView(0, 0, 0)
-                    )
-                }
-                _dayView.value = view
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _message.value = "Ошибка загрузки дня: ${e.message}"
-            }
+            val today = AdminPanelDateUtils.today()
+            _selectedDate.value = today
+            refreshAvailableDates(today)
+            loadDayInternal(today)
         }
     }
 
     /**
-     * Границы дня в миллисекундах. Дата — `YYYY-MM-DD`, локальная зона.
-     * Возврат: [начало дня, начало следующего дня).
+     * Выбрать конкретный день. Если он уже выбран — no-op.
      */
-    private fun dayBounds(date: String): Pair<Long, Long> {
-        val parts = date.split("-")
-        val cal = Calendar.getInstance()
-        cal.set(
-            parts[0].toInt(),
-            parts[1].toInt() - 1,
-            parts[2].toInt(),
-            0, 0, 0
-        )
-        cal.set(Calendar.MILLISECOND, 0)
-        val start = cal.timeInMillis
-        cal.add(Calendar.DAY_OF_MONTH, 1)
-        val end = cal.timeInMillis
-        return start to end
+    fun selectDate(date: String) {
+        if (date == _selectedDate.value) return
+        _selectedDate.value = date
+        viewModelScope.launch { loadDayInternal(date) }
     }
 
-    private fun formatDate(ts: Long): String {
-        val cal = Calendar.getInstance()
-        cal.timeInMillis = ts
-        val y = cal.get(Calendar.YEAR)
-        val m = cal.get(Calendar.MONTH) + 1
-        val d = cal.get(Calendar.DAY_OF_MONTH)
-        return "%04d-%02d-%02d".format(y, m, d)
+    /**
+     * Обновить список доступных дат. Сегодня добавляется всегда —
+     * даже если по нему ещё нет сессий.
+     */
+    private suspend fun refreshAvailableDates(today: String) {
+        val fromDb = try {
+            val ctx = getApplication<Application>()
+            withContext(Dispatchers.IO) {
+                StatsDatabase.getInstance(ctx).statsDao()
+                    .getDistinctSessionDates()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+        // Объединяем: [today] + все из БД, без дублей.
+        // Сортировка — по убыванию строки: YYYY-MM-DD сортируется
+        // лексикографически так же, как хронологически.
+        val merged = (listOf(today) + fromDb)
+            .distinct()
+            .sortedDescending()
+        _availableDates.value = merged
+    }
+
+    private suspend fun loadDayInternal(date: String) {
+        try {
+            val ctx = getApplication<Application>()
+            val (start, end) = AdminPanelDateUtils.dayBounds(date)
+            val now = System.currentTimeMillis()
+
+            val view = withContext(Dispatchers.IO) {
+                val dao = StatsDatabase.getInstance(ctx).statsDao()
+
+                val sessions = dao.getSessionsBetween(start, end)
+
+                val visitsBySession = sessions.associate { s ->
+                    s.id to dao.getVisitsForSession(s.id).map { v ->
+                        if (v.toTs == null) {
+                            v.copy(
+                                toTs = now,
+                                durationSec = ((now - v.fromTs) / 1000L).toInt()
+                            )
+                        } else v
+                    }
+                }
+
+                val orderWorkBySession = sessions.associate { s ->
+                    s.id to dao.getOrderWorkForSession(s.id)
+                }
+
+                val events = dao.getEventsBetween(start, end)
+                val summary = dao.getDailySummary(date)
+
+                AdminPanelAggregator.buildDayView(
+                    date = date,
+                    sessions = sessions,
+                    visitsBySession = visitsBySession,
+                    orderWorkBySession = orderWorkBySession,
+                    events = events,
+                    dailySummary = summary,
+                    problems = ProblemsView(0, 0, 0)
+                )
+            }
+            _dayView.value = view
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _message.value = "Ошибка загрузки дня: ${e.message}"
+        }
     }
 }

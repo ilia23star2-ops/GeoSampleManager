@@ -17,6 +17,10 @@ import androidx.room.Update
  * FIX 5.10-stat-activity-b:
  *  - getOrderWorkById — трекеру нужен доступ к строке order_work
  *    по id, чтобы обновлять её после insert.
+ *
+ * FIX 5.10-stat-admin-ui-4:
+ *  - getDistinctSessionDates — список дат, по которым есть сессии.
+ *    Используется в dropdown выбора дня на экране админа.
  */
 @Dao
 interface StatsDao {
@@ -46,6 +50,20 @@ interface StatsDao {
                 "ORDER BY started_at"
     )
     suspend fun getSessionsBetween(fromTs: Long, toTs: Long): List<SessionEntity>
+
+    /**
+     * FIX 5.10-stat-admin-ui-4:
+     * Список уникальных дат (YYYY-MM-DD, локальная зона), по которым
+     * есть сессии. Сортировка — от свежих к старым.
+     *
+     * SQLite `date(ts, 'unixepoch', 'localtime')` возвращает
+     * YYYY-MM-DD с учётом локальной зоны устройства.
+     */
+    @Query(
+        "SELECT DISTINCT date(started_at / 1000, 'unixepoch', 'localtime') " +
+                "AS d FROM sessions ORDER BY started_at DESC"
+    )
+    suspend fun getDistinctSessionDates(): List<String>
 
     // ============================================================
     // tab_visits
