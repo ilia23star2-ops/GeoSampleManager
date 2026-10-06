@@ -13,11 +13,11 @@ import androidx.room.Update
  * FIX 5.10-stat-activity-a: @Transaction на insertEvents.
  * FIX 5.10-stat-activity-b: getOrderWorkById.
  * FIX 5.10-stat-admin-ui-4: getDistinctSessionDates.
+ * FIX 5.10-stat-admin-v2-orders-b: getAllOrderWork.
  *
- * FIX 5.10-stat-admin-v2-orders-b:
- *  - getAllOrderWork — все записи order_work за всё время.
- *    Используется табом «Наряды» админ-панели для сводки по
- *    нарядам (сумма секунд поиска/сверки).
+ * FIX 5.10-stat-daily-file-2:
+ *  - getMaxSessionStartedAt — максимальный started_at среди сессий.
+ *    Используется StatsRotator'ом для определения месяца данных.
  */
 @Dao
 interface StatsDao {
@@ -53,6 +53,15 @@ interface StatsDao {
                 "AS d FROM sessions ORDER BY started_at DESC"
     )
     suspend fun getDistinctSessionDates(): List<String>
+
+    /**
+     * FIX 5.10-stat-daily-file-2:
+     * Максимальный started_at среди сессий, или null если таблица
+     * пуста. Используется StatsRotator'ом для определения месяца
+     * данных в active.db.
+     */
+    @Query("SELECT MAX(started_at) FROM sessions")
+    suspend fun getMaxSessionStartedAt(): Long?
 
     // ============================================================
     // tab_visits
@@ -90,10 +99,6 @@ interface StatsDao {
     @Query("SELECT * FROM order_work WHERE session_id = :sessionId ORDER BY started_at")
     suspend fun getOrderWorkForSession(sessionId: Long): List<OrderWorkEntity>
 
-    /**
-     * FIX 5.10-stat-admin-v2-orders-b:
-     * Все записи order_work за всё время. Для таба «Наряды».
-     */
     @Query("SELECT * FROM order_work ORDER BY started_at DESC")
     suspend fun getAllOrderWork(): List<OrderWorkEntity>
 
