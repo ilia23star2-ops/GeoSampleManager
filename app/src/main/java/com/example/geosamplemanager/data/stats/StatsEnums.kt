@@ -64,3 +64,12 @@ enum class OrderWorkStatus(val code: String, val label: String) {
             values().firstOrNull { it.code == code } ?: IN_PROGRESS
     }
 }
+
+/**
+ * FIX 5.10-stat-activity-b: фаза наряда.
+ * В БД не хранится — это живое состояние OrderWorkTracker в памяти.
+ */
+enum class OrderWorkPhase(val code: String, val label: String) {
+    SEARCH("search", "Поиск"),
+    VERIFY("verify", "Сверка")
+}
