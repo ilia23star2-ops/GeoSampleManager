@@ -8,14 +8,15 @@ import com.example.geosamplemanager.data.stats.TabKind
 /**
  * FIX 5.10-stat-admin-ui-1:
  * UI-модели экрана админа. Иммутабельные, без зависимостей от Android
- * и Room. Строятся из сущностей stats.db в AdminPanelAggregator.
+ * и Room.
  *
  * FIX 5.10-stat-admin-ui-5a:
  *  - DayView.unfinishedOrders — незавершённые наряды дня (§7.6).
- *    Отсортированы по % found убыв → время убыв → orderId.
+ *
+ * FIX 5.10-stat-admin-v2-nav:
+ *  - TimelineSegment — сегмент таймлайна дня (сессия).
  */
 
-/** Полный снапшот дня для отображения. */
 data class DayView(
     val date: String,
     val sessions: List<SessionView>,
@@ -26,7 +27,6 @@ data class DayView(
     val problems: ProblemsView
 )
 
-/** Агрегаты дня. */
 data class DayTotals(
     val activeSec: Int,
     val idleSec: Int,
@@ -38,7 +38,6 @@ data class DayTotals(
     val warnsCount: Int
 )
 
-/** Одна сессия с визитами и работой с нарядами. */
 data class SessionView(
     val id: Long,
     val startedAt: Long,
@@ -50,7 +49,6 @@ data class SessionView(
     val orderWorks: List<OrderWorkView>
 )
 
-/** Визит вкладки внутри сессии. */
 data class TabVisitView(
     val tab: TabKind,
     val fromTs: Long,
@@ -58,7 +56,6 @@ data class TabVisitView(
     val durationSec: Int
 )
 
-/** Работа с нарядом внутри сессии. */
 data class OrderWorkView(
     val orderId: Long,
     val areaTitle: String,
@@ -71,11 +68,9 @@ data class OrderWorkView(
     val totalSamples: Int,
     val foundSamples: Int
 ) {
-    /** Прогресс в процентах (0..100). 0 — если нет проб. */
     val percent: Int
         get() = if (totalSamples <= 0) 0 else (foundSamples * 100) / totalSamples
 
-    /** Метка статуса для UI: «в поиске» / «в сверке» / «готов». */
     val statusLabel: String
         get() = when (status) {
             OrderWorkStatus.IN_PROGRESS -> "в поиске"
@@ -84,14 +79,12 @@ data class OrderWorkView(
         }
 }
 
-/** Сводка по вкладке: сколько секунд суммарно и доля от общего. */
 data class TabUsage(
     val tab: TabKind,
     val totalSec: Int,
     val percent: Int
 )
 
-/** Событие для ленты. */
 data class EventView(
     val atTs: Long,
     val level: EventLevel,
@@ -100,10 +93,6 @@ data class EventView(
     val detailsJson: String?
 )
 
-/**
- * Проблемы БД. В первой версии — нули, реальная загрузка будет
- * подключена отдельно (через DatabaseRepository.runDiagnostics).
- */
 data class ProblemsView(
     val orphanOrders: Int,
     val orphanSamples: Int,
@@ -112,3 +101,18 @@ data class ProblemsView(
     val isEmpty: Boolean
         get() = orphanOrders == 0 && orphanSamples == 0 && brokenPhotos == 0
 }
+
+/**
+ * FIX 5.10-stat-admin-v2-nav:
+ * Сегмент таймлайна дня. Пока — только сессии (полосы на шкале).
+ * В пачке v2-details сюда добавятся подсегменты по вкладкам.
+ *
+ * Время — абсолютные timestamp в миллисекундах. UI сам переводит
+ * их в координаты X через dayBounds(date).
+ */
+data class TimelineSegment(
+    val sessionId: Long,
+    val fromTs: Long,
+    val toTs: Long,
+    val crashFlag: Boolean = false
+)

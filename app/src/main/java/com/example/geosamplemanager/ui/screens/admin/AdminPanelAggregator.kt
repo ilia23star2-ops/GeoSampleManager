@@ -17,8 +17,10 @@ import com.example.geosamplemanager.data.stats.TabVisitEntity
  *
  * FIX 5.10-stat-admin-ui-5a:
  *  - DayView.unfinishedOrders — незавершённые наряды (§7.6);
- *  - сортировка: % found убыв → время последнего действия убыв →
- *    orderId.
+ *  - сортировка: % found убыв → время последнего действия убыв → orderId.
+ *
+ * FIX 5.10-stat-admin-v2-nav:
+ *  - computeTimelineSegments — сессии как полосы на таймлайне дня.
  */
 object AdminPanelAggregator {
 
@@ -91,16 +93,35 @@ object AdminPanelAggregator {
     }
 
     /**
-     * FIX 5.10-stat-admin-ui-5a:
-     * Незавершённые наряды (§7.6). Собираются со всех сессий дня,
-     * фильтруются по `status != DONE`. Сортировка:
-     *  1. % found убыв (сначала «близкие к завершению»);
-     *  2. время последнего действия убыв (endedAt ?: startedAt);
-     *  3. orderId возрастание (стабильный ключ).
+     * FIX 5.10-stat-admin-v2-nav:
+     * Сессии дня как сегменты таймлайна. Время обрезается по
+     * границам дня — сессия, начавшаяся вчера или тянущаяся до
+     * следующего утра, не «вылезает» за шкалу.
      *
-     * Дубликаты по orderId не схлопываются: если оператор сегодня
-     * дважды открывал один наряд, будет две строки — это видно
-     * в ленте и полезно.
+     * Открытые сессии (ended_at = null) закрываются на `now`,
+     * но не позже конца дня.
+     */
+    fun computeTimelineSegments(
+        sessions: List<SessionEntity>,
+        date: String,
+        now: Long
+    ): List<TimelineSegment> {
+        val (dayStart, dayEnd) = AdminPanelDateUtils.dayBounds(date)
+        return sessions.mapNotNull { s ->
+            val from = s.startedAt.coerceIn(dayStart, dayEnd)
+            val to = (s.endedAt ?: now).coerceIn(dayStart, dayEnd)
+            if (to <= from) return@mapNotNull null
+            TimelineSegment(
+                sessionId = s.id,
+                fromTs = from,
+                toTs = to,
+                crashFlag = s.crashFlag
+            )
+        }.sortedBy { it.fromTs }
+    }
+
+    /**
+     * Незавершённые наряды (§7.6).
      */
     fun computeUnfinishedOrders(sessions: List<SessionView>): List<OrderWorkView> {
         return sessions
@@ -113,11 +134,6 @@ object AdminPanelAggregator {
             )
     }
 
-    /**
-     * Сводные счётчики дня. `runs` — из daily_summary, если есть;
-     * иначе — число сессий. `readyOrders` — только из daily_summary
-     * (в первой версии без расчёта).
-     */
     fun computeTotals(
         sessions: List<SessionEntity>,
         events: List<EventEntity>,
@@ -144,11 +160,6 @@ object AdminPanelAggregator {
         )
     }
 
-    /**
-     * Доля каждой вкладки в общем времени визитов. Сортировка —
-     * по убыванию времени. Пустой список или нулевые длительности
-     * дают пустой результат (деления на ноль не будет).
-     */
     fun computeTabUsage(visits: List<TabVisitView>): List<TabUsage> {
         if (visits.isEmpty()) return emptyList()
 
@@ -172,13 +183,6 @@ object AdminPanelAggregator {
             }
     }
 
-    /**
-     * Человекочитаемая длительность.
-     *  - 0 или отрицательное → «0 сек»;
-     *  - до минуты → «N сек»;
-     *  - до часа → «M мин S сек»;
-     *  - час и более → «H ч M мин».
-     */
     fun formatDuration(sec: Int): String {
         if (sec <= 0) return "0 сек"
         val h = sec / 3600
