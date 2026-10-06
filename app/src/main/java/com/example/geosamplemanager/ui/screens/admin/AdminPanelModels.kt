@@ -9,6 +9,10 @@ import com.example.geosamplemanager.data.stats.TabKind
  * FIX 5.10-stat-admin-ui-1:
  * UI-модели экрана админа. Иммутабельные, без зависимостей от Android
  * и Room. Строятся из сущностей stats.db в AdminPanelAggregator.
+ *
+ * FIX 5.10-stat-admin-ui-5a:
+ *  - DayView.unfinishedOrders — незавершённые наряды дня (§7.6).
+ *    Отсортированы по % found убыв → время убыв → orderId.
  */
 
 /** Полный снапшот дня для отображения. */
@@ -17,6 +21,7 @@ data class DayView(
     val sessions: List<SessionView>,
     val totals: DayTotals,
     val tabUsage: List<TabUsage>,
+    val unfinishedOrders: List<OrderWorkView>,
     val events: List<EventView>,
     val problems: ProblemsView
 )
@@ -65,7 +70,19 @@ data class OrderWorkView(
     val status: OrderWorkStatus,
     val totalSamples: Int,
     val foundSamples: Int
-)
+) {
+    /** Прогресс в процентах (0..100). 0 — если нет проб. */
+    val percent: Int
+        get() = if (totalSamples <= 0) 0 else (foundSamples * 100) / totalSamples
+
+    /** Метка статуса для UI: «в поиске» / «в сверке» / «готов». */
+    val statusLabel: String
+        get() = when (status) {
+            OrderWorkStatus.IN_PROGRESS -> "в поиске"
+            OrderWorkStatus.HALF_DONE -> "в сверке"
+            OrderWorkStatus.DONE -> "готов"
+        }
+}
 
 /** Сводка по вкладке: сколько секунд суммарно и доля от общего. */
 data class TabUsage(
