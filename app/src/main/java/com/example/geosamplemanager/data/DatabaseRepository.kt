@@ -2,6 +2,7 @@ package com.example.geosamplemanager.data
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.example.geosamplemanager.data.dao.OrderSampleCounts
 import com.example.geosamplemanager.data.diagnostics.DbDiagnosticsEngine
 import com.example.geosamplemanager.data.diagnostics.DbIssue
 import com.example.geosamplemanager.data.entity.AreaEntity
@@ -28,6 +29,10 @@ import java.io.File
  *    SQL, без файловых проверок);
  *  - countOrphanSamples() — количество проб без наряда.
  *    Используется индикатором «База в порядке» на Главной.
+ *
+ * FIX 5.10-stat-admin-v2-orders-a:
+ *  - getSampleCountsByOrder() — счётчики проб по всем нарядам
+ *    одним запросом. Используется табом «Наряды» админ-панели.
  */
 data class DbInfo(
     val dbPath: String,
@@ -161,6 +166,14 @@ class DatabaseRepository(context: Context) {
         val found = sampleDao.getFoundCountForOrder(orderId)
         return OrderStats(total = total, found = found)
     }
+
+    /**
+     * FIX 5.10-stat-admin-v2-orders-a:
+     * Счётчики проб по всем нарядам одним запросом. Наряды без
+     * проб в результате отсутствуют.
+     */
+    suspend fun getSampleCountsByOrder(): List<OrderSampleCounts> =
+        sampleDao.getSampleCountsByOrder()
 
     // ============ СКВАЖИНЫ ============
 
