@@ -15,6 +15,11 @@ import kotlinx.coroutines.launch
  *  - init OrderWorkTracker при старте сессии;
  *  - bindSession при открытии новой сессии;
  *  - closeCurrentWork при закрытии сессии.
+ *
+ * FIX 5.10-stat-tabs:
+ *  - init TabVisitTracker при старте;
+ *  - bindSession при открытии новой сессии;
+ *  - closeCurrentVisit при закрытии сессии.
  */
 object SessionTracker {
 
@@ -32,6 +37,7 @@ object SessionTracker {
         if (appContext != null) return
         appContext = context.applicationContext
         OrderWorkTracker.init(context)
+        TabVisitTracker.init(context)
     }
 
     fun currentId(): Long? = currentSessionId
@@ -79,6 +85,7 @@ object SessionTracker {
                 )
                 currentSessionId = newId
                 OrderWorkTracker.bindSession(newId)
+                TabVisitTracker.bindSession(newId)
                 Log.i(TAG, "Сессия открыта id=$newId")
             } catch (e: Exception) {
                 Log.e(TAG, "onAppStart: ошибка", e)
@@ -127,6 +134,9 @@ object SessionTracker {
 
         // FIX 5.10-stat-activity-b: закрыть открытый order_work.
         OrderWorkTracker.closeCurrentWork()
+
+        // FIX 5.10-stat-tabs: закрыть открытый визит вкладки.
+        TabVisitTracker.closeCurrentVisit()
 
         try {
             val dao = StatsDatabase.getInstance(ctx).statsDao()

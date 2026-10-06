@@ -25,6 +25,8 @@ import com.example.geosamplemanager.data.backup.BackupCounts
 import com.example.geosamplemanager.data.backup.ExitBackupWriter
 import com.example.geosamplemanager.data.logs.AppLog
 import com.example.geosamplemanager.data.logs.Log
+import com.example.geosamplemanager.data.stats.TabKind
+import com.example.geosamplemanager.data.stats.TabVisitTracker
 import com.example.geosamplemanager.ui.screens.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -41,6 +43,11 @@ import kotlinx.coroutines.withContext
  *  - BackHandler на Главной → диалог выхода;
  *  - overlay «Создаём резервный бэкап…» во время работы;
  *  - onExitApp() вызывается после бэкапа — закрывает приложение.
+ *
+ * FIX 5.10-stat-tabs:
+ *  - TabVisitTracker.onEnter при каждом изменении экрана,
+ *    включая первый. Логирование Log.nav по-прежнему пропускает
+ *    первый переход (firstNav) — это раздельные поведения.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,6 +67,11 @@ fun AppScaffold(
 
     var firstNav by remember { mutableStateOf(true) }
     LaunchedEffect(currentScreen) {
+        // FIX 5.10-stat-tabs: визит вкладки пишем всегда,
+        // включая первый. Логирование Log.nav — отдельное
+        // поведение, оно по-прежнему пропускает первый шаг.
+        TabVisitTracker.onEnter(currentScreen.toTabKind())
+
         if (firstNav) {
             firstNav = false
             return@LaunchedEffect
@@ -290,4 +302,19 @@ fun AppScaffold(
             }
         }
     }
+}
+
+/**
+ * FIX 5.10-stat-tabs:
+ * Маппинг экрана навигации на вкладку теневой статистики.
+ * Держим здесь, а не в Screen.kt — Screen не знает про stats.
+ */
+private fun Screen.toTabKind(): TabKind = when (this) {
+    Screen.MAIN -> TabKind.MAIN
+    Screen.ADD -> TabKind.ADD
+    Screen.SEARCH -> TabKind.SEARCH
+    Screen.STATS -> TabKind.STATS
+    Screen.EDIT -> TabKind.EDIT
+    Screen.DB -> TabKind.DB
+    Screen.SETTINGS -> TabKind.SETTINGS
 }
