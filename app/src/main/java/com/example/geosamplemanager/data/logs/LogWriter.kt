@@ -1,6 +1,7 @@
 package com.example.geosamplemanager.data.logs
 
 import android.content.Context
+import com.example.geosamplemanager.data.stats.AutoWarnRules
 import com.example.geosamplemanager.data.stats.EventEntity
 import com.example.geosamplemanager.data.stats.SessionTracker
 import com.example.geosamplemanager.data.stats.StatsDao
@@ -22,6 +23,12 @@ import java.util.UUID
  *  - параллельно с logs.db каждая запись уходит в stats.db.events;
  *  - statsDao получаем один раз при старте runWriter;
  *  - запись в stats.db — одним batch insert (одна транзакция).
+ *
+ * FIX 5.10-stat-errors-b:
+ *  - каждая ERROR-запись проходит через AutoWarnRules.onError;
+ *  - при срабатывании порога (3+ одинаковых ошибки подряд)
+ *    в тот же батч добавляется одна warn-запись с пометкой
+ *    `auto_warn` в details.
  */
 object LogWriter {
 
@@ -120,8 +127,24 @@ object LogWriter {
         buffer: MutableList<LogEntry>
     ): Int {
         if (buffer.isEmpty()) return 0
-        val batch = buffer.toList()
+        val batch = buffer.toList().toMutableList()
         buffer.clear()
+
+        // FIX 5.10-stat-errors-b:
+        // Проверяем каждую ERROR-запись. При срабатывании порога
+        // дописываем одну warn-запись в тот же батч — она пойдёт
+        // в logs.db, stats.db и файл одной транзакцией.
+        val autoWarns = mutableListOf<LogEntry>()
+        for (entry in batch) {
+            if (entry.level == LogLevel.ERROR.code) {
+                if (AutoWarnRules.onError(entry.category, entry.summary)) {
+                    autoWarns.add(buildAutoWarnEntry(entry))
+                }
+            }
+        }
+        if (autoWarns.isNotEmpty()) {
+            batch.addAll(autoWarns)
+        }
 
         val written = try {
             logDao.insertAll(batch)
@@ -157,5 +180,27 @@ object LogWriter {
         }
 
         return written
+    }
+
+    /**
+     * FIX 5.10-stat-errors-b:
+     * Сборка warn-записи про повторяющуюся ошибку. Всегда категория
+     * ERROR, уровень WARN. В details — ссылка на исходную запись.
+     */
+    private fun buildAutoWarnEntry(source: LogEntry): LogEntry {
+        val detailsMap = linkedMapOf<String, Any?>(
+            "auto_warn" to true,
+            "source_category" to source.category,
+            "source_summary" to source.summary,
+            "source_at" to source.createdAt
+        )
+        return LogEntry(
+            createdAt = System.currentTimeMillis(),
+            sessionId = source.sessionId,
+            category = LogCategory.ERROR.code,
+            level = LogLevel.WARN.code,
+            summary = "Повторяется ошибка: ${source.summary}",
+            details = DetailsJson.encode(detailsMap)
+        )
     }
 }
