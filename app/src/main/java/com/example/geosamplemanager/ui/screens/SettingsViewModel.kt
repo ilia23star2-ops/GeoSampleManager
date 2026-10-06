@@ -24,13 +24,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * FIX 5.9-settings-help-1: категория HELP.
+ *
+ * FIX 5.10-logs-cleanup-a:
+ *  - категория SYSTEM удалена — там была только кнопка
+ *    «Журнал событий», а сам журнал теперь в панели админа.
+ */
 enum class SettingsCategory(val title: String) {
     IMPORT("Импорт Excel"),
     VOICE("Голос"),
     SOUND("Звук"),
     BLUETOOTH("Bluetooth"),
     APPEARANCE("Внешний вид"),
-    SYSTEM("Система"),
     ABOUT("О приложении"),
     HELP("Справка")
 }
@@ -39,7 +45,6 @@ enum class SettingsCategory(val title: String) {
  * FIX 5.9-settings-sound-3-fix-2: setTtsSpeed(Float) — ползунок.
  * FIX 5.9-settings-scale: стейт внешнего вида + setUiScale.
  * FIX 5.9-settings-theme: setTheme(AppTheme).
- * FIX 5.9-settings-help-1: категория HELP для справки.
  */
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
 
