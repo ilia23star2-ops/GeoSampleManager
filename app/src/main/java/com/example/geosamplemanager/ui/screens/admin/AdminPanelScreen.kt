@@ -32,10 +32,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
  * FIX 5.10-stat-admin-v2-details-a: провалы.
  * FIX 5.10-stat-admin-v2-details-c: таб «Ошибки» + EventDetail.
+ * FIX 5.10-stat-daily-file-1: экспорт дня.
  *
- * FIX 5.10-stat-daily-file-1:
- *  - кнопка «Экспорт дня» (Icons.Default.Share) в TopAppBar;
- *  - Toast по завершении экспорта.
+ * FIX 5.10-stat-admin-password:
+ *  - рендер AdminPanelUnlockScreen, пока !isAuthenticated;
+ *  - заголовок «Панель администратора»;
+ *  - lock() при закрытии панели;
+ *  - один BackHandler с комплексной логикой.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,6 +48,8 @@ fun AdminPanelScreen(
 ) {
     val context = LocalContext.current
 
+    val isAuthenticated by viewModel.isAuthenticated.collectAsState()
+    val passwordInput by viewModel.passwordInput.collectAsState()
     val dayView by viewModel.dayView.collectAsState()
     val availableDates by viewModel.availableDates.collectAsState()
     val selectedDate by viewModel.selectedDate.collectAsState()
@@ -59,8 +64,6 @@ fun AdminPanelScreen(
 
     var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
-    LaunchedEffect(Unit) { viewModel.loadToday() }
-
     LaunchedEffect(exportMessage) {
         exportMessage?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
@@ -68,19 +71,43 @@ fun AdminPanelScreen(
         }
     }
 
-    BackHandler(enabled = viewModel.canGoBack()) {
-        viewModel.goBack()
+    // FIX 5.10-stat-admin-password: один BackHandler.
+    BackHandler(enabled = true) {
+        if (!isAuthenticated) {
+            viewModel.lock()
+            onClose()
+        } else if (viewModel.canGoBack()) {
+            viewModel.goBack()
+        } else {
+            viewModel.lock()
+            onClose()
+        }
     }
-    BackHandler(enabled = !viewModel.canGoBack()) {
-        onClose()
+
+    if (!isAuthenticated) {
+        AdminPanelUnlockScreen(
+            passwordInput = passwordInput,
+            onPasswordChange = { viewModel.setPasswordInput(it) },
+            onSubmit = { viewModel.tryUnlock() },
+            onCancel = {
+                viewModel.lock()
+                onClose()
+            }
+        )
+        return
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("Теневая статистика") },
+            title = { Text("Панель администратора") },
             navigationIcon = {
                 IconButton(onClick = {
-                    if (viewModel.canGoBack()) viewModel.goBack() else onClose()
+                    if (viewModel.canGoBack()) {
+                        viewModel.goBack()
+                    } else {
+                        viewModel.lock()
+                        onClose()
+                    }
                 }) {
                     Icon(Icons.Default.Close, contentDescription = "Закрыть")
                 }

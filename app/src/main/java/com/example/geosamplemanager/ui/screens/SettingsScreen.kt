@@ -52,6 +52,9 @@ import kotlin.math.roundToInt
  *  - долгий тап на версии в «О приложении» открывает AdminPanelScreen;
  *  - быстрый тап — no-op;
  *  - флаг открытия — локальный state, VM не трогаем.
+ *
+ * FIX 5.10-stat-admin-password:
+ *  - Toast при долгом тапе — «Панель администратора».
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -219,12 +222,6 @@ private fun CategoryContent(
 // РАЗДЕЛ «СПРАВКА»
 // ============================================================
 
-/**
- * FIX 5.9-settings-help-1:
- * Раздел-категория «Справка» в Настройках. Сам экран справки
- * (HelpScreen) открывается отдельно — как полноэкранный экран
- * с TopAppBar, по образцу LogsScreen.
- */
 @Composable
 private fun HelpSettingsContent(
     modifier: Modifier = Modifier,
@@ -811,10 +808,10 @@ private fun BluetoothSettingsContent(
 // ============================================================
 
 /**
- * FIX 5.10-stat-admin-ui-3:
- *  - долгий тап на строке версии открывает админ-панель;
- *  - быстрый тап — no-op (не путать ОП);
- *  - при успешном долгом тапе — короткий Toast.
+ * FIX 5.10-stat-admin-ui-3: долгий тап на версии открывает
+ * админ-панель.
+ *
+ * FIX 5.10-stat-admin-password: Toast «Панель администратора».
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -862,7 +859,7 @@ private fun AboutContent(
                     onLongClick = {
                         Toast.makeText(
                             context,
-                            "Админ-панель",
+                            "Панель администратора",
                             Toast.LENGTH_SHORT
                         ).show()
                         onOpenAdminPanel()
