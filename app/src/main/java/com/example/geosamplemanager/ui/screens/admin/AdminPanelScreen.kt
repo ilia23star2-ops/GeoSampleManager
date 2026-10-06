@@ -27,10 +27,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  * FIX 5.10-stat-admin-v2-nav: табы, таймлайн, Back.
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
+ * FIX 5.10-stat-admin-v2-details-a: провалы.
  *
- * FIX 5.10-stat-admin-v2-details-a:
- *  - SessionDetail и VisitDetail подключают реальные экраны
- *    вместо заглушек.
+ * FIX 5.10-stat-admin-v2-details-c:
+ *  - таб «Ошибки» подключает ErrorsTab;
+ *  - EventDetail подключает EventDetailScreen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,6 +48,7 @@ fun AdminPanelScreen(
     val timeFilterResult by viewModel.timeFilterResult.collectAsState()
     val allOrders by viewModel.allOrders.collectAsState()
     val ordersFilterInput by viewModel.ordersFilterInput.collectAsState()
+    val eventsFilterCategory by viewModel.eventsFilterCategory.collectAsState()
 
     var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
@@ -103,9 +105,11 @@ fun AdminPanelScreen(
                     filterInput = ordersFilterInput,
                     onFilterChange = { viewModel.setOrdersFilter(it) }
                 )
-                AdminPanelTab.ERRORS -> StubTab(
-                    title = "Ошибки",
-                    hint = "Список ошибок с контекстом — следующая пачка."
+                AdminPanelTab.ERRORS -> ErrorsTab(
+                    allEvents = dayView?.events.orEmpty(),
+                    filterCategory = eventsFilterCategory,
+                    onFilterChange = { viewModel.setEventsFilterCategory(it) },
+                    onOpenEvent = { sid, atTs -> viewModel.openEvent(sid, atTs) }
                 )
             }
 
@@ -138,6 +142,22 @@ fun AdminPanelScreen(
                     StubTab(
                         title = "Визит",
                         hint = "Данные визита не загружены."
+                    )
+                }
+            }
+
+            is AdminPanelRoute.EventDetail -> {
+                val dv = dayView
+                if (dv != null) {
+                    EventDetailScreen(
+                        dayView = dv,
+                        sessionId = r.sessionId,
+                        atTs = r.atTs
+                    )
+                } else {
+                    StubTab(
+                        title = "Событие",
+                        hint = "Данные дня не загружены."
                     )
                 }
             }
@@ -220,7 +240,7 @@ private fun DayTab(
                 UnfinishedOrdersBlock(orders = v.unfinishedOrders)
                 ProblemsBlock(
                     problems = v.problems,
-                    onOpenDiagnostics = { /* заглушка — пачка v2-details-b */ }
+                    onOpenDiagnostics = { /* заглушка — отдельная пачка */ }
                 )
                 if (v.sessions.isNotEmpty()) {
                     Text(

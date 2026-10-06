@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.stats.EventCategory
 import com.example.geosamplemanager.data.stats.StatsDatabase
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -19,9 +20,12 @@ import kotlinx.coroutines.withContext
  * FIX 5.10-stat-admin-v2-nav: маршруты, таймлайн.
  * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
  * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
+ * FIX 5.10-stat-admin-v2-details-a: openVisit.
  *
- * FIX 5.10-stat-admin-v2-details-a:
- *  - openVisit(sessionId, fromTs).
+ * FIX 5.10-stat-admin-v2-details-c:
+ *  - openEvent(sessionId, atTs);
+ *  - eventsFilterCategory — фильтр по категории на табе «Ошибки»;
+ *  - goBack из EventDetail возвращает на таб «Ошибки».
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -54,6 +58,9 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     private val _ordersFilterInput = MutableStateFlow("")
     val ordersFilterInput: StateFlow<String> = _ordersFilterInput.asStateFlow()
 
+    private val _eventsFilterCategory = MutableStateFlow<EventCategory?>(null)
+    val eventsFilterCategory: StateFlow<EventCategory?> = _eventsFilterCategory.asStateFlow()
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
 
@@ -85,12 +92,16 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         _route.value = AdminPanelRoute.SessionDetail(sessionId)
     }
 
-    /**
-     * FIX 5.10-stat-admin-v2-details-a: открытие визита по паре
-     * (sessionId, fromTs).
-     */
     fun openVisit(sessionId: Long, fromTs: Long) {
         _route.value = AdminPanelRoute.VisitDetail(sessionId, fromTs)
+    }
+
+    /**
+     * FIX 5.10-stat-admin-v2-details-c:
+     * Открыть событие в контексте ±2 мин. Источник — таб «Ошибки».
+     */
+    fun openEvent(sessionId: Long, atTs: Long) {
+        _route.value = AdminPanelRoute.EventDetail(sessionId, atTs)
     }
 
     fun canGoBack(): Boolean = _route.value != AdminPanelRoute.Default
@@ -98,6 +109,8 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
     fun goBack() {
         val current = _route.value
         _route.value = when (current) {
+            is AdminPanelRoute.EventDetail ->
+                AdminPanelRoute.Tab(AdminPanelTab.ERRORS)
             is AdminPanelRoute.VisitDetail ->
                 AdminPanelRoute.SessionDetail(current.sessionId)
             is AdminPanelRoute.SessionDetail ->
@@ -176,6 +189,15 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
                 _message.value = "Ошибка загрузки нарядов: ${e.message}"
             }
         }
+    }
+
+    // ============================================================
+    // Ошибки (FIX 5.10-stat-admin-v2-details-c)
+    // ============================================================
+
+    /** null — все категории. */
+    fun setEventsFilterCategory(category: EventCategory?) {
+        _eventsFilterCategory.value = category
     }
 
     private suspend fun refreshAvailableDates(today: String) {
