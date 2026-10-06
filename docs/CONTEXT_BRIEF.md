@@ -3,31 +3,41 @@
 Одна страница «где мы сейчас». Обновляется в конце каждой сессии.
 Новый ИИ читает вторым после `AI_RULES.md`.
 
-**Дата обновления:** 2026-10-05
+**Дата обновления:** 2026-10-06
 
 ## Где мы
 
 **Дома:** Android Studio. **На работе:** тоже Android Studio + git
 в терминале.
-**Фича в работе:** `feature/5.9-full-project` — серия 5.9 на выходе.
+**Фича в работе:** `feature/5.10-shadow-stats` — теневая статистика
+(скрытый от ОП инструмент админа).
 
-**Все вкладки закрыты:**
-- ✅ Статистика.
-- ✅ Редактирование.
-- ✅ БД (19 пачек).
-- ✅ Настройки (внешний вид, тема, справка, звук, голос, Bluetooth).
-- ✅ Главная (сводка, продолжить, незавершённые, проблемы, отчёт).
-- ✅ Журнал аудита (logs, 9 подзаходов).
+**Спецификация:** `docs/SHADOW_STATS.md` — утверждена.
 
-**Отдельные фиксы:**
-- sort-normalize, tts-audio-mode, tts-audio-mode-fix-normal,
-  settings-sound-3, settings-scale, settings-scale-2, settings-theme,
-  settings-help-1/2a/2b, main-a/main-b/main-fix, exit.
+**Закрыто в 5.10:**
+- ✅ `5.10-stat-model` — модель и БД (`StatsDatabase`, 5 сущностей, `StatsDao`).
+- ✅ `5.10-stat-session` — сессии (`SessionTracker`, `SessionTimeAccumulator`).
+- ✅ `5.10-stat-activity-a` — активность, batch insert.
+- ✅ `5.10-stat-activity-b` — фазы наряда (`OrderWorkTracker`, `OrderWorkPhaseLogic`).
+- ✅ `5.10-stat-tabs` — визиты вкладок (`TabVisitTracker`).
+- ✅ `5.10-stat-errors-a` — правила авто-повышения (`AutoWarnRules`).
+- ✅ `5.10-stat-errors-b` — интеграция авто-повышения в `voiceSearch` и `LogWriter`.
+- ✅ `5.10-stat-admin-ui-1` — модель и агрегаты админ-панели.
+- ✅ `5.10-stat-admin-ui-2` — UI экрана админа.
+- ✅ `5.10-stat-admin-ui-3` — интеграция (долгий тап в Настройках).
+- ✅ `5.10-stat-admin-ui-4` — выбор дня.
+- ✅ `5.10-stat-admin-ui-5a` — блок «Незавершённые».
+- 🟡 `5.10-stat-activity-b-2` — фазы наряда v2 (последнее событие). В работе.
 
-**Осталось в 5.9:**
-- `docs/5.9-final` — доки + правила (текущий заход).
-- **PR фичи `5.9-full-project` в `main`.**
-- `5.9-mass-add` — в долгом ящике.
+**Осталось в 5.10:**
+- `5.10-stat-admin-ui-5a-2` — агрегация дублей «Незавершённые» по `orderId`.
+- `5.10-stat-admin-ui-5b` — кнопка «Проверить БД» (ProblemsView).
+- `5.10-stat-daily-file-1` / `-2` — экспорт и ротация.
+- `5.10-pr` — PR фичи в `main`.
+
+**Архив (не удалять):**
+- `feature/5.9-full-project` — готова, PR ещё не сделан.
+- `feature/5.8.11-e4-voice-v2` — архив.
 
 ## Известные грабли (важно!)
 
@@ -68,9 +78,12 @@
   `AnimatedContent` ломает Compose Runtime при вложенности:
   `ArrayIndexOutOfBoundsException` в `SlotTableKt.key`. Внутренний
   экран — `Box` + `Column`, `SnackbarHost` вручную.
-- **`return@Column` в Compose — нестабильно.** Заменять на `when` /
-  `if-else`. Количество вызовов между рекомпозициями должно быть
-  стабильным.
+- **`return@Column` в Composable-лямбде — нельзя.** Падает с
+  `IndexOutOfBoundsException: Index -1 out of bounds for length 0`
+  в `androidx.compose.runtime.Stack.pop`. Composer не может
+  закрыть группу. Заменять на `when` / `if-else` с двумя
+  полными ветками. `return` из **самой** Composable-функции
+  (до первого `@Composable`-вызова) — безопасен.
 - **KDoc и `/*`.** Внутри `/**…*/` нельзя `/*` — ломает парсер.
   Ссылки на glob-паттерны писать без звёздочки: «папка assets/help»,
   не «assets/help/*.md».
@@ -102,6 +115,27 @@
 - **`LogWriter` использует `trySend`.**
 - **Батч: 50 записей или раз в 500 мс.**
 - **Файловый архив — `Downloads/GeoSampleManager/.logs/YYYY-MM-DD.log`.**
+- **Удаление `logs.db` запланировано в `5.10-stat-daily-file`.**
+
+### Теневая статистика (5.10)
+- **`stats.db` — отдельная БД.** Файл: `filesDir/stats/active.db`.
+- **5 таблиц:** `sessions`, `tab_visits`, `order_work`, `events`,
+  `daily_summary`. Все дочерние — FK на `sessions.id` с CASCADE.
+- **`SessionTracker.onAppStart`** открывает новую сессию; висящая
+  закрывается как `crash`.
+- **`OrderWorkTracker`** держит один активный наряд в памяти.
+  **Модель фаз «последнее событие»:** поиск → SEARCH,
+  отметка → VERIFY. Каждый интервал идёт в ту фазу, которой
+  начался. Пауза ≥ 60 сек в фазу не идёт; ≥ 30 мин — закрывает
+  наряд.
+- **`TabVisitTracker`** закрывает предыдущий визит при смене
+  вкладки; `Mutex` защищает от гонок.
+- **`AutoWarnRules`:** 5+ неудачных поисков подряд, 3+ одинаковых
+  ошибки подряд; `reset()` при старте сессии.
+- **`LogWriter.flush`** → `stats.db.events` (batch) + `AutoWarnRules.onError`.
+- **Админ-панель:** вход — долгий тап на версии в «О приложении»;
+  выбор дня — dropdown (список из `sessions`); блок «Незавершённые»
+  на экране; блок «Требует внимания» — заглушка (нули).
 
 ### Настройки (5.9-settings)
 - **`AppearanceSettings`** — `scale` + `theme`. Хранится в
@@ -132,6 +166,7 @@
 
 - Схема основной БД (version = 2).
 - `AI_RULES.md` — актуален.
+- Спецификация `docs/SHADOW_STATS.md` — утверждена.
 
 ## Правила текущей сессии
 

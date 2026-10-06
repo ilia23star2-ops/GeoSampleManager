@@ -152,6 +152,26 @@ interface SampleDao {
     @Query("SELECT COUNT(*) FROM samples WHERE order_id = :orderId AND found = 1")
     suspend fun getFoundCountForOrder(orderId: Long): Int
 
+    /**
+     * FIX 5.10-stat-admin-v2-orders-a:
+     * Счётчики проб по всем нарядам одним запросом. Используется
+     * табом «Наряды» админ-панели — чтобы не грузить все пробы
+     * в память.
+     *
+     * Наряды без проб не возвращаются (GROUP BY по существующим
+     * order_id). Вызывающий код сам подставляет 0/0.
+     */
+    @Query(
+        """
+        SELECT order_id AS orderId,
+               COUNT(*) AS totalSamples,
+               SUM(CASE WHEN found = 1 THEN 1 ELSE 0 END) AS foundSamples
+        FROM samples
+        GROUP BY order_id
+        """
+    )
+    suspend fun getSampleCountsByOrder(): List<OrderSampleCounts>
+
     @Query(
         """
         SELECT * FROM samples 

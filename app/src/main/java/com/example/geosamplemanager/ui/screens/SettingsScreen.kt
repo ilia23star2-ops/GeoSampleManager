@@ -3,8 +3,10 @@ package com.example.geosamplemanager.ui.screens
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,7 +17,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -37,6 +38,7 @@ import com.example.geosamplemanager.data.voice.SoundTestUtil
 import com.example.geosamplemanager.data.voice.TtsVolume
 import com.example.geosamplemanager.data.voice.VoiceMode
 import com.example.geosamplemanager.data.voice.VoiceSettings
+import com.example.geosamplemanager.ui.screens.admin.AdminPanelScreen
 import kotlin.math.roundToInt
 
 /**
@@ -44,6 +46,16 @@ import kotlin.math.roundToInt
  * FIX 5.9-settings-scale-2: чипы и пресеты в горизонтальном скролле.
  * FIX 5.9-settings-theme: в разделе «Внешний вид» — выбор темы.
  * FIX 5.9-settings-help-1: раздел «Справка» + открытие HelpScreen.
+ *
+ * FIX 5.10-stat-admin-ui-3: долгий тап на версии открывает
+ * AdminPanelScreen.
+ *
+ * FIX 5.10-stat-admin-password: Toast «Панель администратора».
+ *
+ * FIX 5.10-logs-cleanup-a:
+ *  - убран раздел «Система» с кнопкой «Журнал событий»;
+ *  - убрано открытие LogsScreen;
+ *  - LogsScreen.kt и LogsViewModel.kt удалены.
  */
 @Composable
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
@@ -51,8 +63,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val message by viewModel.message.collectAsState()
     val selected by viewModel.selectedCategory.collectAsState()
 
-    var openedLogs by remember { mutableStateOf(false) }
     var openedHelp by remember { mutableStateOf(false) }
+    var openAdminPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.reload() }
 
@@ -63,8 +75,10 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
         }
     }
 
-    if (openedLogs) {
-        LogsScreen(onClose = { openedLogs = false })
+    // FIX 5.10-stat-admin-ui-3: админ-панель перекрывает весь экран
+    // Настроек. Открытие — только долгим тапом на версии.
+    if (openAdminPanel) {
+        AdminPanelScreen(onClose = { openAdminPanel = false })
         return
     }
 
@@ -88,8 +102,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
-                    onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
+                    onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxHeight().weight(1f)
                 )
             }
@@ -100,8 +114,8 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
                 CategoryContent(
                     category = selected,
                     viewModel = viewModel,
-                    onOpenLogs = { openedLogs = true },
                     onOpenHelp = { openedHelp = true },
+                    onOpenAdminPanel = { openAdminPanel = true },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -180,8 +194,8 @@ private fun CategoryChipsRow(
 private fun CategoryContent(
     category: SettingsCategory,
     viewModel: SettingsViewModel,
-    onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
+    onOpenAdminPanel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     when (category) {
@@ -190,8 +204,7 @@ private fun CategoryContent(
         SettingsCategory.SOUND -> SoundSettingsContent(viewModel, modifier)
         SettingsCategory.BLUETOOTH -> BluetoothSettingsContent(viewModel, modifier)
         SettingsCategory.APPEARANCE -> AppearanceSettingsContent(viewModel, modifier)
-        SettingsCategory.SYSTEM -> SystemSettingsContent(modifier, onOpenLogs)
-        SettingsCategory.ABOUT -> AboutContent(modifier)
+        SettingsCategory.ABOUT -> AboutContent(modifier, onOpenAdminPanel)
         SettingsCategory.HELP -> HelpSettingsContent(modifier, onOpenHelp)
     }
 }
@@ -200,12 +213,6 @@ private fun CategoryContent(
 // РАЗДЕЛ «СПРАВКА»
 // ============================================================
 
-/**
- * FIX 5.9-settings-help-1:
- * Раздел-категория «Справка» в Настройках. Сам экран справки
- * (HelpScreen) открывается отдельно — как полноэкранный экран
- * с TopAppBar, по образцу LogsScreen.
- */
 @Composable
 private fun HelpSettingsContent(
     modifier: Modifier = Modifier,
@@ -791,8 +798,12 @@ private fun BluetoothSettingsContent(
 // РАЗДЕЛ «О ПРИЛОЖЕНИИ»
 // ============================================================
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AboutContent(modifier: Modifier = Modifier) {
+private fun AboutContent(
+    modifier: Modifier = Modifier,
+    onOpenAdminPanel: () -> Unit
+) {
     val context = LocalContext.current
     val versionName = remember {
         try {
@@ -826,11 +837,27 @@ private fun AboutContent(modifier: Modifier = Modifier) {
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
-        Text(
-            "Версия $versionName",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Box(
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = { /* быстрый тап — no-op */ },
+                    onLongClick = {
+                        Toast.makeText(
+                            context,
+                            "Панель администратора",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        onOpenAdminPanel()
+                    }
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Text(
+                "Версия $versionName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Spacer(Modifier.height(16.dp))
         Text(
             "Приложение для управления геохимическими пробами " +
@@ -841,54 +868,6 @@ private fun AboutContent(modifier: Modifier = Modifier) {
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-// ============================================================
-// РАЗДЕЛ «СИСТЕМА»
-// ============================================================
-
-@Composable
-private fun SystemSettingsContent(
-    modifier: Modifier = Modifier,
-    onOpenLogs: () -> Unit
-) {
-    Column(
-        modifier = modifier.verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            "Система",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(
-                    "Журнал событий",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "История действий в приложении: запуск, навигация, поиск, " +
-                            "отметки, операции с базой данных. Помогает понять, " +
-                            "что происходило в сессии, и разобрать ошибки.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = onOpenLogs,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.List, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Открыть журнал событий")
-                }
-            }
-        }
     }
 }
 

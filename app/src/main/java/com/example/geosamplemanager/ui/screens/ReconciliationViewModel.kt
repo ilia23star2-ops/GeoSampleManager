@@ -9,12 +9,16 @@ import com.example.geosamplemanager.GeoSampleApp
 import com.example.geosamplemanager.data.entity.SampleImageEntity
 import com.example.geosamplemanager.data.entity.SampleNoteEntity
 import com.example.geosamplemanager.data.logs.AppLog
+import com.example.geosamplemanager.data.logs.LogCategory
+import com.example.geosamplemanager.data.logs.LogWriter
 import com.example.geosamplemanager.data.logs.SampleRowDiff
 import com.example.geosamplemanager.data.reconciliation.MarkDecision
 import com.example.geosamplemanager.data.reconciliation.WeightValidation
 import com.example.geosamplemanager.data.reconciliation.analyzeMark
 import com.example.geosamplemanager.data.reconciliation.validateWeight
 import com.example.geosamplemanager.data.settings.ImportSettings
+import com.example.geosamplemanager.data.stats.AutoWarnRules
+import com.example.geosamplemanager.data.stats.OrderWorkTracker
 import com.example.geosamplemanager.data.util.PhotoStorage
 import com.example.geosamplemanager.data.voice.AnswerReason
 import com.example.geosamplemanager.data.voice.ConfirmedAction
@@ -293,12 +297,19 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     /**
      * FIX 5.9-logs-8a:
      * Выбор наряда логируется с контекстом участка.
+     *
+     * FIX 5.10-stat-activity-b-2:
+     * Выбор наряда из dropdown — тоже событие поиска. Правила
+     * времени общие с голосом и ручным вводом.
      */
     fun setSelectedOrder(orderTitle: String?) {
         state.selectedOrder = orderTitle
         val info = resolveOrderInfo(orderTitle)
         if (info != null) {
-            viewModelScope.launch { ensureOrderSamplesLoaded(info.orderId) }
+            viewModelScope.launch {
+                ensureOrderSamplesLoaded(info.orderId)
+                notifyOrderSearch(info.orderId, info.areaTitle, info.orderTitle)
+            }
         } else if (orderTitle != null) {
             Log.w(TAG, "setSelectedOrder: нет orderInfo для «$orderTitle»")
         }
@@ -436,6 +447,17 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         is QueryToken.Unknown -> t.raw
     }
 
+    /**
+     * FIX 5.10-stat-activity-b-2:
+     * Ручной поиск одного запроса — событие наряда.
+     *
+     * Если попадание многозначное — оператор ещё не выбрал наряд,
+     * трекер не трогаем. Если уникальное — грузим группу и зовём
+     * OrderWorkTracker.onSearch через notifyOrderSearch.
+     *
+     * Это делает ручной ввод равноправным с голосом. Правила
+     * накопления времени — общие (OrderWorkTracker).
+     */
     private suspend fun loadGroupsForQueryNew(tokens: List<QueryToken>) {
         try {
             val groups: List<DigitGroup> = DigitGrouper.group(tokens)
@@ -451,8 +473,20 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
 
             if (result !is SearchResult.Found) return
 
-            result.hits.map { it.orderId }.distinct().take(MAX_SEARCH_ORDERS)
-                .forEach { ensureOrderSamplesLoaded(it) }
+            if (result.isUnique) {
+                val hit = result.hits.first()
+                ensureOrderSamplesLoaded(hit.orderId)
+
+                // FIX 5.10-stat-activity-b-2: ручной поиск — событие наряда.
+                notifyOrderSearch(
+                    orderId = hit.orderId,
+                    areaTitle = hit.areaTitle,
+                    orderTitle = "Наряд №${hit.orderNumber}"
+                )
+            } else {
+                result.hits.map { it.orderId }.distinct().take(MAX_SEARCH_ORDERS)
+                    .forEach { ensureOrderSamplesLoaded(it) }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -460,6 +494,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
         }
     }
 
+    /**
+     * FIX 5.10-stat-activity-b-2:
+     * Ручной множественный поиск — каждое попадание = событие наряда.
+     * Учитываем первый orderId в каждом токене (совпадает с
+     * «первым показанным» в UI). Остальные в этом же токене — это
+     * альтернативы, оператор их не выбрал.
+     */
     private suspend fun buildMultiQueryGroups(tokens: List<String>) {
         try {
             val settings = withContext(Dispatchers.IO) { settingsRepo.load() }
@@ -470,6 +511,15 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     resolveTokenToOrderIds(token, settings)
                 }
                 orderIds.forEach { ensureOrderSamplesLoaded(it) }
+
+                // FIX 5.10-stat-activity-b-2: ручной множественный
+                // поиск — событие наряда по первому orderId токена.
+                orderIds.firstOrNull()?.let { orderId ->
+                    val info = orderInfoById[orderId]
+                    if (info != null) {
+                        notifyOrderSearch(orderId, info.areaTitle, info.orderTitle)
+                    }
+                }
 
                 val variants = orderIds.mapNotNull { orderId ->
                     val info = orderInfoById[orderId] ?: return@mapNotNull null
@@ -1129,6 +1179,14 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                             state.query = displayQuery
                         }
                     }
+                    // FIX 5.10-stat-errors-b: серия неудачных поисков
+                    // подряд. При достижении порога — warn в журнал.
+                    if (AutoWarnRules.onSearchNotFound()) {
+                        LogWriter.warn(
+                            LogCategory.SEARCH,
+                            "5 поисков подряд без результата"
+                        ).write()
+                    }
                     VoiceExecResult.NotFound
                 }
 
@@ -1138,6 +1196,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 }
 
                 is SearchResult.Found -> {
+                    // FIX 5.10-stat-errors-b: успешный поиск сбрасывает
+                    // серию неудач.
+                    AutoWarnRules.onSearchSuccess()
+
                     val hit = result.hits.first()
                     val isSample = result.matchedKind == UnifiedMatchKind.SAMPLE
 
@@ -1239,6 +1301,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     withContext(Dispatchers.Main) {
                         state.query = displayQuery
                     }
+
+                    // FIX 5.10-stat-activity-b: поиск — событие наряда.
+                    notifyOrderSearch(
+                        orderId = hit.orderId,
+                        areaTitle = hit.areaTitle,
+                        orderTitle = "Наряд №${hit.orderNumber}"
+                    )
 
                     VoiceExecResult.FoundOne(
                         query = displayQuery,
@@ -1342,6 +1411,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 AnswerReason.FOUND_OTHER_ORDER
             else -> null
         }
+
+        // FIX 5.10-stat-activity-b: переход по очереди — событие наряда.
+        notifyOrderSearch(
+            orderId = next.orderId,
+            areaTitle = next.areaTitle,
+            orderTitle = next.orderTitle
+        )
 
         return VoiceExecResult.FoundOne(
             query = next.wellNumber,
@@ -2154,6 +2230,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                     .detail("sample", num)
                     .detail("found", found)
                     .write()
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                if (found) notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2172,6 +2250,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("found", value)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                if (value) notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2193,6 +2273,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("control_weight", weight)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2224,6 +2306,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         .detail("blank_weight", weight)
                         .write()
                 }
+                // FIX 5.10-stat-activity-b: отметка — событие наряда.
+                notifyOrderMark(rowId)
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка: ${e.message}" }
         }
@@ -2352,6 +2436,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .detail("group", groupId)
                 .detail("order", orderTitle)
                 .write()
+            // FIX 5.10-stat-activity-b: массовая отметка — событие наряда.
+            groupId.toLongOrNull()?.let { notifyOrderMarkByOrderId(it) }
         }
         return marked
     }
@@ -2376,6 +2462,8 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                 .detail("order", orderTitle)
                 .detail("rows", rowIds.size)
                 .write()
+            // FIX 5.10-stat-activity-b: массовая отметка — событие наряда.
+            groupId.toLongOrNull()?.let { notifyOrderMarkByOrderId(it) }
         }
         return marked
     }
@@ -2619,9 +2707,10 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     /**
      * FIX 5.9-main-a:
      * Применить одноразовый запрос «открыть Сверку с нарядом X»,
-     * который сохранила Главная. Если запрос есть — выбрать участок
-     * и наряд. ReconciliationState.selectedArea/selectedOrder —
-     * это и есть «открытая вкладка Сверка с конкретным нарядом».
+     * который сохранила Главная.
+     *
+     * FIX 5.10-stat-activity-b-2: setSelectedOrder зовёт
+     * notifyOrderSearch, так что переход с Главной тоже учитывается.
      */
     private fun applyPendingSearchRequest() {
         val app = getApplication<Application>() as GeoSampleApp
@@ -2642,5 +2731,65 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
+    }
+
+    // ================================================================
+    // FIX 5.10-stat-activity-b: трекинг фаз наряда.
+    // ================================================================
+
+    /**
+     * Событие поиска — «упоминание наряда».
+     *
+     * Вызывается из всех путей, где оператор получил попадание
+     * по наряду:
+     *  - голосовой поиск (voiceSearch);
+     *  - переход по очереди (voiceNextInQueue);
+     *  - ручной ввод одного запроса (loadGroupsForQueryNew);
+     *  - ручной ввод нескольких запросов (buildMultiQueryGroups);
+     *  - выбор наряда из dropdown (setSelectedOrder);
+     *  - переход с Главной (applyPendingSearchRequest → setSelectedOrder).
+     *
+     * Правила накопления времени — те же, что для onMark
+     * (OrderWorkTracker.accumulateCurrentPhase).
+     */
+    private fun notifyOrderSearch(
+        orderId: Long,
+        areaTitle: String,
+        orderTitle: String
+    ) {
+        val group = state.groupById(orderId.toString()) ?: return
+        OrderWorkTracker.onSearch(
+            orderId = orderId,
+            areaTitle = areaTitle,
+            orderTitle = orderTitle,
+            totalSamples = group.rows.size,
+            foundSamples = group.rows.count { it.found }
+        )
+    }
+
+    /**
+     * Событие отметки — определяем наряд по строке пробы.
+     * Зовётся после успешного repo.setFound(id, true).
+     */
+    private fun notifyOrderMark(rowId: String) {
+        val row = state.rowById(rowId) ?: return
+        val orderId = row.groupId.toLongOrNull() ?: return
+        notifyOrderMarkByOrderId(orderId)
+    }
+
+    /**
+     * Событие отметки — когда id наряда известен из контекста
+     * (массовые операции).
+     */
+    private fun notifyOrderMarkByOrderId(orderId: Long) {
+        val info = orderInfoById[orderId] ?: return
+        val group = state.groupById(orderId.toString()) ?: return
+        OrderWorkTracker.onMark(
+            orderId = orderId,
+            areaTitle = info.areaTitle,
+            orderTitle = info.orderTitle,
+            totalSamples = group.rows.size,
+            foundSamples = group.rows.count { it.found }
+        )
     }
 }

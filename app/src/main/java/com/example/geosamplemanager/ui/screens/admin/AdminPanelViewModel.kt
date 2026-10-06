@@ -1,0 +1,383 @@
+package com.example.geosamplemanager.ui.screens.admin
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.geosamplemanager.GeoSampleApp
+import com.example.geosamplemanager.data.diagnostics.DbIssue
+import com.example.geosamplemanager.data.stats.EventCategory
+import com.example.geosamplemanager.data.stats.StatsDatabase
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * FIX 5.10-stat-admin-ui-1: ViewModel.
+ * FIX 5.10-stat-admin-ui-4: выбор дня.
+ * FIX 5.10-stat-admin-v2-nav: маршруты, таймлайн.
+ * FIX 5.10-stat-admin-v2-time-filter: фильтр времени.
+ * FIX 5.10-stat-admin-v2-orders-b: таб «Наряды».
+ * FIX 5.10-stat-admin-v2-details-a: openVisit.
+ * FIX 5.10-stat-admin-v2-details-c: openEvent, фильтр категорий.
+ * FIX 5.10-stat-daily-file-1: exportDay.
+ *
+ * FIX 5.10-stat-admin-password:
+ *  - isAuthenticated — открыт ли доступ;
+ *  - passwordInput — то, что вводит админ;
+ *  - tryUnlock / lock / setPasswordInput;
+ *  - У9=А: пароль спрашивается при каждом открытии панели
+ *    (lock() вызывается из UI при закрытии).
+ */
+class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val _isAuthenticated = MutableStateFlow(false)
+    val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
+    private val _passwordInput = MutableStateFlow("")
+    val passwordInput: StateFlow<String> = _passwordInput.asStateFlow()
+
+    private val _dayView = MutableStateFlow<DayView?>(null)
+    val dayView: StateFlow<DayView?> = _dayView.asStateFlow()
+
+    private val _availableDates = MutableStateFlow<List<String>>(emptyList())
+    val availableDates: StateFlow<List<String>> = _availableDates.asStateFlow()
+
+    private val _selectedDate = MutableStateFlow<String?>(null)
+    val selectedDate: StateFlow<String?> = _selectedDate.asStateFlow()
+
+    private val _timelineSegments = MutableStateFlow<List<TimelineSegment>>(emptyList())
+    val timelineSegments: StateFlow<List<TimelineSegment>> = _timelineSegments.asStateFlow()
+
+    private val _route = MutableStateFlow<AdminPanelRoute>(AdminPanelRoute.Default)
+    val route: StateFlow<AdminPanelRoute> = _route.asStateFlow()
+
+    private val _timeFilterInput = MutableStateFlow("")
+    val timeFilterInput: StateFlow<String> = _timeFilterInput.asStateFlow()
+
+    private val _timeFilterResult = MutableStateFlow<TimeFilterParseResult>(
+        TimeFilterParseResult.Empty
+    )
+    val timeFilterResult: StateFlow<TimeFilterParseResult> = _timeFilterResult.asStateFlow()
+
+    private val _allOrders = MutableStateFlow<List<AdminOrderSummary>>(emptyList())
+    val allOrders: StateFlow<List<AdminOrderSummary>> = _allOrders.asStateFlow()
+
+    private val _ordersFilterInput = MutableStateFlow("")
+    val ordersFilterInput: StateFlow<String> = _ordersFilterInput.asStateFlow()
+
+    private val _eventsFilterCategory = MutableStateFlow<EventCategory?>(null)
+    val eventsFilterCategory: StateFlow<EventCategory?> = _eventsFilterCategory.asStateFlow()
+
+    private val _exportMessage = MutableStateFlow<String?>(null)
+    val exportMessage: StateFlow<String?> = _exportMessage.asStateFlow()
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    init {
+        // FIX 5.10-stat-admin-password: пока не авторизован,
+        // данные не грузим — экономия.
+    }
+
+    fun clearMessage() {
+        _message.value = null
+    }
+
+    fun clearExportMessage() {
+        _exportMessage.value = null
+    }
+
+    // ============================================================
+    // Авторизация (FIX 5.10-stat-admin-password)
+    // ============================================================
+
+    fun setPasswordInput(input: String) {
+        _passwordInput.value = input
+    }
+
+    /**
+     * Попытка входа. При верном пароле — переключает
+     * isAuthenticated в true и стартует загрузку данных.
+     * При неверном — очищает поле (У10=А).
+     */
+    fun tryUnlock() {
+        if (AdminPanelAuth.checkPassword(_passwordInput.value)) {
+            _isAuthenticated.value = true
+            _passwordInput.value = ""
+            onUnlocked()
+        } else {
+            _passwordInput.value = ""
+        }
+    }
+
+    /**
+     * Сброс авторизации. Зовётся из UI при закрытии панели,
+     * чтобы следующее открытие снова спросило пароль.
+     */
+    fun lock() {
+        _isAuthenticated.value = false
+        _passwordInput.value = ""
+    }
+
+    /**
+     * Однократный старт работы после входа: подгрузка сегодняшнего
+     * дня и списка дат.
+     */
+    private fun onUnlocked() {
+        viewModelScope.launch {
+            val today = AdminPanelDateUtils.today()
+            _selectedDate.value = today
+            refreshAvailableDates(today)
+            loadDayInternal(today)
+        }
+    }
+
+    // ============================================================
+    // Навигация
+    // ============================================================
+
+    fun selectTab(tab: AdminPanelTab) {
+        _route.value = AdminPanelRoute.Tab(tab)
+        if (tab == AdminPanelTab.ORDERS && _allOrders.value.isEmpty()) {
+            loadOrders()
+        }
+    }
+
+    fun openSession(sessionId: Long) {
+        _route.value = AdminPanelRoute.SessionDetail(sessionId)
+    }
+
+    fun openVisit(sessionId: Long, fromTs: Long) {
+        _route.value = AdminPanelRoute.VisitDetail(sessionId, fromTs)
+    }
+
+    fun openEvent(sessionId: Long, atTs: Long) {
+        _route.value = AdminPanelRoute.EventDetail(sessionId, atTs)
+    }
+
+    fun canGoBack(): Boolean = _route.value != AdminPanelRoute.Default
+
+    fun goBack() {
+        val current = _route.value
+        _route.value = when (current) {
+            is AdminPanelRoute.EventDetail ->
+                AdminPanelRoute.Tab(AdminPanelTab.ERRORS)
+            is AdminPanelRoute.VisitDetail ->
+                AdminPanelRoute.SessionDetail(current.sessionId)
+            is AdminPanelRoute.SessionDetail ->
+                AdminPanelRoute.Tab(AdminPanelTab.DAY)
+            is AdminPanelRoute.Tab -> AdminPanelRoute.Default
+        }
+    }
+
+    // ============================================================
+    // День
+    // ============================================================
+
+    fun loadToday() {
+        if (!_isAuthenticated.value) return
+        viewModelScope.launch {
+            val today = AdminPanelDateUtils.today()
+            _selectedDate.value = today
+            refreshAvailableDates(today)
+            loadDayInternal(today)
+        }
+    }
+
+    fun selectDate(date: String) {
+        if (!_isAuthenticated.value) return
+        if (date == _selectedDate.value) return
+        _selectedDate.value = date
+        viewModelScope.launch { loadDayInternal(date) }
+    }
+
+    // ============================================================
+    // Фильтр времени
+    // ============================================================
+
+    fun setTimeFilterInput(input: String) {
+        _timeFilterInput.value = input
+        _timeFilterResult.value = TimeFilterParser.parse(input)
+    }
+
+    fun clearTimeFilter() {
+        _timeFilterInput.value = ""
+        _timeFilterResult.value = TimeFilterParseResult.Empty
+    }
+
+    // ============================================================
+    // Наряды
+    // ============================================================
+
+    fun setOrdersFilter(input: String) {
+        _ordersFilterInput.value = input
+    }
+
+    fun loadOrders() {
+        if (!_isAuthenticated.value) return
+        viewModelScope.launch {
+            try {
+                val app = getApplication<Application>() as GeoSampleApp
+                val repo = app.repository
+
+                val summary = withContext(Dispatchers.IO) {
+                    val areas = repo.getAreas()
+                    val orders = repo.getAllOrders()
+                    val counts = repo.getSampleCountsByOrder()
+                    val allWork = StatsDatabase.getInstance(app).statsDao()
+                        .getAllOrderWork()
+                    val workByOrder = allWork.groupBy { it.orderId }
+
+                    AdminPanelAggregator.buildOrdersSummary(
+                        areas = areas,
+                        orders = orders,
+                        countsByOrder = counts,
+                        workByOrder = workByOrder,
+                        limit = Int.MAX_VALUE
+                    )
+                }
+                _allOrders.value = summary
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _message.value = "Ошибка загрузки нарядов: ${e.message}"
+            }
+        }
+    }
+
+    // ============================================================
+    // Ошибки
+    // ============================================================
+
+    /** null — все категории. */
+    fun setEventsFilterCategory(category: EventCategory?) {
+        _eventsFilterCategory.value = category
+    }
+
+    // ============================================================
+    // Экспорт дня
+    // ============================================================
+
+    fun exportDay() {
+        if (!_isAuthenticated.value) return
+        viewModelScope.launch {
+            try {
+                val dv = _dayView.value
+                if (dv == null) {
+                    _exportMessage.value = "Данные дня не загружены"
+                    return@launch
+                }
+
+                val app = getApplication<Application>() as GeoSampleApp
+                val repo = app.repository
+
+                val problems = withContext(Dispatchers.IO) {
+                    val issues = repo.runDiagnostics()
+                    var orphanOrders = 0
+                    var orphanSamples = 0
+                    var brokenPhotos = 0
+                    for (i in issues) {
+                        when (i) {
+                            is DbIssue.OrphanOrder -> orphanOrders++
+                            is DbIssue.OrphanSample -> orphanSamples++
+                            is DbIssue.BrokenPhotoLink,
+                            is DbIssue.PhotoFlagMismatch -> brokenPhotos++
+                        }
+                    }
+                    ProblemsView(
+                        orphanOrders = orphanOrders,
+                        orphanSamples = orphanSamples,
+                        brokenPhotos = brokenPhotos
+                    )
+                }
+
+                val file = StatsExporter.export(app, dv, problems)
+                _exportMessage.value = if (file != null) {
+                    "Экспорт сохранён: ${file.name}"
+                } else {
+                    "Не удалось сохранить экспорт"
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _exportMessage.value = "Ошибка экспорта: ${e.message}"
+            }
+        }
+    }
+
+    private suspend fun refreshAvailableDates(today: String) {
+        val fromDb = try {
+            val ctx = getApplication<Application>()
+            withContext(Dispatchers.IO) {
+                StatsDatabase.getInstance(ctx).statsDao()
+                    .getDistinctSessionDates()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val merged = (listOf(today) + fromDb)
+            .distinct()
+            .sortedDescending()
+        _availableDates.value = merged
+    }
+
+    private suspend fun loadDayInternal(date: String) {
+        try {
+            val ctx = getApplication<Application>()
+            val (start, end) = AdminPanelDateUtils.dayBounds(date)
+            val now = System.currentTimeMillis()
+
+            val result = withContext(Dispatchers.IO) {
+                val dao = StatsDatabase.getInstance(ctx).statsDao()
+
+                val sessions = dao.getSessionsBetween(start, end)
+
+                val visitsBySession = sessions.associate { s ->
+                    s.id to dao.getVisitsForSession(s.id).map { v ->
+                        if (v.toTs == null) {
+                            v.copy(
+                                toTs = now,
+                                durationSec = ((now - v.fromTs) / 1000L).toInt()
+                            )
+                        } else v
+                    }
+                }
+
+                val orderWorkBySession = sessions.associate { s ->
+                    s.id to dao.getOrderWorkForSession(s.id)
+                }
+
+                val events = dao.getEventsBetween(start, end)
+                val summary = dao.getDailySummary(date)
+
+                val view = AdminPanelAggregator.buildDayView(
+                    date = date,
+                    sessions = sessions,
+                    visitsBySession = visitsBySession,
+                    orderWorkBySession = orderWorkBySession,
+                    events = events,
+                    dailySummary = summary,
+                    problems = ProblemsView(0, 0, 0)
+                )
+                val segments = AdminPanelAggregator.computeTimelineSegments(
+                    sessions = sessions,
+                    date = date,
+                    now = now
+                )
+                view to segments
+            }
+            _dayView.value = result.first
+            _timelineSegments.value = result.second
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _message.value = "Ошибка загрузки дня: ${e.message}"
+        }
+    }
+}

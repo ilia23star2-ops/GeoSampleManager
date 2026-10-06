@@ -1,5 +1,55 @@
 # PROGRESS.md — история заходов
 
+## 5.10 серия — теневая статистика
+
+**Дата:** 2026-10-06
+**Ветка:** `feature/5.10-shadow-stats`
+**Контекст:** скрытый от ОП инструмент админа — см.
+`docs/SHADOW_STATS.md`. Запись сессий, визитов вкладок, работы
+с нарядами и событий в отдельную `stats.db`.
+
+### Что закрыто в 5.10
+
+- ✅ **`5.10-stat-model`** — модель и БД: `StatsDatabase`, 5 сущностей,
+  `StatsDao`.
+- ✅ **`5.10-stat-session`** — сессии: `SessionTracker`, `SessionEntity`,
+  fg/bg/active/idle, `SessionTimeAccumulator`.
+- ✅ **`5.10-stat-activity-a`** — активность по событиям,
+  `ActivityAccumulator`, batch insert в `events` через `LogWriter`.
+- ✅ **`5.10-stat-activity-b`** — фазы наряда: `OrderWorkTracker`,
+  `OrderWorkPhaseLogic`, `order_work.search_sec / verify_sec / status`,
+  интеграция в `ReconciliationViewModel`. Фикс накопления фаз
+  (время считается на каждом событии, а не только при смене фазы).
+- ✅ **`5.10-stat-tabs`** — визиты вкладок: `TabVisitTracker`, правки
+  `SessionTracker` и `NavGraph`, тесты на чистую логику.
+- ✅ **`5.10-stat-errors-a`** — правила авто-повышения в `warn`:
+  `AutoWarnRules` (5+ неудачных поисков подряд; 3+ одинаковых
+  ошибки подряд). 12 юнит-тестов.
+- ✅ **`5.10-stat-errors-b`** — интеграция `AutoWarnRules`:
+  `SessionTracker.reset()` при старте сессии;
+  `ReconciliationViewModel.voiceSearch` → onSearchNotFound / Success;
+  `LogWriter.flush` → onError → дописывает `warn`-запись в тот же
+  батч.
+
+### Осталось в 5.10
+
+- ⬜ **`5.10-stat-admin-ui`** — экран админа: `AdminPanelScreen`,
+  `AdminPanelViewModel`, компоненты (`SessionCard`, `TabTimelineBar`,
+  `EventsList`, `ProblemsBlock`). Вход — долгий тап на версии
+  в Настройках.
+- ⬜ **`5.10-stat-daily-file`** — `.stats/YYYY-MM-DD.json` (экспорт
+  дня), `StatsRotator` (месячная ротация `active.db` →
+  `archive/YYYY-MM.db`), `LogsDbCleanup` (удаление `logs.db` при
+  апдейте).
+- ⬜ **`5.10-pr`** — PR фичи `5.10-shadow-stats` в `main`.
+
+### Отложено (после MVP)
+
+- «Краш + удаление БД за 5 мин» → `warn`. Отдельной пачкой.
+- Immutability: хеш `stats.db`, метка последнего старта.
+
+---
+
 ## 5.9 серия — допиливание вкладок
 
 **Дата:** 2026-09-29 … 2026-10-05
@@ -36,13 +86,6 @@
 
 - **`5.9-mass-add`** — в долгом ящике (по решению пользователя).
 - **PR `feature/5.9-full-project` → `main`.**
-
-### 5.10 (в плане)
-
-- **`5.10-shadow-stats`** — теневая статистика (черновик спецификации
-  в `docs/SHADOW_STATS.md`).
-- **5.10-polish** — общая полировка, туториалы.
-- **6.0 — релиз MVP.**
 
 ---
 

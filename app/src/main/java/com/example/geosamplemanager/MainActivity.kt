@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,21 +41,25 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.example.geosamplemanager.data.logs.Log
 import com.example.geosamplemanager.data.settings.AppTheme
+import com.example.geosamplemanager.data.stats.SessionTracker
 import com.example.geosamplemanager.data.voice.VoiceModelPreparer
 import com.example.geosamplemanager.ui.navigation.AppScaffold
 import com.example.geosamplemanager.ui.navigation.Screen
 import com.example.geosamplemanager.ui.navigation.SimpleViewModelStoreOwner
 import com.example.geosamplemanager.ui.theme.GeoSampleManagerTheme
+import kotlinx.coroutines.launch
 
 /**
  * FIX 5.9-logs-3: логируем onResume / onPause.
  * FIX 5.9-settings-bt: BLUETOOTH_CONNECT (API 31+).
  * FIX 5.9-settings-scale/scale-2: масштаб через LocalDensity.
  * FIX 5.9-settings-theme: тема из GeoSampleApp.appearance.
+ * FIX 5.9-exit: onExitApp в AppScaffold — finishAffinity().
  *
- * FIX 5.9-exit:
- *  - в ReadyContent прокидываем onExitApp в AppScaffold —
- *    finishAffinity() закрывает всё приложение.
+ * FIX 5.10-stat-session:
+ *  - onResume / onPause уведомляют SessionTracker — учёт fg/bg;
+ *  - onExitApp: SessionTracker.endSession(crashFlag = false)
+ *    перед finishAffinity() — закрываем сессию штатно.
  */
 class MainActivity : ComponentActivity() {
 
@@ -90,10 +95,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        SessionTracker.onActivityResume()
         Log.app("Приложение развёрнуто").write()
     }
 
     override fun onPause() {
+        SessionTracker.onActivityPause()
         Log.app("Приложение свёрнуто").write()
         super.onPause()
     }
@@ -154,9 +161,9 @@ private fun ReadyContent(app: GeoSampleApp) {
 
     val appearance by app.appearance.collectAsState()
 
-    // FIX 5.9-exit: получаем Activity, чтобы вызвать finishAffinity().
     val context = LocalContext.current
     val activity = context as? ComponentActivity
+    val scope = rememberCoroutineScope()
 
     key(tick) {
         val owner = remember { SimpleViewModelStoreOwner() }
@@ -178,7 +185,14 @@ private fun ReadyContent(app: GeoSampleApp) {
         ) {
             AppScaffold(
                 initialRoute = initialRoute,
-                onExitApp = { activity?.finishAffinity() }
+                onExitApp = {
+                    // FIX 5.10-stat-session: сначала закрываем сессию,
+                    // потом закрываем приложение.
+                    scope.launch {
+                        SessionTracker.endSession(crashFlag = false)
+                        activity?.finishAffinity()
+                    }
+                }
             )
         }
     }
