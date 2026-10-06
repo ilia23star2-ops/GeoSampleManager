@@ -14,13 +14,14 @@ import kotlinx.coroutines.withContext
 
 /**
  * FIX 5.10-stat-admin-ui-1:
- * ViewModel экрана админа. Грузит день из stats.db и собирает
- * DayView через AdminPanelAggregator.
+ * ViewModel экрана админа.
  *
- * FIX 5.10-stat-admin-ui-4:
- *  - выбор дня: availableDates + selectedDate + selectDate;
- *  - по умолчанию — сегодня; сбрасывается при пересоздании VM;
- *  - список дат — из sessions (гибрид), daily_summary позже.
+ * FIX 5.10-stat-admin-ui-4: выбор дня.
+ *
+ * FIX 5.10-stat-admin-v2-nav:
+ *  - route — навигация внутри панели (табы + детали);
+ *  - timelineScale — масштаб шкалы дня;
+ *  - goBack() — обработка системного Back.
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -32,6 +33,12 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _selectedDate = MutableStateFlow<String?>(null)
     val selectedDate: StateFlow<String?> = _selectedDate.asStateFlow()
+
+    private val _timelineSegments = MutableStateFlow<List<TimelineSegment>>(emptyList())
+    val timelineSegments: StateFlow<List<TimelineSegment>> = _timelineSegments.asStateFlow()
+
+    private val _route = MutableStateFlow<AdminPanelRoute>(AdminPanelRoute.Default)
+    val route: StateFlow<AdminPanelRoute> = _route.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -49,11 +56,44 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         _message.value = null
     }
 
-    /**
-     * Обновить текущий день (кнопка «Обновить» и pull при открытии).
-     * Сбрасывает выбор на сегодня, потому что админ чаще смотрит
-     * свежие данные.
-     */
+    // ============================================================
+    // Навигация
+    // ============================================================
+
+    fun selectTab(tab: AdminPanelTab) {
+        _route.value = AdminPanelRoute.Tab(tab)
+    }
+
+    fun openSession(sessionId: Long) {
+        _route.value = AdminPanelRoute.SessionDetail(sessionId)
+    }
+
+    fun openVisit(visitId: Long) {
+        _route.value = AdminPanelRoute.VisitDetail(visitId)
+    }
+
+    /** Можно ли вернуться назад (обрабатывается BackHandler). */
+    fun canGoBack(): Boolean = _route.value != AdminPanelRoute.Default
+
+    /** Вернуться на уровень вверх. */
+    fun goBack() {
+        val current = _route.value
+        _route.value = when (current) {
+            is AdminPanelRoute.SessionDetail,
+            is AdminPanelRoute.VisitDetail ->
+                AdminPanelRoute.Tab(AdminPanelTab.DAY)
+            is AdminPanelRoute.Tab -> if (current.tab == AdminPanelTab.DAY) {
+                AdminPanelRoute.Default
+            } else {
+                AdminPanelRoute.Default
+            }
+        }
+    }
+
+    // ============================================================
+    // День
+    // ============================================================
+
     fun loadToday() {
         viewModelScope.launch {
             val today = AdminPanelDateUtils.today()
@@ -63,19 +103,12 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    /**
-     * Выбрать конкретный день. Если он уже выбран — no-op.
-     */
     fun selectDate(date: String) {
         if (date == _selectedDate.value) return
         _selectedDate.value = date
         viewModelScope.launch { loadDayInternal(date) }
     }
 
-    /**
-     * Обновить список доступных дат. Сегодня добавляется всегда —
-     * даже если по нему ещё нет сессий.
-     */
     private suspend fun refreshAvailableDates(today: String) {
         val fromDb = try {
             val ctx = getApplication<Application>()
@@ -88,9 +121,6 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         } catch (_: Exception) {
             emptyList()
         }
-        // Объединяем: [today] + все из БД, без дублей.
-        // Сортировка — по убыванию строки: YYYY-MM-DD сортируется
-        // лексикографически так же, как хронологически.
         val merged = (listOf(today) + fromDb)
             .distinct()
             .sortedDescending()
@@ -103,7 +133,7 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
             val (start, end) = AdminPanelDateUtils.dayBounds(date)
             val now = System.currentTimeMillis()
 
-            val view = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 val dao = StatsDatabase.getInstance(ctx).statsDao()
 
                 val sessions = dao.getSessionsBetween(start, end)
@@ -126,7 +156,7 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
                 val events = dao.getEventsBetween(start, end)
                 val summary = dao.getDailySummary(date)
 
-                AdminPanelAggregator.buildDayView(
+                val view = AdminPanelAggregator.buildDayView(
                     date = date,
                     sessions = sessions,
                     visitsBySession = visitsBySession,
@@ -135,8 +165,15 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
                     dailySummary = summary,
                     problems = ProblemsView(0, 0, 0)
                 )
+                val segments = AdminPanelAggregator.computeTimelineSegments(
+                    sessions = sessions,
+                    date = date,
+                    now = now
+                )
+                view to segments
             }
-            _dayView.value = view
+            _dayView.value = result.first
+            _timelineSegments.value = result.second
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

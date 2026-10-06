@@ -1,6 +1,8 @@
 package com.example.geosamplemanager.ui.screens.admin
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,19 +20,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 /**
- * FIX 5.10-stat-admin-ui-2:
- * Полноэкранный экран админ-панели.
+ * FIX 5.10-stat-admin-ui-2: базовый экран админ-панели.
+ * FIX 5.10-stat-admin-ui-3: без return@Column, через when.
+ * FIX 5.10-stat-admin-ui-4: выбор дня.
+ * FIX 5.10-stat-admin-ui-5a: блок «Незавершённые».
  *
- * FIX 5.10-stat-admin-ui-3 (уточнение):
- * убран `return@Column` при пустом дне. Compose Runtime падал
- * с `IndexOutOfBoundsException` в `Stack.pop`. Заменено на
- * `when (dayView)` с двумя полными ветками.
- *
- * FIX 5.10-stat-admin-ui-4:
- * выбор дня через ExposedDropdownMenuBox под TopAppBar.
- *
- * FIX 5.10-stat-admin-ui-5a:
- * блок «Незавершённые» (§7.6) между timeline и ProblemsBlock.
+ * FIX 5.10-stat-admin-v2-nav:
+ *  - табы: День / Наряды / Ошибки;
+ *  - навигация по AdminPanelRoute (таб + детали);
+ *  - BackHandler — возврат на уровень вверх;
+ *  - DayTimelineBar 00:00–24:00 вместо процентной полосы;
+ *  - кликабельная сводка: бейджи ошибок/warn → таб «Ошибки».
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,14 +41,29 @@ fun AdminPanelScreen(
     val dayView by viewModel.dayView.collectAsState()
     val availableDates by viewModel.availableDates.collectAsState()
     val selectedDate by viewModel.selectedDate.collectAsState()
+    val timelineSegments by viewModel.timelineSegments.collectAsState()
+    val route by viewModel.route.collectAsState()
+
+    var timelineScale by remember { mutableStateOf(TimelineScale.DAY) }
 
     LaunchedEffect(Unit) { viewModel.loadToday() }
+
+    // Back внутри панели
+    BackHandler(enabled = viewModel.canGoBack()) {
+        viewModel.goBack()
+    }
+    // Back на верхнем уровне — закрывает панель
+    BackHandler(enabled = !viewModel.canGoBack()) {
+        onClose()
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Теневая статистика") },
             navigationIcon = {
-                IconButton(onClick = onClose) {
+                IconButton(onClick = {
+                    if (viewModel.canGoBack()) viewModel.goBack() else onClose()
+                }) {
                     Icon(Icons.Default.Close, contentDescription = "Закрыть")
                 }
             },
@@ -59,10 +74,79 @@ fun AdminPanelScreen(
             }
         )
 
+        AdminTabs(
+            current = (route as? AdminPanelRoute.Tab)?.tab ?: AdminPanelTab.DAY,
+            onSelect = { viewModel.selectTab(it) }
+        )
+
+        when (val r = route) {
+            is AdminPanelRoute.Tab -> when (r.tab) {
+                AdminPanelTab.DAY -> DayTab(
+                    dayView = dayView,
+                    selectedDate = selectedDate,
+                    availableDates = availableDates,
+                    timelineSegments = timelineSegments,
+                    timelineScale = timelineScale,
+                    onScaleChange = { timelineScale = it },
+                    onSelectDate = { viewModel.selectDate(it) },
+                    onOpenSession = { viewModel.openSession(it) },
+                    onOpenErrors = { viewModel.selectTab(AdminPanelTab.ERRORS) }
+                )
+                AdminPanelTab.ORDERS -> StubTab(
+                    title = "Наряды",
+                    hint = "Список нарядов с группировкой по участку — следующая пачка."
+                )
+                AdminPanelTab.ERRORS -> StubTab(
+                    title = "Ошибки",
+                    hint = "Список ошибок с контекстом — следующая пачка."
+                )
+            }
+
+            is AdminPanelRoute.SessionDetail -> StubTab(
+                title = "Сессия #${r.sessionId}",
+                hint = "Таймлайн вкладок внутри сессии — следующая пачка."
+            )
+            is AdminPanelRoute.VisitDetail -> StubTab(
+                title = "Визит #${r.visitId}",
+                hint = "Список действий визита — следующая пачка."
+            )
+        }
+    }
+}
+
+@Composable
+private fun AdminTabs(
+    current: AdminPanelTab,
+    onSelect: (AdminPanelTab) -> Unit
+) {
+    TabRow(selectedTabIndex = current.ordinal) {
+        AdminPanelTab.values().forEach { tab ->
+            Tab(
+                selected = tab == current,
+                onClick = { onSelect(tab) },
+                text = { Text(tab.title) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DayTab(
+    dayView: DayView?,
+    selectedDate: String?,
+    availableDates: List<String>,
+    timelineSegments: List<TimelineSegment>,
+    timelineScale: TimelineScale,
+    onScaleChange: (TimelineScale) -> Unit,
+    onSelectDate: (String) -> Unit,
+    onOpenSession: (Long) -> Unit,
+    onOpenErrors: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
         DaySelectorRow(
             dates = availableDates,
             selected = selectedDate,
-            onSelect = { viewModel.selectDate(it) }
+            onSelect = onSelectDate
         )
 
         when (val v = dayView) {
@@ -80,14 +164,24 @@ fun AdminPanelScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                TotalsCard(totals = v.totals)
+                TotalsCard(
+                    totals = v.totals,
+                    onOpenErrors = onOpenErrors
+                )
+                DayTimelineBar(
+                    date = v.date,
+                    segments = timelineSegments,
+                    scale = timelineScale,
+                    onScaleChange = onScaleChange,
+                    onSessionClick = onOpenSession
+                )
                 if (v.tabUsage.isNotEmpty()) {
                     TabTimelineBar(usage = v.tabUsage)
                 }
                 UnfinishedOrdersBlock(orders = v.unfinishedOrders)
                 ProblemsBlock(
                     problems = v.problems,
-                    onOpenDiagnostics = { /* заглушка — реально в -5b */ }
+                    onOpenDiagnostics = { /* заглушка — пачка v2-details */ }
                 )
                 if (v.sessions.isNotEmpty()) {
                     Text(
@@ -107,10 +201,29 @@ fun AdminPanelScreen(
     }
 }
 
-/**
- * FIX 5.10-stat-admin-ui-4:
- * Строка выбора дня.
- */
+@Composable
+private fun StubTab(title: String, hint: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            hint,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DaySelectorRow(
@@ -131,7 +244,7 @@ private fun DaySelectorRow(
     ) {
         OutlinedTextField(
             value = AdminPanelDateUtils.label(selected),
-            onValueChange = { /* read-only */ },
+            onValueChange = { },
             readOnly = true,
             singleLine = true,
             label = { Text("Дата") },
@@ -160,7 +273,10 @@ private fun DaySelectorRow(
 }
 
 @Composable
-private fun TotalsCard(totals: DayTotals) {
+private fun TotalsCard(
+    totals: DayTotals,
+    onOpenErrors: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
@@ -208,14 +324,16 @@ private fun TotalsCard(totals: DayTotals) {
                         Badge(
                             text = "✕ ${totals.errorsCount} ошибок",
                             bg = MaterialTheme.colorScheme.errorContainer,
-                            fg = MaterialTheme.colorScheme.onErrorContainer
+                            fg = MaterialTheme.colorScheme.onErrorContainer,
+                            onClick = onOpenErrors
                         )
                     }
                     if (totals.warnsCount > 0) {
                         Badge(
                             text = "⚠ ${totals.warnsCount} предупреждений",
                             bg = MaterialTheme.colorScheme.tertiaryContainer,
-                            fg = MaterialTheme.colorScheme.onTertiaryContainer
+                            fg = MaterialTheme.colorScheme.onTertiaryContainer,
+                            onClick = onOpenErrors
                         )
                     }
                 }
@@ -241,9 +359,17 @@ private fun StatCell(label: String, value: String, modifier: Modifier = Modifier
 }
 
 @Composable
-private fun Badge(text: String, bg: Color, fg: Color) {
+private fun Badge(
+    text: String,
+    bg: Color,
+    fg: Color,
+    onClick: (() -> Unit)? = null
+) {
+    val base = if (onClick != null) {
+        Modifier.clickable(onClick = onClick)
+    } else Modifier
     Box(
-        modifier = Modifier
+        modifier = base
             .background(bg, RoundedCornerShape(6.dp))
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {

@@ -13,9 +13,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * FIX 5.10-stat-admin-ui-1:
- * Тесты на AdminPanelAggregator. Чистая логика, без Android.
- * Имена тестов — латиница (правило TESTING.md).
+ * FIX 5.10-stat-admin-ui-1: тесты агрегатора.
+ * FIX 5.10-stat-admin-ui-5a: тесты незавершённых.
+ * FIX 5.10-stat-admin-v2-nav: тесты timeline-сегментов.
  */
 class AdminPanelAggregatorTest {
 
@@ -294,5 +294,90 @@ class AdminPanelAggregatorTest {
         assertTrue(!ProblemsView(0, 0, 1).isEmpty)
         assertTrue(!ProblemsView(1, 0, 0).isEmpty)
         assertTrue(!ProblemsView(0, 2, 0).isEmpty)
+    }
+
+    // ============================================================
+    // computeTimelineSegments (FIX 5.10-stat-admin-v2-nav)
+    // ============================================================
+
+    @Test
+    fun timeline_empty() {
+        val s = AdminPanelAggregator.computeTimelineSegments(
+            sessions = emptyList(),
+            date = "2026-10-06",
+            now = 0
+        )
+        assertTrue(s.isEmpty())
+    }
+
+    @Test
+    fun timeline_oneSessionInBounds() {
+        val (dayStart, _) = AdminPanelDateUtils.dayBounds("2026-10-06")
+        val from = dayStart + 3_600_000L
+        val to = dayStart + 7_200_000L
+        val s = AdminPanelAggregator.computeTimelineSegments(
+            sessions = listOf(
+                SessionEntity(id = 1, startedAt = from, endedAt = to)
+            ),
+            date = "2026-10-06",
+            now = to
+        )
+        assertEquals(1, s.size)
+        assertEquals(1L, s[0].sessionId)
+        assertEquals(from, s[0].fromTs)
+        assertEquals(to, s[0].toTs)
+    }
+
+    @Test
+    fun timeline_openSessionClampedToNow() {
+        val (dayStart, _) = AdminPanelDateUtils.dayBounds("2026-10-06")
+        val from = dayStart + 3_600_000L
+        val now = dayStart + 5_400_000L
+        val s = AdminPanelAggregator.computeTimelineSegments(
+            sessions = listOf(
+                SessionEntity(id = 1, startedAt = from, endedAt = null)
+            ),
+            date = "2026-10-06",
+            now = now
+        )
+        assertEquals(1, s.size)
+        assertEquals(now, s[0].toTs)
+    }
+
+    @Test
+    fun timeline_sessionClampedByDayBounds() {
+        val (dayStart, dayEnd) = AdminPanelDateUtils.dayBounds("2026-10-06")
+        // Сессия началась до дня и закончилась после.
+        val s = AdminPanelAggregator.computeTimelineSegments(
+            sessions = listOf(
+                SessionEntity(
+                    id = 1,
+                    startedAt = dayStart - 3_600_000L,
+                    endedAt = dayEnd + 3_600_000L
+                )
+            ),
+            date = "2026-10-06",
+            now = dayEnd + 3_600_000L
+        )
+        assertEquals(1, s.size)
+        assertEquals(dayStart, s[0].fromTs)
+        assertEquals(dayEnd, s[0].toTs)
+    }
+
+    @Test
+    fun timeline_zeroLengthDropped() {
+        val (dayStart, _) = AdminPanelDateUtils.dayBounds("2026-10-06")
+        val s = AdminPanelAggregator.computeTimelineSegments(
+            sessions = listOf(
+                SessionEntity(
+                    id = 1,
+                    startedAt = dayStart - 3_600_000L,
+                    endedAt = dayStart - 1_800_000L
+                )
+            ),
+            date = "2026-10-06",
+            now = dayStart
+        )
+        assertTrue(s.isEmpty())
     }
 }
