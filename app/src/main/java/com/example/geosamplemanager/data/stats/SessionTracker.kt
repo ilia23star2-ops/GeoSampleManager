@@ -8,21 +8,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * FIX 5.10-stat-session:
- * Трекер жизненного цикла сессии. Пишет в stats.db.
+ * FIX 5.10-stat-session: трекер жизненного цикла сессии.
  *
- * Жизненный цикл:
- *  1. SessionTracker.init(context) — один раз из GeoSampleApp.onCreate.
- *  2. SessionTracker.onAppStart() — открыть новую сессию.
- *     Перед этим закрыть «висящую» сессию (ended_at == null) как crash.
- *  3. SessionTracker.onActivityResume() / onActivityPause() — из
- *     MainActivity. Учёт fg/bg времени.
- *  4. SessionTracker.endSession(crashFlag = false) — при явном выходе.
- *
- * Всё I/O — в отдельном scope (Dispatchers.IO). UI не блокируем.
- *
- * Если процесс убили — сессия останется с ended_at == null. При
- * следующем onAppStart помечаем её crash_flag = true.
+ * FIX 5.10-stat-activity-a:
+ *  - при закрытии сессии active/idle пересчитываются по событиям
+ *    сессии через ActivityAccumulator;
+ *  - fg = время в foreground, active = активное внутри fg,
+ *    idle = fg - active;
+ *  - bg — отдельно.
  */
 object SessionTracker {
 
@@ -43,9 +36,6 @@ object SessionTracker {
 
     fun currentId(): Long? = currentSessionId
 
-    /**
-     * Открыть новую сессию. Закрыть «висящую» предыдущую.
-     */
     fun onAppStart() {
         val ctx = appContext ?: return
         val now = System.currentTimeMillis()
@@ -54,23 +44,33 @@ object SessionTracker {
             try {
                 val dao = StatsDatabase.getInstance(ctx).statsDao()
 
-                // Закрыть висящую сессию, если есть.
                 dao.getOpenSession()?.let { old ->
-                    val closedAt = old.endedAt ?: now
+                    val closedAt = now
+                    val events = try {
+                        dao.getEventsForSession(old.id).map { it.atTs }
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    val activeSec = ActivityAccumulator.computeActiveSec(
+                        eventsTs = events,
+                        sessionStart = old.startedAt,
+                        sessionEnd = closedAt
+                    )
+                    val idleSec = ActivityAccumulator.computeIdleSec(
+                        old.fgSec, activeSec
+                    )
+
                     dao.updateSession(
                         old.copy(
                             endedAt = closedAt,
                             crashFlag = true,
-                            fgSec = old.fgSec,
-                            bgSec = old.bgSec,
-                            activeSec = old.fgSec,
-                            idleSec = old.bgSec
+                            activeSec = activeSec,
+                            idleSec = idleSec
                         )
                     )
                     Log.w(TAG, "Закрыта висящая сессия id=${old.id} как crash")
                 }
 
-                // Открыть новую.
                 val newId = dao.insertSession(
                     SessionEntity(
                         startedAt = now,
@@ -97,9 +97,6 @@ object SessionTracker {
         persistPartial(id)
     }
 
-    /**
-     * Сохранить текущие fg/bg в БД. Не закрывает сессию.
-     */
     private fun persistPartial(sessionId: Long) {
         val ctx = appContext ?: return
         val fg = accumulator.fgSec
@@ -112,9 +109,7 @@ object SessionTracker {
                 dao.updateSession(
                     current.copy(
                         fgSec = fg,
-                        bgSec = bg,
-                        activeSec = fg,
-                        idleSec = bg
+                        bgSec = bg
                     )
                 )
             } catch (_: Exception) {
@@ -122,9 +117,6 @@ object SessionTracker {
         }
     }
 
-    /**
-     * Закрыть сессию. crashFlag = false — явный выход.
-     */
     suspend fun endSession(crashFlag: Boolean) {
         val ctx = appContext ?: return
         val id = currentSessionId ?: return
@@ -135,17 +127,35 @@ object SessionTracker {
         try {
             val dao = StatsDatabase.getInstance(ctx).statsDao()
             val current = dao.getSessionById(id) ?: return
+
+            val events = try {
+                dao.getEventsForSession(id).map { it.atTs }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            val activeSec = ActivityAccumulator.computeActiveSec(
+                eventsTs = events,
+                sessionStart = current.startedAt,
+                sessionEnd = now
+            )
+            val fgSec = accumulator.fgSec
+            val idleSec = ActivityAccumulator.computeIdleSec(fgSec, activeSec)
+
             dao.updateSession(
                 current.copy(
                     endedAt = now,
                     crashFlag = crashFlag,
-                    fgSec = accumulator.fgSec,
+                    fgSec = fgSec,
                     bgSec = accumulator.bgSec,
-                    activeSec = accumulator.fgSec,
-                    idleSec = accumulator.bgSec
+                    activeSec = activeSec,
+                    idleSec = idleSec
                 )
             )
-            Log.i(TAG, "Сессия закрыта id=$id, fg=${accumulator.fgSec}s, bg=${accumulator.bgSec}s")
+            Log.i(
+                TAG,
+                "Сессия закрыта id=$id, fg=${fgSec}s, bg=${accumulator.bgSec}s, " +
+                        "active=${activeSec}s, idle=${idleSec}s"
+            )
         } catch (e: Exception) {
             Log.e(TAG, "endSession: ошибка", e)
         } finally {

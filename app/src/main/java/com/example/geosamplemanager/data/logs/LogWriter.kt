@@ -1,6 +1,10 @@
 package com.example.geosamplemanager.data.logs
 
 import android.content.Context
+import com.example.geosamplemanager.data.stats.EventEntity
+import com.example.geosamplemanager.data.stats.SessionTracker
+import com.example.geosamplemanager.data.stats.StatsDao
+import com.example.geosamplemanager.data.stats.StatsDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -11,30 +15,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
 /**
- * FIX 5.9-logs-2:
- * Центральный писатель журнала.
+ * FIX 5.9-logs-2: центральный писатель журнала.
+ * FIX 5.9-logs-6: параллельно с logs.db — LogFileWriter.
  *
- * Схема:
- *   вызывающий код → LogWriter.send(entry) → Channel<LogEntry>(1000)
- *   → корутина-писатель в Dispatchers.IO → batch insert в LogsDatabase
- *
- * Ключевые решения:
- *  - trySend (не suspend) — не блокирует UI, даже если БД занята.
- *    При переполнении канала запись теряется, приложение не падает.
- *  - BATCH_SIZE = 50 — батч-вставка раз в 50 записей.
- *  - FLUSH_INTERVAL_MS = 500 — принудительный сброс, если батч
- *    не собрался (чтобы свежая запись не висела в буфере).
- *  - MAX_ENTRIES = 10 000 — ротация при вставке (не на каждой, а
- *    раз в TRIM_AFTER_WRITES записей).
- *
- * sessionId генерируется один раз при загрузке класса (то есть
- * живёт до перезапуска процесса). Все записи сессии помечены им —
- * это позволяет восстановить ход одной сессии в UI.
- *
- * FIX 5.9-logs-6:
- * Параллельно с записью в logs.db каждая запись уходит в
- * LogFileWriter (файловый архив в Загрузках). Ошибки файла
- * не влияют на основную запись.
+ * FIX 5.10-stat-activity-a:
+ *  - параллельно с logs.db каждая запись уходит в stats.db.events;
+ *  - statsDao получаем один раз при старте runWriter;
+ *  - запись в stats.db — одним batch insert (одна транзакция).
  */
 object LogWriter {
 
@@ -50,13 +37,8 @@ object LogWriter {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val channel = Channel<LogEntry>(capacity = CHANNEL_CAPACITY)
 
-    /** Идентификатор текущей сессии (жизнь процесса). */
     private val sessionId: String = UUID.randomUUID().toString()
 
-    /**
-     * Запустить писателя. Вызывается из GeoSampleApp.onCreate.
-     * Идемпотентно — повторный вызов no-op.
-     */
     fun init(context: Context) {
         if (writerJob != null) return
         synchronized(this) {
@@ -68,18 +50,9 @@ object LogWriter {
 
     fun currentSessionId(): String = sessionId
 
-    /**
-     * Неблокирующая отправка записи. Если канал переполнен —
-     * запись теряется (без шума в logcat, чтобы не создавать
-     * каскад при отладке).
-     */
     fun send(entry: LogEntry) {
         channel.trySend(entry)
     }
-
-    // ================================================================
-    // Factory для builder'ов — используется Log.* и внутренним кодом
-    // ================================================================
 
     fun info(cat: LogCategory, summary: String): LogEntryBuilder =
         LogEntryBuilder(cat, LogLevel.INFO, summary, sessionId)
@@ -95,16 +68,22 @@ object LogWriter {
         LogEntryBuilder(cat, LogLevel.ERROR, summary, sessionId)
             .detailThrowable(t)
 
-    // ================================================================
-    // Внутренний цикл писателя
-    // ================================================================
-
     private suspend fun runWriter() {
         val ctx = appContext ?: return
-        val dao = try {
+
+        val logDao = try {
             LogsDatabase.getInstance(ctx).logDao()
         } catch (_: Exception) {
             return
+        }
+
+        // FIX 5.10-stat-activity-a: один раз получаем statsDao.
+        // Первое getInstance может занять время (открытие файла) —
+        // это фон, не UI.
+        val statsDao: StatsDao? = try {
+            StatsDatabase.getInstance(ctx).statsDao()
+        } catch (_: Exception) {
+            null
         }
 
         val buffer = mutableListOf<LogEntry>()
@@ -117,33 +96,27 @@ object LogWriter {
             if (entry != null) {
                 buffer += entry
                 if (buffer.size >= BATCH_SIZE) {
-                    writtenSinceTrim += flush(ctx, dao, buffer)
+                    writtenSinceTrim += flush(ctx, logDao, statsDao, buffer)
                     if (writtenSinceTrim >= TRIM_AFTER_WRITES) {
                         try {
-                            dao.trimToMaxEntries(MAX_ENTRIES)
+                            logDao.trimToMaxEntries(MAX_ENTRIES)
                         } catch (_: Exception) {
                         }
                         writtenSinceTrim = 0
                     }
                 }
             } else {
-                // Тайм-аут — сбрасываем то, что успело накопиться.
                 if (buffer.isNotEmpty()) {
-                    writtenSinceTrim += flush(ctx, dao, buffer)
+                    writtenSinceTrim += flush(ctx, logDao, statsDao, buffer)
                 }
             }
         }
     }
 
-    /**
-     * FIX 5.9-logs-6:
-     * Батч уходит одновременно в logs.db и в файл (по дням).
-     * Сначала — БД, потом — файл. Ошибка файла не влияет на
-     * результат возврата (считаем записанным то, что в БД).
-     */
     private suspend fun flush(
         ctx: Context,
-        dao: LogDao,
+        logDao: LogDao,
+        statsDao: StatsDao?,
         buffer: MutableList<LogEntry>
     ): Int {
         if (buffer.isEmpty()) return 0
@@ -151,13 +124,33 @@ object LogWriter {
         buffer.clear()
 
         val written = try {
-            dao.insertAll(batch)
+            logDao.insertAll(batch)
             batch.size
         } catch (_: Exception) {
             0
         }
 
-        // Файл — после БД. Ошибки глотаются внутри LogFileWriter.
+        // FIX 5.10-stat-activity-a: одна batch-вставка.
+        if (statsDao != null) {
+            try {
+                val sid = SessionTracker.currentId() ?: 0L
+                val events = batch.map { entry ->
+                    EventEntity(
+                        sessionId = sid,
+                        atTs = entry.createdAt,
+                        level = entry.level,
+                        category = entry.category,
+                        summary = entry.summary,
+                        detailsJson = entry.details,
+                        rawVoice = null,
+                        parsedVoice = null
+                    )
+                }
+                statsDao.insertEvents(events)
+            } catch (_: Exception) {
+            }
+        }
+
         try {
             LogFileWriter.appendBatch(ctx, batch)
         } catch (_: Exception) {
