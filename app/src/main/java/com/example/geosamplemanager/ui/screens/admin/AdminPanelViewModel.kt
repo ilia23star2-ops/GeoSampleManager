@@ -13,15 +13,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * FIX 5.10-stat-admin-ui-1:
- * ViewModel экрана админа.
- *
+ * FIX 5.10-stat-admin-ui-1: ViewModel экрана админа.
  * FIX 5.10-stat-admin-ui-4: выбор дня.
+ * FIX 5.10-stat-admin-v2-nav: маршруты, таймлайн.
  *
- * FIX 5.10-stat-admin-v2-nav:
- *  - route — навигация внутри панели (табы + детали);
- *  - timelineScale — масштаб шкалы дня;
- *  - goBack() — обработка системного Back.
+ * FIX 5.10-stat-admin-v2-time-filter:
+ *  - timeFilterInput + timeFilterResult — фильтр времени на шкале;
+ *  - setTimeFilterInput, clearTimeFilter.
  */
 class AdminPanelViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -39,6 +37,14 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _route = MutableStateFlow<AdminPanelRoute>(AdminPanelRoute.Default)
     val route: StateFlow<AdminPanelRoute> = _route.asStateFlow()
+
+    private val _timeFilterInput = MutableStateFlow("")
+    val timeFilterInput: StateFlow<String> = _timeFilterInput.asStateFlow()
+
+    private val _timeFilterResult = MutableStateFlow<TimeFilterParseResult>(
+        TimeFilterParseResult.Empty
+    )
+    val timeFilterResult: StateFlow<TimeFilterParseResult> = _timeFilterResult.asStateFlow()
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message.asStateFlow()
@@ -72,21 +78,15 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         _route.value = AdminPanelRoute.VisitDetail(visitId)
     }
 
-    /** Можно ли вернуться назад (обрабатывается BackHandler). */
     fun canGoBack(): Boolean = _route.value != AdminPanelRoute.Default
 
-    /** Вернуться на уровень вверх. */
     fun goBack() {
         val current = _route.value
         _route.value = when (current) {
             is AdminPanelRoute.SessionDetail,
             is AdminPanelRoute.VisitDetail ->
                 AdminPanelRoute.Tab(AdminPanelTab.DAY)
-            is AdminPanelRoute.Tab -> if (current.tab == AdminPanelTab.DAY) {
-                AdminPanelRoute.Default
-            } else {
-                AdminPanelRoute.Default
-            }
+            is AdminPanelRoute.Tab -> AdminPanelRoute.Default
         }
     }
 
@@ -107,6 +107,29 @@ class AdminPanelViewModel(application: Application) : AndroidViewModel(applicati
         if (date == _selectedDate.value) return
         _selectedDate.value = date
         viewModelScope.launch { loadDayInternal(date) }
+    }
+
+    // ============================================================
+    // Фильтр времени
+    // ============================================================
+
+    /**
+     * FIX 5.10-stat-admin-v2-time-filter:
+     * Принять ввод пользователя. Парсит и обновляет результат.
+     * UI сам решает, что делать (Point → центрировать, Range → зум).
+     */
+    fun setTimeFilterInput(input: String) {
+        _timeFilterInput.value = input
+        _timeFilterResult.value = TimeFilterParser.parse(input)
+    }
+
+    /**
+     * Сброс фильтра. Зовётся при клике на чип масштаба (решение А)
+     * или по иконке × в поле.
+     */
+    fun clearTimeFilter() {
+        _timeFilterInput.value = ""
+        _timeFilterResult.value = TimeFilterParseResult.Empty
     }
 
     private suspend fun refreshAvailableDates(today: String) {
