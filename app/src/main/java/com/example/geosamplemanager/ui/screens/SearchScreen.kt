@@ -63,6 +63,12 @@ import java.io.File
  *    кнопка «?» уезжает за правый край, теперь её можно долистать;
  *  - LegendDialog без жёсткого heightIn — контент скроллится сам,
  *    кнопка «Понятно» всегда доступна.
+ *
+ * FIX 5.10-main-search-race:
+ *  - LaunchedEffect(Unit) { viewModel.tryApplyPendingSearch() } в начале
+ *    композабла. VM восстанавливается из saveState (NavGraph
+ *    с restoreState=true), init не срабатывает — поэтому отложенный
+ *    переход с Главной применяем явно при каждом появлении экрана.
  */
 internal fun shouldShowScrollTop(firstVisibleItemIndex: Int): Boolean =
     firstVisibleItemIndex > 10
@@ -106,6 +112,14 @@ fun SearchScreen(
 ) {
     val state = viewModel.state
     val context = LocalContext.current
+
+    // FIX 5.10-main-search-race:
+    // При каждом появлении экрана пробуем применить отложенный переход
+    // с Главной. VM может быть восстановлена из saveState — тогда init
+    // не срабатывает, и pendingSearchRequest нужно прочитать явно.
+    LaunchedEffect(Unit) {
+        viewModel.tryApplyPendingSearch()
+    }
 
     val view = LocalView.current
     DisposableEffect(state.voiceStatus) {
