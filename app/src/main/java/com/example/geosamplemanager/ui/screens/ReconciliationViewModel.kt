@@ -122,9 +122,13 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
     }
 
     init {
+        // FIX 5.10-main-search-race:
+        // applyPendingSearchRequest больше не зовётся здесь синхронно —
+        // orderInfoBy* на этот момент ещё пустые (Room-flow не успел
+        // эмитнуть). Обработка перехода с Главной — в tryApplyPendingSearch,
+        // её зовёт первый эмит subscribeToAreasAndOrders и SearchScreen.
         subscribeToAreasAndOrders()
         loadVoiceUiSettings()
-        applyPendingSearchRequest()
     }
 
     private fun loadVoiceUiSettings() {
@@ -221,6 +225,12 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
                         }
                         state.allOrderTitles = orderInfos
                         state.allAreaNames = areaNames
+
+                        // FIX 5.10-main-search-race:
+                        // Справочники заполнены — можно применять
+                        // отложенный переход с Главной. Если pending пуст —
+                        // no-op (consumeSearchRequest вернёт null).
+                        tryApplyPendingSearch()
                     }
                 }
             } catch (e: CancellationException) {
@@ -2704,6 +2714,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             } catch (e: Exception) { _message.value = "Ошибка сохранения: ${e.message}" }
         }
     }
+
     /**
      * FIX 5.9-main-a:
      * Применить одноразовый запрос «открыть Сверку с нарядом X»,
@@ -2711,8 +2722,23 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
      *
      * FIX 5.10-stat-activity-b-2: setSelectedOrder зовёт
      * notifyOrderSearch, так что переход с Главной тоже учитывается.
+     *
+     * FIX 5.10-main-search-race:
+     * Публичный метод. Зовётся из двух мест:
+     *  1. Первый эмит subscribeToAreasAndOrders — когда справочники
+     *     orderInfoBy* заполнились (для первого захода).
+     *  2. SearchScreen.LaunchedEffect(Unit) — при каждом появлении
+     *     экрана. VM может быть восстановлена из saveState
+     *     (NavGraph с restoreState=true), init тогда не срабатывает —
+     *     поэтому зовём явно из UI.
+     *
+     * Если справочники ещё пусты — ничего не делаем и НЕ consume,
+     * оставляем запрос висеть, следующий вызов подхватит.
+     * consumeSearchRequest обнуляет pending — повторных применений
+     * не будет.
      */
-    private fun applyPendingSearchRequest() {
+    fun tryApplyPendingSearch() {
+        if (orderInfoByTitle.isEmpty()) return
         val app = getApplication<Application>() as GeoSampleApp
         val req = app.consumeSearchRequest() ?: return
         setSelectedArea(req.areaTitle)
@@ -2724,6 +2750,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
             orderTitle = req.orderTitle
         )
     }
+
     private fun persistAll() {
         viewModelScope.launch {
             try {
@@ -2747,7 +2774,7 @@ class ReconciliationViewModel(application: Application) : AndroidViewModel(appli
      *  - ручной ввод одного запроса (loadGroupsForQueryNew);
      *  - ручной ввод нескольких запросов (buildMultiQueryGroups);
      *  - выбор наряда из dropdown (setSelectedOrder);
-     *  - переход с Главной (applyPendingSearchRequest → setSelectedOrder).
+     *  - переход с Главной (tryApplyPendingSearch → setSelectedOrder).
      *
      * Правила накопления времени — те же, что для onMark
      * (OrderWorkTracker.accumulateCurrentPhase).

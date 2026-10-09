@@ -22,13 +22,24 @@ import java.util.Calendar
  *  - У3=А: перезапись файла при повторном экспорте;
  *  - У4=А: ended_at = null пишется как есть;
  *  - У7=А: русские названия дней недели вручную.
+ *
+ * FIX 5.10-stats-exporter-nulls:
+ *  - добавлен `.serializeNulls()` — иначе Gson пропускает поля
+ *    со значением null, и потребитель JSON не видит, что поле
+ *    существует. Тесты `session_openEndedAtIsNull`,
+ *    `event_withoutDetails_detailsIsNull`,
+ *    `event_brokenDetailsJson_detailsIsNull` ожидают, что null
+ *    будет записан явно.
  */
 object StatsExporter {
 
     private const val FORMAT_VERSION = 1
     private const val EXPORTS_SUBDIR = "stats/exports"
 
-    private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val gson = GsonBuilder()
+        .setPrettyPrinting()
+        .serializeNulls()
+        .create()
 
     /**
      * Сборка JSON-строки для экспорта. Чистая функция — не касается
